@@ -1,0 +1,94 @@
+[
+ {
+  "vid": "v021",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 61218,
+  "sim_ms": 0.040812,
+  "detail": [
+   {
+    "cycles": 30609,
+    "gpu_tot_ipc": "1283.3370",
+    "L2_BW_total": "352.8750 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 21 sec (81 sec)"
+   },
+   {
+    "cycles": 30609,
+    "gpu_tot_ipc": "1283.3370",
+    "L2_BW_total": "352.8750 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 20 sec (80 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v021",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 63516,
+  "sim_ms": 0.042344,
+  "detail": [
+   {
+    "cycles": 31758,
+    "gpu_tot_ipc": "1264.8055",
+    "L2_BW_total": "347.0727 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 40 sec (100 sec)"
+   },
+   {
+    "cycles": 31758,
+    "gpu_tot_ipc": "1264.8055",
+    "L2_BW_total": "347.0727 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 23 sec (83 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v021",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 107562,
+  "sim_ms": 0.071708,
+  "detail": [
+   {
+    "cycles": 53781,
+    "gpu_tot_ipc": "1433.3258",
+    "L2_BW_total": "376.3101 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 30 sec (150 sec)"
+   },
+   {
+    "cycles": 53781,
+    "gpu_tot_ipc": "1433.3258",
+    "L2_BW_total": "376.3101 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 43 sec (163 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v021",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 107562,
+  "sim_ms": 0.071708,
+  "detail": [
+   {
+    "cycles": 53781,
+    "gpu_tot_ipc": "1433.3258",
+    "L2_BW_total": "376.3101 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 28 sec (148 sec)"
+   },
+   {
+    "cycles": 53781,
+    "gpu_tot_ipc": "1433.3258",
+    "L2_BW_total": "376.3101 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 49 sec (169 sec)"
+   }
+  ]
+ }
+]

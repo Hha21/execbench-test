@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v033",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 27618,
+  "sim_ms": 0.018411999999999998,
+  "detail": [
+   {
+    "cycles": 13809,
+    "gpu_tot_ipc": "722.5618",
+    "L2_BW_total": "800.8690 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 24 sec (24 sec)"
+   },
+   {
+    "cycles": 13809,
+    "gpu_tot_ipc": "722.5618",
+    "L2_BW_total": "800.8690 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 24 sec (24 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v033",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 28182,
+  "sim_ms": 0.018788,
+  "detail": [
+   {
+    "cycles": 14091,
+    "gpu_tot_ipc": "724.6974",
+    "L2_BW_total": "800.5382 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 24 sec (24 sec)"
+   },
+   {
+    "cycles": 14091,
+    "gpu_tot_ipc": "724.6974",
+    "L2_BW_total": "800.5382 GB/Sec"
+   }
+  ]
+ },
+ {
+  "vid": "v033",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 29902,
+  "sim_ms": 0.019934666666666667,
+  "detail": [
+   {
+    "cycles": 14951,
+    "gpu_tot_ipc": "1336.4039",
+    "L2_BW_total": "1370.9039 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 39 sec (39 sec)"
+   },
+   {
+    "cycles": 14951,
+    "gpu_tot_ipc": "1336.4039",
+    "L2_BW_total": "1370.9039 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 40 sec (40 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v033",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 29902,
+  "sim_ms": 0.019934666666666667,
+  "detail": [
+   {
+    "cycles": 14951,
+    "gpu_tot_ipc": "1336.4039",
+    "L2_BW_total": "1370.9039 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 38 sec (38 sec)"
+   },
+   {
+    "cycles": 14951,
+    "gpu_tot_ipc": "1336.4039",
+    "L2_BW_total": "1370.9039 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 37 sec (37 sec)"
+   }
+  ]
+ }
+]

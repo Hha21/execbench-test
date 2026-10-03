@@ -1,0 +1,70 @@
+[
+ {
+  "vid": "v027",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 1,
+  "cycles": 19894,
+  "sim_ms": 0.013262666666666666,
+  "detail": [
+   {
+    "cycles": 19894,
+    "gpu_tot_ipc": "4669.2012",
+    "L2_BW_total": "1085.8703 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 36 sec (96 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v027",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 1,
+  "cycles": 19906,
+  "sim_ms": 0.013270666666666667,
+  "detail": [
+   {
+    "cycles": 19906,
+    "gpu_tot_ipc": "4770.2231",
+    "L2_BW_total": "1107.4386 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 37 sec (97 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v027",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 1,
+  "cycles": 31678,
+  "sim_ms": 0.021118666666666668,
+  "detail": [
+   {
+    "cycles": 31678,
+    "gpu_tot_ipc": "5716.2720",
+    "L2_BW_total": "1277.7534 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 48 sec (168 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v027",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 1,
+  "cycles": 31678,
+  "sim_ms": 0.021118666666666668,
+  "detail": [
+   {
+    "cycles": 31678,
+    "gpu_tot_ipc": "5716.2720",
+    "L2_BW_total": "1277.7534 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 2 min, 53 sec (173 sec)"
+   }
+  ]
+ }
+]

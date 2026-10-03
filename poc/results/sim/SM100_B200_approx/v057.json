@@ -1,0 +1,78 @@
+[
+ {
+  "vid": "v057",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 20264,
+  "sim_ms": 0.013509333333333333,
+  "detail": [
+   {
+    "cycles": 10132,
+    "gpu_tot_ipc": "1261.3029",
+    "L2_BW_total": "1200.6632 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 35 sec (35 sec)"
+   },
+   {
+    "cycles": 10132,
+    "gpu_tot_ipc": "1261.3029",
+    "L2_BW_total": "1200.6632 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 35 sec (35 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v057",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 20086,
+  "sim_ms": 0.013390666666666667,
+  "detail": [
+   {
+    "cycles": 10043,
+    "gpu_tot_ipc": "1302.3136",
+    "L2_BW_total": "1233.3271 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 36 sec (36 sec)"
+   },
+   {
+    "cycles": 10043,
+    "gpu_tot_ipc": "1302.3136",
+    "L2_BW_total": "1233.3271 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 35 sec (35 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v057",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "error": "L2 148 is 0\nDirty lines flushed from L2 149 is 0\nDirty lines flushed from L2 150 is 0\nDirty lines flushed from L2 151 is 0\nDirty lines flushed from L2 152 is 0\nDirty lines flushed from L2 153 is 0\nDirty lines flushed from L2 154 is 0\nDirty lines flushed from L2 155 is 0\nDirty lines flushed from L2 156 is 0\nDirty lines flushed from L2 157 is 0\nDirty lines flushed from L2 158 is 0\nDirty lines flushed from L2 159 is 0\nDirty lines flushed from L2 160 is 0\nDirty lines flushed from L2 161 is 0\nDirty lines flushed from L2 162 is 0\nDirty lines flushed from L2 163 is 0\nDirty lines flushed from L2 164 is 0\nDirty lines flushed from L2 165 is 0\nDirty lines flushed from L2 166 is 0\nDirty lines flushed from L2 167 is 0\nDirty lines flushed from L2 168 is 0\nDirty lines flushed from L2 169 is 0\nDirty lines flushed from L2 170 is 0\nDirty lines flushed from L2 171 is 0\nDirty lines flushed from L2 172 is 0\nDirty lines flushed from L2 173 is 0\nDirty lines flushed from L2 174 is 0\nDirty lines flushed from L2 175 is 0\nDirty lines flushed from L2 176 is 0\nDirty lines flushed from L2 177 is 0\nDirty lines flushed from L2 178 is 0\nDirty lines flushed from L2 179 is 0\nDirty lines flushed from L2 180 is 0\nDirty lines flushed from L2 181 is 0\nDirty lines flushed from L2 182 is 0\nDirty lines flushed from L2 183 is 0\nDirty lines flushed from L2 184 is 0\nDirty lines flushed from L2 185 is 0\nDirty lines flushed from L2 186 is 0\nDirty lines flushed from L2 187 is 0\nDirty lines flushed from L2 188 is 0\nDirty lines flushed from L2 189 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\nbash: line 1: 235575 Segmentation fault      (core dumped) ./_qk_norm_kernel_launch1\n"
+ },
+ {
+  "vid": "v057",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 25602,
+  "sim_ms": 0.017068,
+  "detail": [
+   {
+    "cycles": 12801,
+    "gpu_tot_ipc": "1923.8047",
+    "L2_BW_total": "1687.5482 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   },
+   {
+    "cycles": 12801,
+    "gpu_tot_ipc": "1923.8047",
+    "L2_BW_total": "1687.5482 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   }
+  ]
+ }
+]

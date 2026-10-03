@@ -1,0 +1,70 @@
+[
+ {
+  "vid": "v060",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 1,
+  "cycles": 19938,
+  "sim_ms": 0.013292,
+  "detail": [
+   {
+    "cycles": 19938,
+    "gpu_tot_ipc": "1061.3204",
+    "L2_BW_total": "1272.0650 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 46 sec (46 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v060",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 1,
+  "cycles": 20263,
+  "sim_ms": 0.013508666666666667,
+  "detail": [
+   {
+    "cycles": 20263,
+    "gpu_tot_ipc": "1072.4683",
+    "L2_BW_total": "1273.4936 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 43 sec (43 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v060",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 1,
+  "cycles": 24525,
+  "sim_ms": 0.01635,
+  "detail": [
+   {
+    "cycles": 24525,
+    "gpu_tot_ipc": "1728.0509",
+    "L2_BW_total": "1803.7431 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 13 sec (73 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v060",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 1,
+  "cycles": 24525,
+  "sim_ms": 0.01635,
+  "detail": [
+   {
+    "cycles": 24525,
+    "gpu_tot_ipc": "1728.0509",
+    "L2_BW_total": "1803.7431 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 13 sec (73 sec)"
+   }
+  ]
+ }
+]

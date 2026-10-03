@@ -1,0 +1,60 @@
+[
+ {
+  "vid": "v065",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 22614,
+  "sim_ms": 0.015075999999999999,
+  "detail": [
+   {
+    "cycles": 11307,
+    "gpu_tot_ipc": "921.5728",
+    "L2_BW_total": "1251.9480 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 44 sec (44 sec)"
+   },
+   {
+    "cycles": 11307,
+    "gpu_tot_ipc": "921.5728",
+    "L2_BW_total": "1251.9480 GB/Sec"
+   }
+  ]
+ },
+ {
+  "vid": "v065",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 22754,
+  "sim_ms": 0.015169333333333333,
+  "detail": [
+   {
+    "cycles": 11377,
+    "gpu_tot_ipc": "937.3691",
+    "L2_BW_total": "1273.4070 GB/Sec"
+   },
+   {
+    "cycles": 11377,
+    "gpu_tot_ipc": "937.3691",
+    "L2_BW_total": "1273.4070 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 38 sec (38 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v065",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "error": "ushed from L2 146 is 0\nDirty lines flushed from L2 147 is 0\nDirty lines flushed from L2 148 is 0\nDirty lines flushed from L2 149 is 0\nDirty lines flushed from L2 150 is 0\nDirty lines flushed from L2 151 is 0\nDirty lines flushed from L2 152 is 0\nDirty lines flushed from L2 153 is 0\nDirty lines flushed from L2 154 is 0\nDirty lines flushed from L2 155 is 0\nDirty lines flushed from L2 156 is 0\nDirty lines flushed from L2 157 is 0\nDirty lines flushed from L2 158 is 0\nDirty lines flushed from L2 159 is 0\nDirty lines flushed from L2 160 is 0\nDirty lines flushed from L2 161 is 0\nDirty lines flushed from L2 162 is 0\nDirty lines flushed from L2 163 is 0\nDirty lines flushed from L2 164 is 0\nDirty lines flushed from L2 165 is 0\nDirty lines flushed from L2 166 is 0\nDirty lines flushed from L2 167 is 0\nDirty lines flushed from L2 168 is 0\nDirty lines flushed from L2 169 is 0\nDirty lines flushed from L2 170 is 0\nDirty lines flushed from L2 171 is 0\nDirty lines flushed from L2 172 is 0\nDirty lines flushed from L2 173 is 0\nDirty lines flushed from L2 174 is 0\nDirty lines flushed from L2 175 is 0\nDirty lines flushed from L2 176 is 0\nDirty lines flushed from L2 177 is 0\nDirty lines flushed from L2 178 is 0\nDirty lines flushed from L2 179 is 0\nDirty lines flushed from L2 180 is 0\nDirty lines flushed from L2 181 is 0\nDirty lines flushed from L2 182 is 0\nDirty lines flushed from L2 183 is 0\nDirty lines flushed from L2 184 is 0\nDirty lines flushed from L2 185 is 0\nDirty lines flushed from L2 186 is 0\nDirty lines flushed from L2 187 is 0\nDirty lines flushed from L2 188 is 0\nDirty lines flushed from L2 189 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\n"
+ },
+ {
+  "vid": "v065",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "error": "ushed from L2 146 is 0\nDirty lines flushed from L2 147 is 0\nDirty lines flushed from L2 148 is 0\nDirty lines flushed from L2 149 is 0\nDirty lines flushed from L2 150 is 0\nDirty lines flushed from L2 151 is 0\nDirty lines flushed from L2 152 is 0\nDirty lines flushed from L2 153 is 0\nDirty lines flushed from L2 154 is 0\nDirty lines flushed from L2 155 is 0\nDirty lines flushed from L2 156 is 0\nDirty lines flushed from L2 157 is 0\nDirty lines flushed from L2 158 is 0\nDirty lines flushed from L2 159 is 0\nDirty lines flushed from L2 160 is 0\nDirty lines flushed from L2 161 is 0\nDirty lines flushed from L2 162 is 0\nDirty lines flushed from L2 163 is 0\nDirty lines flushed from L2 164 is 0\nDirty lines flushed from L2 165 is 0\nDirty lines flushed from L2 166 is 0\nDirty lines flushed from L2 167 is 0\nDirty lines flushed from L2 168 is 0\nDirty lines flushed from L2 169 is 0\nDirty lines flushed from L2 170 is 0\nDirty lines flushed from L2 171 is 0\nDirty lines flushed from L2 172 is 0\nDirty lines flushed from L2 173 is 0\nDirty lines flushed from L2 174 is 0\nDirty lines flushed from L2 175 is 0\nDirty lines flushed from L2 176 is 0\nDirty lines flushed from L2 177 is 0\nDirty lines flushed from L2 178 is 0\nDirty lines flushed from L2 179 is 0\nDirty lines flushed from L2 180 is 0\nDirty lines flushed from L2 181 is 0\nDirty lines flushed from L2 182 is 0\nDirty lines flushed from L2 183 is 0\nDirty lines flushed from L2 184 is 0\nDirty lines flushed from L2 185 is 0\nDirty lines flushed from L2 186 is 0\nDirty lines flushed from L2 187 is 0\nDirty lines flushed from L2 188 is 0\nDirty lines flushed from L2 189 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\n"
+ }
+]

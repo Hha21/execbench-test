@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v051",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 31828,
+  "sim_ms": 0.021218666666666667,
+  "detail": [
+   {
+    "cycles": 15914,
+    "gpu_tot_ipc": "635.4797",
+    "L2_BW_total": "796.8591 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 43 sec (43 sec)"
+   },
+   {
+    "cycles": 15914,
+    "gpu_tot_ipc": "635.4797",
+    "L2_BW_total": "796.8591 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 40 sec (40 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v051",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 32218,
+  "sim_ms": 0.021478666666666667,
+  "detail": [
+   {
+    "cycles": 16109,
+    "gpu_tot_ipc": "644.0405",
+    "L2_BW_total": "800.9436 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 37 sec (37 sec)"
+   },
+   {
+    "cycles": 16109,
+    "gpu_tot_ipc": "644.0405",
+    "L2_BW_total": "800.9436 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 36 sec (36 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v051",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 32158,
+  "sim_ms": 0.021438666666666665,
+  "detail": [
+   {
+    "cycles": 16079,
+    "gpu_tot_ipc": "1261.9232",
+    "L2_BW_total": "1375.6079 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 50 sec (50 sec)"
+   },
+   {
+    "cycles": 16079,
+    "gpu_tot_ipc": "1261.9232",
+    "L2_BW_total": "1375.6079 GB/Sec"
+   }
+  ]
+ },
+ {
+  "vid": "v051",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 32158,
+  "sim_ms": 0.021438666666666665,
+  "detail": [
+   {
+    "cycles": 16079,
+    "gpu_tot_ipc": "1261.9232",
+    "L2_BW_total": "1375.6079 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 48 sec (48 sec)"
+   },
+   {
+    "cycles": 16079,
+    "gpu_tot_ipc": "1261.9232",
+    "L2_BW_total": "1375.6079 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 50 sec (50 sec)"
+   }
+  ]
+ }
+]

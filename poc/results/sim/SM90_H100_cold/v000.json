@@ -1,0 +1,78 @@
+[
+ {
+  "vid": "v000",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 27002,
+  "sim_ms": 0.018001333333333334,
+  "detail": [
+   {
+    "cycles": 13501,
+    "gpu_tot_ipc": "1927.2528",
+    "L2_BW_total": "729.0340 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 31 sec (31 sec)"
+   },
+   {
+    "cycles": 13501,
+    "gpu_tot_ipc": "1927.2528",
+    "L2_BW_total": "729.0340 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 30 sec (30 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v000",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 26374,
+  "sim_ms": 0.017582666666666667,
+  "detail": [
+   {
+    "cycles": 13187,
+    "gpu_tot_ipc": "2009.5391",
+    "L2_BW_total": "763.1661 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 31 sec (31 sec)"
+   },
+   {
+    "cycles": 13187,
+    "gpu_tot_ipc": "2009.5391",
+    "L2_BW_total": "763.1661 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 42 sec (42 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v000",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "error": "lines flushed from L2 35 is 0\nDirty lines flushed from L2 36 is 0\nDirty lines flushed from L2 37 is 0\nDirty lines flushed from L2 38 is 0\nDirty lines flushed from L2 39 is 0\nDirty lines flushed from L2 40 is 0\nDirty lines flushed from L2 41 is 0\nDirty lines flushed from L2 42 is 0\nDirty lines flushed from L2 43 is 0\nDirty lines flushed from L2 44 is 0\nDirty lines flushed from L2 45 is 0\nDirty lines flushed from L2 46 is 0\nDirty lines flushed from L2 47 is 0\nDirty lines flushed from L2 48 is 0\nDirty lines flushed from L2 49 is 0\nDirty lines flushed from L2 50 is 0\nDirty lines flushed from L2 51 is 0\nDirty lines flushed from L2 52 is 0\nDirty lines flushed from L2 53 is 0\nDirty lines flushed from L2 54 is 0\nDirty lines flushed from L2 55 is 0\nDirty lines flushed from L2 56 is 0\nDirty lines flushed from L2 57 is 0\nDirty lines flushed from L2 58 is 0\nDirty lines flushed from L2 59 is 0\nDirty lines flushed from L2 60 is 0\nDirty lines flushed from L2 61 is 0\nDirty lines flushed from L2 62 is 0\nDirty lines flushed from L2 63 is 0\nDirty lines flushed from L2 64 is 0\nDirty lines flushed from L2 65 is 0\nDirty lines flushed from L2 66 is 0\nDirty lines flushed from L2 67 is 0\nDirty lines flushed from L2 68 is 0\nDirty lines flushed from L2 69 is 0\nDirty lines flushed from L2 70 is 0\nDirty lines flushed from L2 71 is 0\nDirty lines flushed from L2 72 is 0\nDirty lines flushed from L2 73 is 0\nDirty lines flushed from L2 74 is 0\nDirty lines flushed from L2 75 is 0\nDirty lines flushed from L2 76 is 0\nDirty lines flushed from L2 77 is 0\nDirty lines flushed from L2 78 is 0\nDirty lines flushed from L2 79 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\n"
+ },
+ {
+  "vid": "v000",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 34952,
+  "sim_ms": 0.023301333333333334,
+  "detail": [
+   {
+    "cycles": 17476,
+    "gpu_tot_ipc": "2660.6655",
+    "L2_BW_total": "1103.2200 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 51 sec (51 sec)"
+   },
+   {
+    "cycles": 17476,
+    "gpu_tot_ipc": "2660.6655",
+    "L2_BW_total": "1103.2200 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 49 sec (49 sec)"
+   }
+  ]
+ }
+]

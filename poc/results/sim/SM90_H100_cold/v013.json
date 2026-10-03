@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v013",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 42540,
+  "sim_ms": 0.02836,
+  "detail": [
+   {
+    "cycles": 21270,
+    "gpu_tot_ipc": "1026.3109",
+    "L2_BW_total": "462.7498 GB/Sec"
+   },
+   {
+    "cycles": 21270,
+    "gpu_tot_ipc": "1026.3109",
+    "L2_BW_total": "462.7498 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 32 sec (32 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v013",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 42558,
+  "sim_ms": 0.028371999999999998,
+  "detail": [
+   {
+    "cycles": 21279,
+    "gpu_tot_ipc": "1048.4320",
+    "L2_BW_total": "472.9485 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 37 sec (37 sec)"
+   },
+   {
+    "cycles": 21279,
+    "gpu_tot_ipc": "1048.4320",
+    "L2_BW_total": "472.9485 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 34 sec (34 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v013",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 67590,
+  "sim_ms": 0.045059999999999996,
+  "detail": [
+   {
+    "cycles": 33795,
+    "gpu_tot_ipc": "1251.8889",
+    "L2_BW_total": "570.4948 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   },
+   {
+    "cycles": 33795,
+    "gpu_tot_ipc": "1251.8889",
+    "L2_BW_total": "570.4948 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 57 sec (57 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v013",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 67590,
+  "sim_ms": 0.045059999999999996,
+  "detail": [
+   {
+    "cycles": 33795,
+    "gpu_tot_ipc": "1251.8889",
+    "L2_BW_total": "570.4948 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   },
+   {
+    "cycles": 33795,
+    "gpu_tot_ipc": "1251.8889",
+    "L2_BW_total": "570.4948 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   }
+  ]
+ }
+]

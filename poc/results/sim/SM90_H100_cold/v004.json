@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v004",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 43490,
+  "sim_ms": 0.028993333333333333,
+  "detail": [
+   {
+    "cycles": 21745,
+    "gpu_tot_ipc": "1859.7290",
+    "L2_BW_total": "452.6414 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   },
+   {
+    "cycles": 21745,
+    "gpu_tot_ipc": "1859.7290",
+    "L2_BW_total": "452.6414 GB/Sec"
+   }
+  ]
+ },
+ {
+  "vid": "v004",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 43366,
+  "sim_ms": 0.028910666666666668,
+  "detail": [
+   {
+    "cycles": 21683,
+    "gpu_tot_ipc": "1905.9097",
+    "L2_BW_total": "464.1365 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 48 sec (48 sec)"
+   },
+   {
+    "cycles": 21683,
+    "gpu_tot_ipc": "1905.9097",
+    "L2_BW_total": "464.1365 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 51 sec (51 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v004",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 68908,
+  "sim_ms": 0.04593866666666667,
+  "detail": [
+   {
+    "cycles": 34454,
+    "gpu_tot_ipc": "2270.9653",
+    "L2_BW_total": "559.5830 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 23 sec (83 sec)"
+   },
+   {
+    "cycles": 34454,
+    "gpu_tot_ipc": "2270.9653",
+    "L2_BW_total": "559.5830 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 24 sec (84 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v004",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 68908,
+  "sim_ms": 0.04593866666666667,
+  "detail": [
+   {
+    "cycles": 34454,
+    "gpu_tot_ipc": "2270.9653",
+    "L2_BW_total": "559.5830 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 20 sec (80 sec)"
+   },
+   {
+    "cycles": 34454,
+    "gpu_tot_ipc": "2270.9653",
+    "L2_BW_total": "559.5830 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 24 sec (84 sec)"
+   }
+  ]
+ }
+]

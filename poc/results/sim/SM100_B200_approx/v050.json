@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v050",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 21044,
+  "sim_ms": 0.014029333333333333,
+  "detail": [
+   {
+    "cycles": 10522,
+    "gpu_tot_ipc": "948.4220",
+    "L2_BW_total": "1156.1604 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 33 sec (33 sec)"
+   },
+   {
+    "cycles": 10522,
+    "gpu_tot_ipc": "948.4220",
+    "L2_BW_total": "1156.1604 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 32 sec (32 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v050",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 20906,
+  "sim_ms": 0.013937333333333333,
+  "detail": [
+   {
+    "cycles": 10453,
+    "gpu_tot_ipc": "976.9352",
+    "L2_BW_total": "1184.9521 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 33 sec (33 sec)"
+   },
+   {
+    "cycles": 10453,
+    "gpu_tot_ipc": "976.9352",
+    "L2_BW_total": "1184.9521 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 36 sec (36 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v050",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 26490,
+  "sim_ms": 0.01766,
+  "detail": [
+   {
+    "cycles": 13245,
+    "gpu_tot_ipc": "1507.0369",
+    "L2_BW_total": "1630.9780 GB/Sec"
+   },
+   {
+    "cycles": 13245,
+    "gpu_tot_ipc": "1507.0369",
+    "L2_BW_total": "1630.9780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 2 sec (62 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v050",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 26490,
+  "sim_ms": 0.01766,
+  "detail": [
+   {
+    "cycles": 13245,
+    "gpu_tot_ipc": "1507.0369",
+    "L2_BW_total": "1630.9780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   },
+   {
+    "cycles": 13245,
+    "gpu_tot_ipc": "1507.0369",
+    "L2_BW_total": "1630.9780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 51 sec (51 sec)"
+   }
+  ]
+ }
+]

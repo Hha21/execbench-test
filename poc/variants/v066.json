@@ -1,0 +1,27 @@
+{
+ "name": "rmsnorm_qk_triton_v066",
+ "definition": "flux_multi_head_rmsnorm_qk",
+ "author": "solx-poc",
+ "description": "Triton per-head RMSNorm for Q and K; ROWS=2, NUM_WARPS=4, NUM_STAGES=3, FUSE=True, PERSIST=True, PROGS_PER_SM=2, EVICT=False",
+ "spec": {
+  "languages": [
+   "triton"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "kernel.py::run",
+  "dependencies": [
+   "torch",
+   "triton"
+  ],
+  "destination_passing_style": true
+ },
+ "sources": [
+  {
+   "path": "kernel.py",
+   "content": "\"\"\"Per-head RMSNorm of Q and K (SOL-ExecBench L1/038_flux_multi_head_rmsnorm_qk).\n\nOne Triton kernel with tuning knobs. make_variants.py rewrites the knob block below\nto produce each variant, so every variant is a self-contained solution file.\n\"\"\"\n\nimport torch\nimport triton\nimport triton.language as tl\n\n# --- variant knobs (rewritten by make_variants.py) ---\nROWS = 2  # rows of head_dim=128 handled per tile\nNUM_WARPS = 4\nNUM_STAGES = 3  # software pipelining depth; only matters for the persistent loop\nFUSE = True  # one launch for Q and K together, else one launch each\nPERSIST = True  # fixed grid that loops over tiles, else one program per tile\nPROGS_PER_SM = 2  # persistent grid size = SMs * PROGS_PER_SM\nEVICT = False  # stream-through cache hint on loads/stores\n# ------------------------------------------------------\n\nD = 128\nH = 48\n\n\n@triton.jit\ndef _qk_norm_kernel(\n    q_ptr, k_ptr, wq_ptr, wk_ptr, qo_ptr, ko_ptr,\n    n_rows, eps, n_prog,\n    ROWS: tl.constexpr, D: tl.constexpr, H: tl.constexpr,\n    EVICT: tl.constexpr, FUSE: tl.constexpr, PERSIST: tl.constexpr,\n):\n    pid = tl.program_id(0)\n    n_tiles = tl.cdiv(n_rows, ROWS)\n    if FUSE:\n        total = n_tiles * 2\n    else:\n        total = n_tiles\n    if PERSIST:\n        step = n_prog\n    else:\n        step = total  # loop body runs exactly once per program\n    cols = tl.arange(0, D)\n    for t in range(pid, total, step):\n        is_k = t >= n_tiles\n        tile = tl.where(is_k, t - n_tiles, t)\n        x_ptr = tl.where(is_k, k_ptr, q_ptr)\n        w_ptr = tl.where(is_k, wk_ptr, wq_ptr)\n        y_ptr = tl.where(is_k, ko_ptr, qo_ptr)\n        rows = tile * ROWS + tl.arange(0, ROWS)\n        mask = (rows < n_rows)[:, None]\n        offs = rows[:, None] * D + cols[None, :]\n        if EVICT:\n            x = tl.load(x_ptr + offs, mask=mask, other=0.0, eviction_policy=\"evict_first\")\n        else:\n            x = tl.load(x_ptr + offs, mask=mask, other=0.0)\n        w = tl.load(w_ptr + (rows % H)[:, None] * D + cols[None, :], mask=mask, other=0.0)\n        inv = tl.math.rsqrt(tl.sum(x * x, axis=1) / D + eps)\n        y = (x * inv[:, None]) * w\n        if EVICT:\n            tl.store(y_ptr + offs, y, mask=mask, eviction_policy=\"evict_first\")\n        else:\n            tl.store(y_ptr + offs, y, mask=mask)\n\n\n_NUM_SMS = None\n\n\ndef _num_sms():\n    global _NUM_SMS\n    if _NUM_SMS is None:\n        _NUM_SMS = torch.cuda.get_device_properties(torch.cuda.current_device()).multi_processor_count\n    return _NUM_SMS\n\n\ndef run(query, key, weight_q, weight_k, eps, query_norm, key_norm):\n    n_rows = query.numel() // D\n    n_tiles = triton.cdiv(n_rows, ROWS)\n    eps = float(eps)\n    if FUSE:\n        launches = [(query, key, weight_q, weight_k, query_norm, key_norm, 2 * n_tiles)]\n    else:\n        launches = [\n            (query, query, weight_q, weight_q, query_norm, query_norm, n_tiles),\n            (key, key, weight_k, weight_k, key_norm, key_norm, n_tiles),\n        ]\n    for q, k, wq, wk, qo, ko, total in launches:\n        n_prog = min(total, _num_sms() * PROGS_PER_SM) if PERSIST else total\n        _qk_norm_kernel[(n_prog,)](\n            q, k, wq, wk, qo, ko, n_rows, eps, n_prog,\n            ROWS=ROWS, D=D, H=H, EVICT=EVICT, FUSE=FUSE, PERSIST=PERSIST,\n            num_warps=NUM_WARPS, num_stages=NUM_STAGES,\n        )\n"
+  }
+ ]
+}

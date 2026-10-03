@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v011",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 35448,
+  "sim_ms": 0.023632,
+  "detail": [
+   {
+    "cycles": 17724,
+    "gpu_tot_ipc": "661.5500",
+    "L2_BW_total": "609.4083 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   },
+   {
+    "cycles": 17724,
+    "gpu_tot_ipc": "661.5500",
+    "L2_BW_total": "609.4083 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 50 sec (50 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v011",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 35582,
+  "sim_ms": 0.023721333333333334,
+  "detail": [
+   {
+    "cycles": 17791,
+    "gpu_tot_ipc": "674.0811",
+    "L2_BW_total": "619.5456 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 53 sec (53 sec)"
+   },
+   {
+    "cycles": 17791,
+    "gpu_tot_ipc": "674.0811",
+    "L2_BW_total": "619.5456 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 51 sec (51 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v011",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 55510,
+  "sim_ms": 0.03700666666666667,
+  "detail": [
+   {
+    "cycles": 27755,
+    "gpu_tot_ipc": "833.3121",
+    "L2_BW_total": "729.1780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 28 sec (88 sec)"
+   },
+   {
+    "cycles": 27755,
+    "gpu_tot_ipc": "833.3121",
+    "L2_BW_total": "729.1780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 31 sec (91 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v011",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 55510,
+  "sim_ms": 0.03700666666666667,
+  "detail": [
+   {
+    "cycles": 27755,
+    "gpu_tot_ipc": "833.3121",
+    "L2_BW_total": "729.1780 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 15 sec (75 sec)"
+   },
+   {
+    "cycles": 27755,
+    "gpu_tot_ipc": "833.3121",
+    "L2_BW_total": "729.1780 GB/Sec"
+   }
+  ]
+ }
+]

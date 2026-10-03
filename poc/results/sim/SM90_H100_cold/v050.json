@@ -1,0 +1,61 @@
+[
+ {
+  "vid": "v050",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 23334,
+  "sim_ms": 0.015556000000000002,
+  "detail": [
+   {
+    "cycles": 11667,
+    "gpu_tot_ipc": "855.2203",
+    "L2_BW_total": "878.3914 GB/Sec"
+   },
+   {
+    "cycles": 11667,
+    "gpu_tot_ipc": "855.2203",
+    "L2_BW_total": "878.3914 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 25 sec (25 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v050",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 131,
+  "error": "lines flushed from L2 35 is 0\nDirty lines flushed from L2 36 is 0\nDirty lines flushed from L2 37 is 0\nDirty lines flushed from L2 38 is 0\nDirty lines flushed from L2 39 is 0\nDirty lines flushed from L2 40 is 0\nDirty lines flushed from L2 41 is 0\nDirty lines flushed from L2 42 is 0\nDirty lines flushed from L2 43 is 0\nDirty lines flushed from L2 44 is 0\nDirty lines flushed from L2 45 is 0\nDirty lines flushed from L2 46 is 0\nDirty lines flushed from L2 47 is 0\nDirty lines flushed from L2 48 is 0\nDirty lines flushed from L2 49 is 0\nDirty lines flushed from L2 50 is 0\nDirty lines flushed from L2 51 is 0\nDirty lines flushed from L2 52 is 0\nDirty lines flushed from L2 53 is 0\nDirty lines flushed from L2 54 is 0\nDirty lines flushed from L2 55 is 0\nDirty lines flushed from L2 56 is 0\nDirty lines flushed from L2 57 is 0\nDirty lines flushed from L2 58 is 0\nDirty lines flushed from L2 59 is 0\nDirty lines flushed from L2 60 is 0\nDirty lines flushed from L2 61 is 0\nDirty lines flushed from L2 62 is 0\nDirty lines flushed from L2 63 is 0\nDirty lines flushed from L2 64 is 0\nDirty lines flushed from L2 65 is 0\nDirty lines flushed from L2 66 is 0\nDirty lines flushed from L2 67 is 0\nDirty lines flushed from L2 68 is 0\nDirty lines flushed from L2 69 is 0\nDirty lines flushed from L2 70 is 0\nDirty lines flushed from L2 71 is 0\nDirty lines flushed from L2 72 is 0\nDirty lines flushed from L2 73 is 0\nDirty lines flushed from L2 74 is 0\nDirty lines flushed from L2 75 is 0\nDirty lines flushed from L2 76 is 0\nDirty lines flushed from L2 77 is 0\nDirty lines flushed from L2 78 is 0\nDirty lines flushed from L2 79 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\n"
+ },
+ {
+  "vid": "v050",
+  "config": "SM90_H100_cold",
+  "batch_size": 2,
+  "seq_len": 128,
+  "error": "from L2 37 is 0\nDirty lines flushed from L2 38 is 0\nDirty lines flushed from L2 39 is 0\nDirty lines flushed from L2 40 is 0\nDirty lines flushed from L2 41 is 0\nDirty lines flushed from L2 42 is 0\nDirty lines flushed from L2 43 is 0\nDirty lines flushed from L2 44 is 0\nDirty lines flushed from L2 45 is 0\nDirty lines flushed from L2 46 is 0\nDirty lines flushed from L2 47 is 0\nDirty lines flushed from L2 48 is 0\nDirty lines flushed from L2 49 is 0\nDirty lines flushed from L2 50 is 0\nDirty lines flushed from L2 51 is 0\nDirty lines flushed from L2 52 is 0\nDirty lines flushed from L2 53 is 0\nDirty lines flushed from L2 54 is 0\nDirty lines flushed from L2 55 is 0\nDirty lines flushed from L2 56 is 0\nDirty lines flushed from L2 57 is 0\nDirty lines flushed from L2 58 is 0\nDirty lines flushed from L2 59 is 0\nDirty lines flushed from L2 60 is 0\nDirty lines flushed from L2 61 is 0\nDirty lines flushed from L2 62 is 0\nDirty lines flushed from L2 63 is 0\nDirty lines flushed from L2 64 is 0\nDirty lines flushed from L2 65 is 0\nDirty lines flushed from L2 66 is 0\nDirty lines flushed from L2 67 is 0\nDirty lines flushed from L2 68 is 0\nDirty lines flushed from L2 69 is 0\nDirty lines flushed from L2 70 is 0\nDirty lines flushed from L2 71 is 0\nDirty lines flushed from L2 72 is 0\nDirty lines flushed from L2 73 is 0\nDirty lines flushed from L2 74 is 0\nDirty lines flushed from L2 75 is 0\nDirty lines flushed from L2 76 is 0\nDirty lines flushed from L2 77 is 0\nDirty lines flushed from L2 78 is 0\nDirty lines flushed from L2 79 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\nbash: line 1: 2352911 Segmentation fault      (core dumped) ./_qk_norm_kernel_launch2\n"
+ },
+ {
+  "vid": "v050",
+  "config": "SM90_H100_cold",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 28666,
+  "sim_ms": 0.019110666666666665,
+  "detail": [
+   {
+    "cycles": 14333,
+    "gpu_tot_ipc": "1392.2981",
+    "L2_BW_total": "1373.4303 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 52 sec (52 sec)"
+   },
+   {
+    "cycles": 14333,
+    "gpu_tot_ipc": "1392.2981",
+    "L2_BW_total": "1373.4303 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 40 sec (40 sec)"
+   }
+  ]
+ }
+]

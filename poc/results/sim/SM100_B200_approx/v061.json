@@ -1,0 +1,93 @@
+[
+ {
+  "vid": "v061",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 28068,
+  "sim_ms": 0.018712,
+  "detail": [
+   {
+    "cycles": 14034,
+    "gpu_tot_ipc": "793.4650",
+    "L2_BW_total": "769.6417 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 35 sec (35 sec)"
+   },
+   {
+    "cycles": 14034,
+    "gpu_tot_ipc": "793.4650",
+    "L2_BW_total": "769.6417 GB/Sec"
+   }
+  ]
+ },
+ {
+  "vid": "v061",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 28150,
+  "sim_ms": 0.018766666666666668,
+  "detail": [
+   {
+    "cycles": 14075,
+    "gpu_tot_ipc": "809.1601",
+    "L2_BW_total": "783.1145 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 36 sec (36 sec)"
+   },
+   {
+    "cycles": 14075,
+    "gpu_tot_ipc": "809.1601",
+    "L2_BW_total": "783.1145 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 36 sec (36 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v061",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 41158,
+  "sim_ms": 0.027438666666666667,
+  "detail": [
+   {
+    "cycles": 20579,
+    "gpu_tot_ipc": "1066.5692",
+    "L2_BW_total": "983.4460 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 56 sec (56 sec)"
+   },
+   {
+    "cycles": 20579,
+    "gpu_tot_ipc": "1066.5692",
+    "L2_BW_total": "983.4460 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v061",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 41158,
+  "sim_ms": 0.027438666666666667,
+  "detail": [
+   {
+    "cycles": 20579,
+    "gpu_tot_ipc": "1066.5692",
+    "L2_BW_total": "983.4460 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 57 sec (57 sec)"
+   },
+   {
+    "cycles": 20579,
+    "gpu_tot_ipc": "1066.5692",
+    "L2_BW_total": "983.4460 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   }
+  ]
+ }
+]

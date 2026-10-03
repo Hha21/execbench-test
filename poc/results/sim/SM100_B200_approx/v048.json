@@ -1,0 +1,76 @@
+[
+ {
+  "vid": "v048",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "error": "ushed from L2 146 is 0\nDirty lines flushed from L2 147 is 0\nDirty lines flushed from L2 148 is 0\nDirty lines flushed from L2 149 is 0\nDirty lines flushed from L2 150 is 0\nDirty lines flushed from L2 151 is 0\nDirty lines flushed from L2 152 is 0\nDirty lines flushed from L2 153 is 0\nDirty lines flushed from L2 154 is 0\nDirty lines flushed from L2 155 is 0\nDirty lines flushed from L2 156 is 0\nDirty lines flushed from L2 157 is 0\nDirty lines flushed from L2 158 is 0\nDirty lines flushed from L2 159 is 0\nDirty lines flushed from L2 160 is 0\nDirty lines flushed from L2 161 is 0\nDirty lines flushed from L2 162 is 0\nDirty lines flushed from L2 163 is 0\nDirty lines flushed from L2 164 is 0\nDirty lines flushed from L2 165 is 0\nDirty lines flushed from L2 166 is 0\nDirty lines flushed from L2 167 is 0\nDirty lines flushed from L2 168 is 0\nDirty lines flushed from L2 169 is 0\nDirty lines flushed from L2 170 is 0\nDirty lines flushed from L2 171 is 0\nDirty lines flushed from L2 172 is 0\nDirty lines flushed from L2 173 is 0\nDirty lines flushed from L2 174 is 0\nDirty lines flushed from L2 175 is 0\nDirty lines flushed from L2 176 is 0\nDirty lines flushed from L2 177 is 0\nDirty lines flushed from L2 178 is 0\nDirty lines flushed from L2 179 is 0\nDirty lines flushed from L2 180 is 0\nDirty lines flushed from L2 181 is 0\nDirty lines flushed from L2 182 is 0\nDirty lines flushed from L2 183 is 0\nDirty lines flushed from L2 184 is 0\nDirty lines flushed from L2 185 is 0\nDirty lines flushed from L2 186 is 0\nDirty lines flushed from L2 187 is 0\nDirty lines flushed from L2 188 is 0\nDirty lines flushed from L2 189 is 0\nDestroy streams for kernel 1: size 0\nWARNING: this function has not been implemented yet CUresult cuCtxSynchronize()\nKernel execution completed successfully\n\nCleaning up...\nWARNING: this function has not been implemented yet CUresult cuModuleUnload(CUmodule)\nWARNING: this function has not been implemented yet CUresult cuCtxDestroy_v2(CUcontext)\nDone!\nGPGPU-Sim: *** exit detected ***\n"
+ },
+ {
+  "vid": "v048",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 62796,
+  "sim_ms": 0.041864,
+  "detail": [
+   {
+    "cycles": 31398,
+    "gpu_tot_ipc": "1237.9861",
+    "L2_BW_total": "351.0522 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 41 sec (101 sec)"
+   },
+   {
+    "cycles": 31398,
+    "gpu_tot_ipc": "1237.9861",
+    "L2_BW_total": "351.0522 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 1 min, 41 sec (101 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v048",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 105782,
+  "sim_ms": 0.07052133333333334,
+  "detail": [
+   {
+    "cycles": 52891,
+    "gpu_tot_ipc": "1418.3942",
+    "L2_BW_total": "382.6423 GB/Sec"
+   },
+   {
+    "cycles": 52891,
+    "gpu_tot_ipc": "1418.3942",
+    "L2_BW_total": "382.6423 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 3 min, 1 sec (181 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v048",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 105782,
+  "sim_ms": 0.07052133333333334,
+  "detail": [
+   {
+    "cycles": 52891,
+    "gpu_tot_ipc": "1418.3942",
+    "L2_BW_total": "382.6423 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 3 min, 2 sec (182 sec)"
+   },
+   {
+    "cycles": 52891,
+    "gpu_tot_ipc": "1418.3942",
+    "L2_BW_total": "382.6423 GB/Sec"
+   }
+  ]
+ }
+]

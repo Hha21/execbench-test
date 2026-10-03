@@ -1,0 +1,92 @@
+[
+ {
+  "vid": "v009",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 20454,
+  "sim_ms": 0.013635999999999999,
+  "detail": [
+   {
+    "cycles": 10227,
+    "gpu_tot_ipc": "1205.0518",
+    "L2_BW_total": "1056.1408 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 37 sec (37 sec)"
+   },
+   {
+    "cycles": 10227,
+    "gpu_tot_ipc": "1205.0518",
+    "L2_BW_total": "1056.1408 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 33 sec (33 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v009",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 131,
+  "launches": 2,
+  "cycles": 20396,
+  "sim_ms": 0.013597333333333333,
+  "detail": [
+   {
+    "cycles": 10198,
+    "gpu_tot_ipc": "1233.7070",
+    "L2_BW_total": "1080.8331 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 34 sec (34 sec)"
+   },
+   {
+    "cycles": 10198,
+    "gpu_tot_ipc": "1233.7070",
+    "L2_BW_total": "1080.8331 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 35 sec (35 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v009",
+  "config": "SM100_B200_approx",
+  "batch_size": 2,
+  "seq_len": 128,
+  "launches": 2,
+  "cycles": 24650,
+  "sim_ms": 0.016433333333333335,
+  "detail": [
+   {
+    "cycles": 12325,
+    "gpu_tot_ipc": "1877.5549",
+    "L2_BW_total": "1642.0557 GB/Sec"
+   },
+   {
+    "cycles": 12325,
+    "gpu_tot_ipc": "1877.5549",
+    "L2_BW_total": "1642.0557 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 52 sec (52 sec)"
+   }
+  ]
+ },
+ {
+  "vid": "v009",
+  "config": "SM100_B200_approx",
+  "batch_size": 1,
+  "seq_len": 256,
+  "launches": 2,
+  "cycles": 24650,
+  "sim_ms": 0.016433333333333335,
+  "detail": [
+   {
+    "cycles": 12325,
+    "gpu_tot_ipc": "1877.5549",
+    "L2_BW_total": "1642.0557 GB/Sec"
+   },
+   {
+    "cycles": 12325,
+    "gpu_tot_ipc": "1877.5549",
+    "L2_BW_total": "1642.0557 GB/Sec",
+    "gpgpu_simulation_time": "0 days, 0 hrs, 0 min, 55 sec (55 sec)"
+   }
+  ]
+ }
+]

@@ -152,6 +152,11 @@ passed, with 0.15% run-to-run noise.
   knobs.**
 - A100 and L40S agree on the broad ranking (Spearman 0.77) but not on the winner. The emulator helped a lot when the
   cheap source resembled the target (HBM) and little on L40S (GDDR6).
+- **H200 (added 4 October):** best is again v028, geomean 36.4 µs, 73% of the 4.8 TB/s floor. H200 and A100 rank the
+  72 variants almost identically (Spearman 0.93; H200's top 5 are all in A100's top 6); L40S is the outlier (0.77–0.85).
+  v028 reaches 83–84% of peak on large workloads but only **44–45% on the two smallest**, against about 60% on A100:
+  the faster the memory, the larger the share of fixed cost on small inputs. Expect B200 (8 TB/s) to be worse still,
+  which makes a low-latency small-input path the biggest lever on the mean score. [VERIFIED-CSF3; INFERRED for B200]
 - If A100 efficiency carried over unchanged, B200 would land near 21 µs (score about 0.65). It probably will not,
   because B200 needs about 4× the bytes in flight per SM and fixed costs weigh more at 1.6 µs floors.
 - Triton 3.7 cross-compiles TMA kernels for sm_90a/sm_100a with no GPU present (UTMALDG/UTMASTG, no LDG/STG). Neither

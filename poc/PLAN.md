@@ -29,6 +29,10 @@ submissions.
 - Our best A100 kernel reaches about 80% of peak bandwidth on large inputs and about 60% on the smallest,
   where fixed start-up cost dominates. Picking the best variant per input size gains only 1.4% (A100) and
   2.3% (L40S): the remaining gap is in the design, not the knobs.
+- H200 (timed 4 October): the same winner, v028, at 73% of the 4.8 TB/s floor. H200 and A100 rank the variants
+  almost identically (Spearman 0.93); L40S is the outlier. v028 gets 83–84% of peak on large inputs but only 44% on
+  the smallest (60% on A100): small inputs get relatively worse as memory gets faster, so on B200 a low-latency
+  small-input path is likely the biggest lever.
 - Triton 3.7 cross-compiles a TMA (bulk asynchronous copy) version of the kernel for `sm_100` without a B200:
   the machine code uses `UTMALDG`/`UTMASTG` and no ordinary loads. H200 has TMA too, so it can run and time
   such designs; A100 and L40S cannot.
@@ -92,10 +96,11 @@ B200 slots; everything inside it runs on CSF3 for free.
 
 ## 4. Next steps
 
-1. **You:** submit `b200_submit/v028.json` (the A100's best) privately to check Triton runs on the portal,
-   then the other four (v039, v023, v037, v046). This gives the first real B200 numbers and tells us how
+1. **You:** submit `b200_submit/v028.json` (best on both A100 and H200) privately to check Triton runs on the
+   portal, then the other four (v039, v060, v023, v018; refreshed with H200 data on 4 October). This gives the first real B200 numbers and tells us how
    far A100 efficiency carries over.
-2. **Tonight (automatic):** H200 timings, then a three-chip rehearsal and a refreshed B200 plan.
+2. **Done 4 October:** H200 timings and the refreshed B200 plan; the three-chip rehearsal
+   (`results/rehearsal_with_h200`) was still running at the time of writing.
 3. **Me:** design generation 2, aimed at B200: a TMA version for large sizes (more bytes in flight), a
    latency-minimised one-launch version for small sizes, and a size dispatcher. Check them on H200.
 4. **Me:** fix the simulator's blind spot (add large sizes) and make the emulator work on code features so

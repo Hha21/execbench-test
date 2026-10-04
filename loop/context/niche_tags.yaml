@@ -1,0 +1,40 @@
+# Niche tag vocabulary for design cards and the archive (see playbook_membound.md §0).
+# The archive keeps the best kernel per niche key; the other axes are descriptors.
+niche_key: [mem, grid, spec]
+axes:
+  lang: [triton, gluon, tlx, cuda_cpp, cute_dsl]
+  mem:
+    ldg128: plain 128-bit vector loads/stores from registers (all GPUs)
+    ldg256: 256-bit ld/st.global.v8 (CUDA C++/inline PTX; sm_100 only)
+    cpasync: Ampere-style cp.async (LDGSTS) pipelining, e.g. tl.range(num_stages>1)
+    tma-tensor: cp.async.bulk.tensor via tensor maps (Triton/Gluon descriptors, CUTLASS/CuTe TMA)
+    bulk1d: cp.async.bulk 1-D copies without a tensor map (CUDA C++)
+  st:
+    direct: stores from registers
+    bulk: stage in smem, TMA/bulk store
+  grid:
+    oneshot: one program per tile
+    persistent: grid = SMs x k, loop over tiles
+    persistent-wstat: persistent with per-program fixed reused operand (weights) loaded once
+  launch:
+    fused: one kernel per call
+    split: more than one kernel per call
+    pdl: split + programmatic dependent launch
+  tile: "rows<N> (N rows per program/iteration) | token (all heads of one token)"
+  red:
+    warp: one row reduced inside one warp
+    halfwarp: one row per 16 lanes (pairs with ldg256)
+    cta: row split across warps via smem (long rows only)
+  cache:
+    default: no hints
+    stream: streamed tensors evict_first, reused tensors evict_last
+  spec:
+    all: one configuration for every size
+    S: specialist for small inputs (<= ~64 MB moved)
+    M: specialist for 100-200 MB
+    L: specialist for >= 400 MB
+    dispatch:size: host-side dispatcher over specialists (by shape only)
+size_bands_038:   # tokens = B*S
+  S: {max_tokens: 586, workloads: [9, 12, 0, 15, 5]}
+  M: {max_tokens: 2048, workloads: [4, 7, 8, 11, 13]}
+  L: {max_tokens: null, workloads: [2, 6, 10, 3, 1, 14]}

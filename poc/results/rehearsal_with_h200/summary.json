@@ -1,0 +1,752 @@
+{
+ "noise": {
+  "A100": 0.0015050893631365473,
+  "H200": 0.0011423622301420578,
+  "L40S": 0.0014271842435699693
+ },
+ "gpus": [
+  "A100",
+  "H200",
+  "L40S"
+ ],
+ "results": {
+  "A100": {
+   "rehearsal": [
+    {
+     "n": 0,
+     "method": "average of other GPUs",
+     "rho": 0.933,
+     "regret": 0.0
+    },
+    {
+     "n": 0,
+     "method": "maths model for A100",
+     "rho": 0.881,
+     "regret": 0.076
+    },
+    {
+     "n": 0,
+     "method": "only H200 timing",
+     "rho": 0.931,
+     "regret": 0.0
+    },
+    {
+     "n": 0,
+     "method": "only L40S timing",
+     "rho": 0.768,
+     "regret": 0.312
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM100_B200_approx)",
+     "rho": 0.888,
+     "regret": 0.163
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM90_H100_cold)",
+     "rho": 0.91,
+     "regret": 0.163
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend + GP)",
+     "rho": 0.914,
+     "regret": 0.0
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend only)",
+     "rho": 0.914,
+     "regret": 0.0
+    },
+    {
+     "n": 3,
+     "method": "emulator + simulator",
+     "rho": 0.919,
+     "regret": 0.163
+    },
+    {
+     "n": 3,
+     "method": "target-only BO surrogate",
+     "rho": 0.133,
+     "regret": 0.334
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend + GP)",
+     "rho": 0.929,
+     "regret": 0.0
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend only)",
+     "rho": 0.926,
+     "regret": 0.0
+    },
+    {
+     "n": 5,
+     "method": "emulator + simulator",
+     "rho": 0.951,
+     "regret": 0.021
+    },
+    {
+     "n": 5,
+     "method": "target-only BO surrogate",
+     "rho": 0.385,
+     "regret": 0.163
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend + GP)",
+     "rho": 0.929,
+     "regret": 0.021
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend only)",
+     "rho": 0.93,
+     "regret": 0.014
+    },
+    {
+     "n": 10,
+     "method": "emulator + simulator",
+     "rho": 0.941,
+     "regret": 0.021
+    },
+    {
+     "n": 10,
+     "method": "target-only BO surrogate",
+     "rho": 0.514,
+     "regret": 0.058
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend + GP)",
+     "rho": 0.934,
+     "regret": 0.014
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend only)",
+     "rho": 0.93,
+     "regret": 0.007
+    },
+    {
+     "n": 20,
+     "method": "emulator + simulator",
+     "rho": 0.949,
+     "regret": 0.021
+    },
+    {
+     "n": 20,
+     "method": "target-only BO surrogate",
+     "rho": 0.689,
+     "regret": 0.039
+    }
+   ],
+   "race": [
+    {
+     "evals": 3,
+     "emulator": 0.26,
+     "random": 0.26,
+     "target-only BO": 0.26
+    },
+    {
+     "evals": 4,
+     "emulator": 0.086,
+     "random": 0.22,
+     "target-only BO": 0.248
+    },
+    {
+     "evals": 5,
+     "emulator": 0.009,
+     "random": 0.176,
+     "target-only BO": 0.188
+    },
+    {
+     "evals": 6,
+     "emulator": 0.004,
+     "random": 0.165,
+     "target-only BO": 0.186
+    },
+    {
+     "evals": 7,
+     "emulator": 0.001,
+     "random": 0.153,
+     "target-only BO": 0.168
+    },
+    {
+     "evals": 8,
+     "emulator": 0.0,
+     "random": 0.152,
+     "target-only BO": 0.132
+    },
+    {
+     "evals": 9,
+     "emulator": 0.0,
+     "random": 0.152,
+     "target-only BO": 0.115
+    },
+    {
+     "evals": 10,
+     "emulator": 0.0,
+     "random": 0.128,
+     "target-only BO": 0.082
+    },
+    {
+     "evals": 11,
+     "emulator": 0.0,
+     "random": 0.107,
+     "target-only BO": 0.062
+    },
+    {
+     "evals": 12,
+     "emulator": 0.0,
+     "random": 0.083,
+     "target-only BO": 0.054
+    },
+    {
+     "evals": 13,
+     "emulator": 0.0,
+     "random": 0.083,
+     "target-only BO": 0.045
+    },
+    {
+     "evals": 14,
+     "emulator": 0.0,
+     "random": 0.081,
+     "target-only BO": 0.025
+    },
+    {
+     "evals": 15,
+     "emulator": 0.0,
+     "random": 0.07,
+     "target-only BO": 0.022
+    },
+    {
+     "evals": 16,
+     "emulator": 0.0,
+     "random": 0.052,
+     "target-only BO": 0.009
+    },
+    {
+     "evals": 17,
+     "emulator": 0.0,
+     "random": 0.052,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 18,
+     "emulator": 0.0,
+     "random": 0.043,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 19,
+     "emulator": 0.0,
+     "random": 0.034,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 20,
+     "emulator": 0.0,
+     "random": 0.026,
+     "target-only BO": 0.008
+    }
+   ]
+  },
+  "H200": {
+   "rehearsal": [
+    {
+     "n": 0,
+     "method": "average of other GPUs",
+     "rho": 0.938,
+     "regret": 0.234
+    },
+    {
+     "n": 0,
+     "method": "maths model for H200",
+     "rho": 0.913,
+     "regret": 0.056
+    },
+    {
+     "n": 0,
+     "method": "only A100 timing",
+     "rho": 0.931,
+     "regret": 0.0
+    },
+    {
+     "n": 0,
+     "method": "only L40S timing",
+     "rho": 0.854,
+     "regret": 0.24
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM100_B200_approx)",
+     "rho": 0.828,
+     "regret": 0.373
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM90_H100_cold)",
+     "rho": 0.836,
+     "regret": 0.373
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend + GP)",
+     "rho": 0.937,
+     "regret": 0.0
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend only)",
+     "rho": 0.937,
+     "regret": 0.0
+    },
+    {
+     "n": 3,
+     "method": "emulator + simulator",
+     "rho": 0.926,
+     "regret": 0.03
+    },
+    {
+     "n": 3,
+     "method": "target-only BO surrogate",
+     "rho": 0.283,
+     "regret": 0.19
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend + GP)",
+     "rho": 0.944,
+     "regret": 0.234
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend only)",
+     "rho": 0.946,
+     "regret": 0.137
+    },
+    {
+     "n": 5,
+     "method": "emulator + simulator",
+     "rho": 0.938,
+     "regret": 0.234
+    },
+    {
+     "n": 5,
+     "method": "target-only BO surrogate",
+     "rho": 0.336,
+     "regret": 0.236
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend + GP)",
+     "rho": 0.94,
+     "regret": 0.048
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend only)",
+     "rho": 0.939,
+     "regret": 0.0
+    },
+    {
+     "n": 10,
+     "method": "emulator + simulator",
+     "rho": 0.937,
+     "regret": 0.043
+    },
+    {
+     "n": 10,
+     "method": "target-only BO surrogate",
+     "rho": 0.614,
+     "regret": 0.171
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend + GP)",
+     "rho": 0.948,
+     "regret": 0.0
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend only)",
+     "rho": 0.944,
+     "regret": 0.0
+    },
+    {
+     "n": 20,
+     "method": "emulator + simulator",
+     "rho": 0.946,
+     "regret": 0.0
+    },
+    {
+     "n": 20,
+     "method": "target-only BO surrogate",
+     "rho": 0.72,
+     "regret": 0.147
+    }
+   ],
+   "race": [
+    {
+     "evals": 3,
+     "emulator": 0.555,
+     "random": 0.555,
+     "target-only BO": 0.555
+    },
+    {
+     "evals": 4,
+     "emulator": 0.112,
+     "random": 0.341,
+     "target-only BO": 0.358
+    },
+    {
+     "evals": 5,
+     "emulator": 0.046,
+     "random": 0.285,
+     "target-only BO": 0.231
+    },
+    {
+     "evals": 6,
+     "emulator": 0.03,
+     "random": 0.239,
+     "target-only BO": 0.15
+    },
+    {
+     "evals": 7,
+     "emulator": 0.019,
+     "random": 0.159,
+     "target-only BO": 0.147
+    },
+    {
+     "evals": 8,
+     "emulator": 0.0,
+     "random": 0.159,
+     "target-only BO": 0.126
+    },
+    {
+     "evals": 9,
+     "emulator": 0.0,
+     "random": 0.143,
+     "target-only BO": 0.12
+    },
+    {
+     "evals": 10,
+     "emulator": 0.0,
+     "random": 0.136,
+     "target-only BO": 0.111
+    },
+    {
+     "evals": 11,
+     "emulator": 0.0,
+     "random": 0.136,
+     "target-only BO": 0.108
+    },
+    {
+     "evals": 12,
+     "emulator": 0.0,
+     "random": 0.127,
+     "target-only BO": 0.095
+    },
+    {
+     "evals": 13,
+     "emulator": 0.0,
+     "random": 0.1,
+     "target-only BO": 0.078
+    },
+    {
+     "evals": 14,
+     "emulator": 0.0,
+     "random": 0.096,
+     "target-only BO": 0.072
+    },
+    {
+     "evals": 15,
+     "emulator": 0.0,
+     "random": 0.083,
+     "target-only BO": 0.055
+    },
+    {
+     "evals": 16,
+     "emulator": 0.0,
+     "random": 0.082,
+     "target-only BO": 0.053
+    },
+    {
+     "evals": 17,
+     "emulator": 0.0,
+     "random": 0.08,
+     "target-only BO": 0.041
+    },
+    {
+     "evals": 18,
+     "emulator": 0.0,
+     "random": 0.08,
+     "target-only BO": 0.04
+    },
+    {
+     "evals": 19,
+     "emulator": 0.0,
+     "random": 0.074,
+     "target-only BO": 0.04
+    },
+    {
+     "evals": 20,
+     "emulator": 0.0,
+     "random": 0.068,
+     "target-only BO": 0.038
+    }
+   ]
+  },
+  "L40S": {
+   "rehearsal": [
+    {
+     "n": 0,
+     "method": "average of other GPUs",
+     "rho": 0.826,
+     "regret": 0.048
+    },
+    {
+     "n": 0,
+     "method": "maths model for L40S",
+     "rho": 0.409,
+     "regret": 0.198
+    },
+    {
+     "n": 0,
+     "method": "only A100 timing",
+     "rho": 0.768,
+     "regret": 0.048
+    },
+    {
+     "n": 0,
+     "method": "only H200 timing",
+     "rho": 0.854,
+     "regret": 0.048
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM100_B200_approx)",
+     "rho": 0.591,
+     "regret": 0.123
+    },
+    {
+     "n": 0,
+     "method": "only simulator (SM90_H100_cold)",
+     "rho": 0.612,
+     "regret": 0.123
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend + GP)",
+     "rho": 0.768,
+     "regret": 0.048
+    },
+    {
+     "n": 3,
+     "method": "emulator (blend only)",
+     "rho": 0.768,
+     "regret": 0.048
+    },
+    {
+     "n": 3,
+     "method": "emulator + simulator",
+     "rho": 0.673,
+     "regret": 0.057
+    },
+    {
+     "n": 3,
+     "method": "target-only BO surrogate",
+     "rho": 0.069,
+     "regret": 0.066
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend + GP)",
+     "rho": 0.818,
+     "regret": 0.048
+    },
+    {
+     "n": 5,
+     "method": "emulator (blend only)",
+     "rho": 0.817,
+     "regret": 0.048
+    },
+    {
+     "n": 5,
+     "method": "emulator + simulator",
+     "rho": 0.794,
+     "regret": 0.056
+    },
+    {
+     "n": 5,
+     "method": "target-only BO surrogate",
+     "rho": 0.34,
+     "regret": 0.057
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend + GP)",
+     "rho": 0.793,
+     "regret": 0.059
+    },
+    {
+     "n": 10,
+     "method": "emulator (blend only)",
+     "rho": 0.818,
+     "regret": 0.044
+    },
+    {
+     "n": 10,
+     "method": "emulator + simulator",
+     "rho": 0.803,
+     "regret": 0.059
+    },
+    {
+     "n": 10,
+     "method": "target-only BO surrogate",
+     "rho": 0.319,
+     "regret": 0.042
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend + GP)",
+     "rho": 0.771,
+     "regret": 0.04
+    },
+    {
+     "n": 20,
+     "method": "emulator (blend only)",
+     "rho": 0.779,
+     "regret": 0.005
+    },
+    {
+     "n": 20,
+     "method": "emulator + simulator",
+     "rho": 0.771,
+     "regret": 0.04
+    },
+    {
+     "n": 20,
+     "method": "target-only BO surrogate",
+     "rho": 0.439,
+     "regret": 0.011
+    }
+   ],
+   "race": [
+    {
+     "evals": 3,
+     "emulator": 0.075,
+     "random": 0.075,
+     "target-only BO": 0.075
+    },
+    {
+     "evals": 4,
+     "emulator": 0.049,
+     "random": 0.066,
+     "target-only BO": 0.066
+    },
+    {
+     "evals": 5,
+     "emulator": 0.045,
+     "random": 0.059,
+     "target-only BO": 0.058
+    },
+    {
+     "evals": 6,
+     "emulator": 0.041,
+     "random": 0.048,
+     "target-only BO": 0.044
+    },
+    {
+     "evals": 7,
+     "emulator": 0.037,
+     "random": 0.047,
+     "target-only BO": 0.035
+    },
+    {
+     "evals": 8,
+     "emulator": 0.035,
+     "random": 0.042,
+     "target-only BO": 0.03
+    },
+    {
+     "evals": 9,
+     "emulator": 0.032,
+     "random": 0.041,
+     "target-only BO": 0.023
+    },
+    {
+     "evals": 10,
+     "emulator": 0.029,
+     "random": 0.031,
+     "target-only BO": 0.019
+    },
+    {
+     "evals": 11,
+     "emulator": 0.025,
+     "random": 0.026,
+     "target-only BO": 0.017
+    },
+    {
+     "evals": 12,
+     "emulator": 0.022,
+     "random": 0.024,
+     "target-only BO": 0.015
+    },
+    {
+     "evals": 13,
+     "emulator": 0.018,
+     "random": 0.021,
+     "target-only BO": 0.011
+    },
+    {
+     "evals": 14,
+     "emulator": 0.013,
+     "random": 0.019,
+     "target-only BO": 0.01
+    },
+    {
+     "evals": 15,
+     "emulator": 0.01,
+     "random": 0.019,
+     "target-only BO": 0.009
+    },
+    {
+     "evals": 16,
+     "emulator": 0.009,
+     "random": 0.015,
+     "target-only BO": 0.009
+    },
+    {
+     "evals": 17,
+     "emulator": 0.006,
+     "random": 0.015,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 18,
+     "emulator": 0.005,
+     "random": 0.015,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 19,
+     "emulator": 0.004,
+     "random": 0.015,
+     "target-only BO": 0.008
+    },
+    {
+     "evals": 20,
+     "emulator": 0.004,
+     "random": 0.014,
+     "target-only BO": 0.006
+    }
+   ]
+  }
+ }
+}

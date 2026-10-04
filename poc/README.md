@@ -109,6 +109,22 @@ and its favourites (fused, persistent, 2–16 rows per tile) are good on small i
 on the large ones. Next step: simulate one or two large workloads too, or use the simulator only for
 the workloads it covered.
 
+## Three-chip rehearsal (4 October 2026, A100 + H200 + L40S)
+
+`results/rehearsal_with_h200`. Search race, mean gap to the true best after k target measurements:
+
+| Target | Best zero-shot source | Emulator k=5 / k=8 | Random k=8 | Plain BO k=8 / k=20 |
+|---|---|---|---|---|
+| A100 | H200 timing: exact winner | 0.9% / **0.0%** | 15.2% | 13.2% / 0.8% |
+| H200 | A100 timing: exact winner | 4.6% / **0.0%** | 15.9% | 12.6% / 3.8% |
+| L40S | H200 timing: 4.8% off | 4.5% / 3.5% | 4.2% | 3.0% / 0.6% |
+
+The two HBM chips predict each other's winner exactly with no target data. The emulator reaches the best
+variant in 8 measurements on either; plain BO is still 4% off on H200 after 20. Weakness: one-shot picks with
+exactly 5 target points are unstable (H200 median 23% off) because the non-negative blend can lean on L40S or the
+maths model when data are scarce. Next fix: start the blend from "trust the closest chip" and only move away
+as target data accumulate (a prior on the weights).
+
 ## Queued and next steps
 
 Queued on CSF3 at the end of 3 October:

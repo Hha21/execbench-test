@@ -2,3 +2,4 @@ SOL-ExecBench/
 SOL-ExecBench-LaTeX/
 csf3-slurm-manual.md
 html_results/
+.env

@@ -1,0 +1,1 @@
+{"id": "r1-bulk1d-ring-r16s16", "kernels": [{"kernel": "_ZN41_GLOBAL__N__3f46b6a9_9_kernel_cu_a02f06f811qk_rms_bulkEPKfS1_S1_S1_PfS2_if", "num_warps": null, "regs": 30, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"STG": 1, "UBLKCP": 3}}]}

@@ -3,3 +3,4 @@ public_subs/
 # Saved portal pages: the parsed CSVs hold the data; the pages also carry tracking scripts
 results/portal_html/
 results/#*.html
+__pycache__/

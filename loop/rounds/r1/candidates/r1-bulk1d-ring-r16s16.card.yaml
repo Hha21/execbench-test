@@ -1,0 +1,70 @@
+id: r1-bulk1d-ring-r16s16
+parents:
+  - v039
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows16
+  red: warp
+  cache: stream
+  spec: L
+hypothesis: >-
+  v039 serialises load, reduce and store inside each persistent program and never prefetches, so its outstanding
+  reads per SM fall well below the ~43-64 KB B200 needs. A dedicated producer thread keeps 16 x 8 KB cp.async.bulk
+  loads in flight per SM. Consumer warps release stages right after their reduction. Weights sit in shared memory.
+  Read issue is therefore decoupled from compute latency at one instruction per 8 KB, which should lift
+  sustained bandwidth from 5.8 to about 7 TB/s.
+expected_effect:
+  S:
+    pct: -5
+    confidence: low
+  M:
+    pct: -12
+    confidence: low
+  L:
+    pct: -17
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 180488
+  threads_per_cta: 544
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  TR: 16
+  STAGES: 16
+  consumer_warps: 16
+  producer_warps: 1
+  grid: num_SMs
+runs_on:
+  H200:
+    runs: true
+    representative: true
+    note: "same bulk/mbarrier path (sm_90); H200 needs less in flight, so expect it to show correctness and a moderate gain, not the full B200 gain"
+  A100:
+    runs: true
+    representative: false
+    note: "runs the plain warp-per-row fallback (no cp.async.bulk on sm_80); correctness only"
+  L40S:
+    runs: true
+    representative: false
+    note: "fallback path; correctness only"
+risks:
+  - "One CTA per SM with 16 consumer warps: if per-tile consumer latency (wait, LDS, 5 shuffles, rsqrt, STG) exceeds about 520 clk at 1.5 GHz, the consumers become the bottleneck; then try 2 rows per warp with TR=32 or 8 KB tiles over 2 CTAs/SM."
+  - "Direct stores from only 16 warps per SM may cap write throughput; st:bulk via smem staging is the follow-up axis."
+  - "A single producer thread issues all bulk copies; issue rate is about 1 per 520 clk needed, so it should be fine, but it is unmeasured on B200."
+  - "Prologue (mbarrier init and 48 KB weight bulk load, an L2 hit after the first CTA) adds to S-band fixed cost; S-band loads are all issued up front, which may offset it."
+  - "180 KB of dynamic smem needs the cudaFuncSetAttribute opt-in (done once on the host); it compiles for sm_100a only via the inline-PTX paths guarded by __CUDA_ARCH__ >= 900."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

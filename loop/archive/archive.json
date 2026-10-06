@@ -1,0 +1,1012 @@
+{
+ "g2-os-r16w4": {
+  "card": "id: \"g2-os-r16w4\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Half the threads per tile: 4 x LDG.128 per thread issued back to back, fewer threads to launch.\"\nexpected_effect:\n  S: {pct: -8, confidence: \"low\"}\n  M: {pct: 3, confidence: \"low\"}\n  L: {pct: 5, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 4, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 16, num_warps: 4, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"fewer resident warps to hide latency\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-os-r16w4",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "S",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-os-r16w4.json",
+  "static_sm100": [
+   {
+    "kernel": "oneshot",
+    "local": 0,
+    "ops": {
+     "LDG": 8,
+     "STG": 4
+    },
+    "regs": 40,
+    "resident_per_sm": 12,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 60.735,
+    "1,128": 9.568,
+    "1,131": 9.807500000000001,
+    "1,256": 18.0475,
+    "1,8192": 497.4665,
+    "16,256": 251.54900000000004,
+    "2,128": 18.511,
+    "2,293": 36.638999999999996,
+    "32,128": 251.38899999999998,
+    "4,1024": 251.7415,
+    "4,1657": 402.4755,
+    "4,256": 60.783,
+    "4,512": 122.19,
+    "8,128": 60.8155,
+    "8,256": 122.47850000000001,
+    "8,773": 377.59549999999996
+   }
+  }
+ },
+ "g2-os-r16w8": {
+  "card": "id: \"g2-os-r16w8\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"v039's tile without the persistent loop: small inputs already run one tile per program, so dropping the loop, the idle extra programs and the per-program setup should cut fixed cost.\"\nexpected_effect:\n  S: {pct: -10, confidence: \"low\"}\n  M: {pct: 3, confidence: \"low\"}\n  L: {pct: 5, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 8, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 16, num_warps: 8, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"more CTAs to schedule on large inputs\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-os-r16w8",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "S",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-os-r16w8.json",
+  "static_sm100": [
+   {
+    "kernel": "oneshot",
+    "local": 0,
+    "ops": {
+     "LDG": 4,
+     "STG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 8,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 59.087,
+    "1,128": 9.215,
+    "1,131": 9.488,
+    "1,256": 16.88,
+    "1,8192": 493.435,
+    "16,256": 248.381,
+    "2,128": 17.087999999999997,
+    "2,293": 35.0875,
+    "32,128": 249.29299999999998,
+    "4,1024": 249.05149999999998,
+    "4,1657": 400.34950000000003,
+    "4,256": 59.1355,
+    "4,512": 121.47,
+    "8,128": 59.215,
+    "8,256": 121.1985,
+    "8,773": 373.1475
+   }
+  }
+ },
+ "g2-os-r8w2": {
+  "card": "id: \"g2-os-r8w2\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Smaller CTAs (64 threads) launch faster and balance better on small inputs.\"\nexpected_effect:\n  S: {pct: -6, confidence: \"low\"}\n  M: {pct: 5, confidence: \"low\"}\n  L: {pct: 10, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 8, num_warps: 2, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 8, num_warps: 2, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"as above\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-os-r8w2",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "S",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-os-r8w2.json",
+  "static_sm100": [
+   {
+    "kernel": "oneshot",
+    "local": 0,
+    "ops": {
+     "LDG": 8,
+     "STG": 4
+    },
+    "regs": 40,
+    "resident_per_sm": 25,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 60.4795,
+    "1,128": 9.6,
+    "1,131": 9.792,
+    "1,256": 18.0155,
+    "1,8192": 495.45050000000003,
+    "16,256": 251.19750000000002,
+    "2,128": 18.383499999999998,
+    "2,293": 36.575,
+    "32,128": 251.406,
+    "4,1024": 251.277,
+    "4,1657": 401.14700000000005,
+    "4,256": 60.783,
+    "4,512": 121.9035,
+    "8,128": 60.783,
+    "8,256": 122.3185,
+    "8,773": 376.892
+   }
+  }
+ },
+ "g2-os-r8w4": {
+  "card": "id: \"g2-os-r8w4\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Playbook 3a recipe: 8-row tiles give 1,536 CTAs on the smallest input, about 10 per SM in one wave.\"\nexpected_effect:\n  S: {pct: -8, confidence: \"low\"}\n  M: {pct: 5, confidence: \"low\"}\n  L: {pct: 8, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 8, num_warps: 4, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 8, num_warps: 4, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"CTA launch rate on B200 is unknown; v040 showed tiny CTAs hurt\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-os-r8w4",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "S",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-os-r8w4.json",
+  "static_sm100": [
+   {
+    "kernel": "oneshot",
+    "local": 0,
+    "ops": {
+     "LDG": 4,
+     "STG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 16,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 59.199,
+    "1,128": 9.168,
+    "1,131": 9.184,
+    "1,256": 16.896,
+    "1,8192": 492.74649999999997,
+    "16,256": 249.08550000000002,
+    "2,128": 17.1515,
+    "2,293": 35.12,
+    "32,128": 248.60549999999998,
+    "4,1024": 248.2215,
+    "4,1657": 399.132,
+    "4,256": 59.2795,
+    "4,512": 121.4385,
+    "8,128": 59.327,
+    "8,256": 121.7745,
+    "8,773": 374.172
+   }
+  }
+ },
+ "g2-tma-r16s4": {
+  "card": "id: \"g2-tma-r16s4\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"Bigger TMA tiles and a deeper ring: more bytes in flight per CTA; about 2 CTAs per SM by shared memory.\"\nexpected_effect:\n  S: {pct: 15, confidence: \"low\"}\n  M: {pct: -3, confidence: \"low\"}\n  L: {pct: -8, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 4, STAGES: 4, PROGS_PER_SM: 4}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma\", ROWS: 16, num_warps: 4, STAGES: 4, PROGS_PER_SM: 4}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"107 KB shared memory caps residency at 2 CTAs/SM\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-tma-r16s4",
+  "language": "triton",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "warp",
+   "spec": "L",
+   "st": "bulk",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-tma-r16s4.json",
+  "static_sm100": [
+   {
+    "kernel": "tma",
+    "local": 0,
+    "ops": {
+     "LDGDEPBAR": 8,
+     "LDGSTS": 32,
+     "LDS": 48,
+     "STS": 8,
+     "UTMACMDFLUSH": 2,
+     "UTMALDG": 8,
+     "UTMASTG": 2
+    },
+    "regs": 46,
+    "resident_per_sm": 2,
+    "smem": 106552
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 108.28699999999999,
+    "1,128": 21.823999999999998,
+    "1,131": 21.791999999999998,
+    "1,256": 36.25599999999999,
+    "1,8192": 787.7995,
+    "16,256": 398.84149999999994,
+    "2,128": 39.423,
+    "2,293": 67.328,
+    "32,128": 398.57200000000006,
+    "4,1024": 398.50849999999997,
+    "4,1657": 702.6324999999999,
+    "4,256": 108.191,
+    "4,512": 203.9495,
+    "8,128": 108.239,
+    "8,256": 204.06199999999998,
+    "8,773": 597.226
+   }
+  }
+ },
+ "g2-tma-r8s3": {
+  "card": "id: \"g2-tma-r8s3\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"Playbook 3d: TMA moves tiles with few instructions and a 3-deep ring keeps bytes in flight.\"\nexpected_effect:\n  S: {pct: 10, confidence: \"low\"}\n  M: {pct: -3, confidence: \"low\"}\n  L: {pct: -8, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma\", ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"weights go through cp.async and grow shared memory\"\n  - \"host descriptor path not yet run on a GPU\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-tma-r8s3",
+  "language": "triton",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "warp",
+   "spec": "L",
+   "st": "bulk",
+   "tile": "rows8"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-tma-r8s3.json",
+  "static_sm100": [
+   {
+    "kernel": "tma",
+    "local": 0,
+    "ops": {
+     "LDGDEPBAR": 6,
+     "LDGSTS": 12,
+     "LDS": 34,
+     "STS": 4,
+     "UTMACMDFLUSH": 2,
+     "UTMALDG": 6,
+     "UTMASTG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 6,
+    "smem": 36896
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 74.303,
+    "1,128": 14.88,
+    "1,131": 15.055499999999999,
+    "1,256": 24.16,
+    "1,8192": 542.6985,
+    "16,256": 277.117,
+    "2,128": 25.44,
+    "2,293": 46.879,
+    "32,128": 275.88500000000005,
+    "4,1024": 276.781,
+    "4,1657": 444.171,
+    "4,256": 74.3675,
+    "4,512": 138.399,
+    "8,128": 74.336,
+    "8,256": 138.5905,
+    "8,773": 412.87600000000003
+   }
+  }
+ },
+ "g2-tmaws-hb16s3": {
+  "card": "id: \"g2-tmaws-hb16s3\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"TMA ring with weights held in registers once per program, so the ring carries only input tiles.\"\nexpected_effect:\n  S: {pct: 10, confidence: \"low\"}\n  M: {pct: -5, confidence: \"low\"}\n  L: {pct: -12, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 16, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma_wstat\", HB: 16, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"per-program head group may leave SMs uneven on small inputs\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-tmaws-hb16s3",
+  "language": "triton",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent-wstat",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "warp",
+   "spec": "L",
+   "st": "bulk",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-tmaws-hb16s3.json",
+  "static_sm100": [
+   {
+    "kernel": "tma_wstat",
+    "local": 0,
+    "ops": {
+     "LDG": 4,
+     "LDS": 8,
+     "STS": 8,
+     "UTMACMDFLUSH": 2,
+     "UTMALDG": 6,
+     "UTMASTG": 2
+    },
+    "regs": 40,
+    "resident_per_sm": 4,
+    "smem": 49184
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 67.53399999999999,
+    "1,128": 14.208,
+    "1,131": 14.239999999999998,
+    "1,256": 21.5515,
+    "1,8192": 526.9540000000001,
+    "16,256": 269.3415,
+    "2,128": 22.496,
+    "2,293": 41.984,
+    "32,128": 269.0535,
+    "4,1024": 269.8855,
+    "4,1657": 428.86,
+    "4,256": 67.887,
+    "4,512": 129.0235,
+    "8,128": 67.871,
+    "8,256": 129.439,
+    "8,773": 403.58
+   }
+  }
+ },
+ "g2-tmaws-hb8s4": {
+  "card": "id: \"g2-tmaws-hb8s4\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"Smaller weight-stationary TMA tiles with a 4-deep ring and more programs per SM.\"\nexpected_effect:\n  S: {pct: 8, confidence: \"low\"}\n  M: {pct: -5, confidence: \"low\"}\n  L: {pct: -10, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma_wstat\", HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"more programs, more descriptor traffic\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-tmaws-hb8s4",
+  "language": "triton",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent-wstat",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "warp",
+   "spec": "L",
+   "st": "bulk",
+   "tile": "rows8"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-tmaws-hb8s4.json",
+  "static_sm100": [
+   {
+    "kernel": "tma_wstat",
+    "local": 0,
+    "ops": {
+     "LDG": 2,
+     "LDS": 4,
+     "STS": 4,
+     "UTMACMDFLUSH": 2,
+     "UTMALDG": 8,
+     "UTMASTG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 6,
+    "smem": 32824
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 66.735,
+    "1,128": 13.952000000000002,
+    "1,131": 14.0795,
+    "1,256": 20.8635,
+    "1,8192": 527.8344999999999,
+    "16,256": 269.9495,
+    "2,128": 21.0875,
+    "2,293": 40.607,
+    "32,128": 268.59,
+    "4,1024": 270.58899999999994,
+    "4,1657": 430.2515,
+    "4,256": 66.256,
+    "4,512": 128.479,
+    "8,128": 66.73499999999999,
+    "8,256": 129.135,
+    "8,773": 405.388
+   }
+  }
+ },
+ "g2-ws-hb16w8": {
+  "card": "id: \"g2-ws-hb16w8\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"L\"}\nhypothesis: \"v039 with weights loaded once per program: halves load instructions per tile and removes the weight address arithmetic, which matters at B200's 36 B/clk/SM.\"\nexpected_effect:\n  S: {pct: 0, confidence: \"low\"}\n  M: {pct: -4, confidence: \"low\"}\n  L: {pct: -6, confidence: \"medium\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 16, num_warps: 8, STAGES: 1, PROGS_PER_SM: 8, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"wstat\", HB: 16, num_warps: 8, STAGES: 1, PROGS_PER_SM: 8, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"programs are tied to a head group; tail imbalance\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-ws-hb16w8",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "persistent-wstat",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "L",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-ws-hb16w8.json",
+  "static_sm100": [
+   {
+    "kernel": "wstat",
+    "local": 0,
+    "ops": {
+     "LDG": 4,
+     "STG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 8,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 64.2555,
+    "1,128": 9.887500000000001,
+    "1,131": 10.128,
+    "1,256": 18.2555,
+    "1,8192": 517.243,
+    "16,256": 262.7015,
+    "2,128": 18.512,
+    "2,293": 38.351499999999994,
+    "32,128": 262.44500000000005,
+    "4,1024": 261.789,
+    "4,1657": 419.99600000000004,
+    "4,256": 64.79899999999999,
+    "4,512": 127.46950000000001,
+    "8,128": 64.4795,
+    "8,256": 127.40650000000001,
+    "8,773": 394.156
+   }
+  }
+ },
+ "g2-ws-hb16w8s3": {
+  "card": "id: \"g2-ws-hb16w8s3\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"cpasync\", st: \"direct\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"L\"}\nhypothesis: \"Weight-stationary plus a 3-stage cp.async pipeline keeps the next tiles in flight while one is reduced.\"\nexpected_effect:\n  S: {pct: 3, confidence: \"low\"}\n  M: {pct: -6, confidence: \"low\"}\n  L: {pct: -10, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 16, num_warps: 8, STAGES: 3, PROGS_PER_SM: 8, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"wstat\", HB: 16, num_warps: 8, STAGES: 3, PROGS_PER_SM: 8, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"shared-memory ring lowers resident programs\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
+  "id": "g2-ws-hb16w8s3",
+  "language": "triton",
+  "niche": {
+   "cache": "stream",
+   "grid": "persistent-wstat",
+   "launch": "fused",
+   "mem": "cpasync",
+   "red": "warp",
+   "spec": "L",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "gen2-r1",
+  "solution": "loop/gen2/candidates/g2-ws-hb16w8s3.json",
+  "static_sm100": [
+   {
+    "kernel": "wstat",
+    "local": 0,
+    "ops": {
+     "LDG": 2,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 6,
+     "LDS": 11,
+     "STG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 8,
+    "smem": 16384
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 62.99150000000001,
+    "1,128": 10.607999999999999,
+    "1,131": 10.784,
+    "1,256": 18.112,
+    "1,8192": 496.5555,
+    "16,256": 253.32549999999998,
+    "2,128": 19.0395,
+    "2,293": 38.352,
+    "32,128": 252.92550000000003,
+    "4,1024": 252.4135,
+    "4,1657": 403.4035,
+    "4,256": 63.12,
+    "4,512": 125.776,
+    "8,128": 63.32749999999999,
+    "8,256": 124.6545,
+    "8,773": 377.65999999999997
+   }
+  }
+ },
+ "r1-bulk1d-ring-r16s16": {
+  "card": "id: r1-bulk1d-ring-r16s16\nparents:\n  - v039\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: bulk1d\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows16\n  red: warp\n  cache: stream\n  spec: L\nhypothesis: >-\n  v039 serialises load, reduce and store inside each persistent program and never prefetches, so its outstanding\n  reads per SM fall well below the ~43-64 KB B200 needs. A dedicated producer thread keeps 16 x 8 KB cp.async.bulk\n  loads in flight per SM. Consumer warps release stages right after their reduction. Weights sit in shared memory.\n  Read issue is therefore decoupled from compute latency at one instruction per 8 KB, which should lift\n  sustained bandwidth from 5.8 to about 7 TB/s.\nexpected_effect:\n  S:\n    pct: -5\n    confidence: low\n  M:\n    pct: -12\n    confidence: low\n  L:\n    pct: -17\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 180488\n  threads_per_cta: 544\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  TR: 16\n  STAGES: 16\n  consumer_warps: 16\n  producer_warps: 1\n  grid: num_SMs\nruns_on:\n  H200:\n    runs: true\n    representative: true\n    note: \"same bulk/mbarrier path (sm_90); H200 needs less in flight, so expect it to show correctness and a moderate gain, not the full B200 gain\"\n  A100:\n    runs: true\n    representative: false\n    note: \"runs the plain warp-per-row fallback (no cp.async.bulk on sm_80); correctness only\"\n  L40S:\n    runs: true\n    representative: false\n    note: \"fallback path; correctness only\"\nrisks:\n  - \"One CTA per SM with 16 consumer warps: if per-tile consumer latency (wait, LDS, 5 shuffles, rsqrt, STG) exceeds about 520 clk at 1.5 GHz, the consumers become the bottleneck; then try 2 rows per warp with TR=32 or 8 KB tiles over 2 CTAs/SM.\"\n  - \"Direct stores from only 16 warps per SM may cap write throughput; st:bulk via smem staging is the follow-up axis.\"\n  - \"A single producer thread issues all bulk copies; issue rate is about 1 per 520 clk needed, so it should be fine, but it is unmeasured on B200.\"\n  - \"Prologue (mbarrier init and 48 KB weight bulk load, an L2 hit after the first CTA) adds to S-band fixed cost; S-band loads are all issued up front, which may offset it.\"\n  - \"180 KB of dynamic smem needs the cudaFuncSetAttribute opt-in (done once on the host); it compiles for sm_100a only via the inline-PTX paths guarded by __CUDA_ARCH__ >= 900.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r1-bulk1d-ring-r16s16",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "bulk1d",
+   "red": "warp",
+   "spec": "L",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "v039"
+  ],
+  "round": "r1",
+  "solution": "loop/rounds/r1/candidates/r1-bulk1d-ring-r16s16.json",
+  "status": "proposed",
+  "timings": {}
+ },
+ "v028": {
+  "b200": {
+   "geomean_us": 35.882,
+   "score": 0.450775,
+   "submission": "61435",
+   "timings": {
+    "1,1024": 26.700000000000003,
+    "1,128": 6.8999999999999995,
+    "1,131": 6.8999999999999995,
+    "1,256": 8.7,
+    "1,8192": 178.4,
+    "16,256": 92.2,
+    "2,128": 8.7,
+    "2,293": 16.400000000000002,
+    "32,128": 92.60000000000001,
+    "4,1024": 91.7,
+    "4,1657": 145.7,
+    "4,256": 26.700000000000003,
+    "4,512": 48.7,
+    "8,128": 26.8,
+    "8,256": 48.9,
+    "8,773": 138.0
+   }
+  },
+  "card": "gen-1 knob variant: ROWS=32, NUM_WARPS=2, NUM_STAGES=4, FUSE=True, PERSIST=True, PROGS_PER_SM=8, EVICT=False",
+  "id": "v028",
+  "language": "triton",
+  "niche": {
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "ldg128",
+   "spec": "all",
+   "tile": "rows32"
+  },
+  "operation": "knob_variant",
+  "parents": [],
+  "round": "gen1",
+  "solution": "poc/variants/v028.json",
+  "static_sm100": [
+   {
+    "kernel": "_qk_norm_kernel",
+    "local": 0,
+    "regs": 149,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 61.6475,
+    "1,128": 10.287999999999998,
+    "1,131": 10.496,
+    "1,256": 17.184,
+    "1,8192": 488.588,
+    "16,256": 249.59799999999998,
+    "2,128": 17.951500000000003,
+    "2,293": 37.216,
+    "32,128": 248.03,
+    "4,1024": 249.54999999999998,
+    "4,1657": 397.45200000000006,
+    "4,256": 61.792,
+    "4,512": 122.927,
+    "8,128": 61.023,
+    "8,256": 122.38250000000001,
+    "8,773": 371.948
+   },
+   "H200": {
+    "1,1024": 26.512,
+    "1,128": 5.9205000000000005,
+    "1,131": 5.984,
+    "1,256": 8.096,
+    "1,8192": 200.303,
+    "16,256": 100.7195,
+    "2,128": 8.224,
+    "2,293": 16.416,
+    "32,128": 100.83149999999999,
+    "4,1024": 100.86349999999999,
+    "4,1657": 162.65550000000002,
+    "4,256": 26.496,
+    "4,512": 51.296,
+    "8,128": 26.448,
+    "8,256": 51.2155,
+    "8,773": 151.7595
+   },
+   "L40S": {
+    "1,1024": 171.58499999999998,
+    "1,128": 18.832,
+    "1,131": 24.08,
+    "1,256": 39.9845,
+    "1,8192": 1312.4850000000001,
+    "16,256": 658.7535,
+    "2,128": 39.872,
+    "2,293": 98.208,
+    "32,128": 663.5705,
+    "4,1024": 663.378,
+    "4,1657": 1065.812,
+    "4,256": 168.8325,
+    "4,512": 336.257,
+    "8,128": 168.593,
+    "8,256": 336.14500000000004,
+    "8,773": 999.7475000000001
+   }
+  }
+ },
+ "v039": {
+  "b200": {
+   "geomean_us": 28.564,
+   "score": 0.531119,
+   "submission": "61441",
+   "timings": {
+    "1,1024": 21.1,
+    "1,128": 5.6,
+    "1,131": 5.8,
+    "1,256": 7.9,
+    "1,8192": 137.6,
+    "16,256": 70.6,
+    "2,128": 7.9,
+    "2,293": 13.100000000000001,
+    "32,128": 70.5,
+    "4,1024": 70.5,
+    "4,1657": 112.10000000000001,
+    "4,256": 21.1,
+    "4,512": 37.400000000000006,
+    "8,128": 21.0,
+    "8,256": 37.400000000000006,
+    "8,773": 104.5
+   }
+  },
+  "card": "gen-1 knob variant: ROWS=16, NUM_WARPS=8, NUM_STAGES=1, FUSE=True, PERSIST=True, PROGS_PER_SM=8, EVICT=True",
+  "id": "v039",
+  "language": "triton",
+  "niche": {
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "ldg128",
+   "spec": "all",
+   "tile": "rows16"
+  },
+  "operation": "knob_variant",
+  "parents": [],
+  "round": "gen1",
+  "solution": "poc/variants/v039.json",
+  "static_sm100": [
+   {
+    "kernel": "_qk_norm_kernel",
+    "local": 0,
+    "regs": 32,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 62.751000000000005,
+    "1,128": 9.792,
+    "1,131": 9.920499999999999,
+    "1,256": 17.6155,
+    "1,8192": 512.844,
+    "16,256": 259.966,
+    "2,128": 18.191499999999998,
+    "2,293": 37.391999999999996,
+    "32,128": 260.4935,
+    "4,1024": 260.92550000000006,
+    "4,1657": 418.78000000000003,
+    "4,256": 62.624,
+    "4,512": 125.56699999999998,
+    "8,128": 62.655,
+    "8,256": 125.87100000000001,
+    "8,773": 392.06050000000005
+   },
+   "H200": {
+    "1,1024": 27.712,
+    "1,128": 5.12,
+    "1,131": 5.1675,
+    "1,256": 8.4635,
+    "1,8192": 213.1995,
+    "16,256": 107.7915,
+    "2,128": 8.512,
+    "2,293": 17.072,
+    "32,128": 107.64750000000001,
+    "4,1024": 108.032,
+    "4,1657": 172.864,
+    "4,256": 27.855999999999998,
+    "4,512": 54.336,
+    "8,128": 27.76,
+    "8,256": 54.336000000000006,
+    "8,773": 161.184
+   },
+   "L40S": {
+    "1,1024": 185.6645,
+    "1,128": 18.624000000000002,
+    "1,131": 21.44,
+    "1,256": 42.91250000000001,
+    "1,8192": 1394.5004999999999,
+    "16,256": 699.9230000000001,
+    "2,128": 41.7925,
+    "2,293": 108.4005,
+    "32,128": 700.8820000000001,
+    "4,1024": 701.762,
+    "4,1657": 1130.1155,
+    "4,256": 182.60899999999998,
+    "4,512": 354.72150000000005,
+    "8,128": 180.92849999999999,
+    "8,256": 354.8335,
+    "8,773": 1061.8919999999998
+   }
+  }
+ },
+ "v040": {
+  "b200": {
+   "geomean_us": 51.331,
+   "score": 0.346612,
+   "submission": "61442",
+   "timings": {
+    "1,1024": 38.5,
+    "1,128": 7.4,
+    "1,131": 7.6,
+    "1,256": 11.9,
+    "1,8192": 282.2,
+    "16,256": 143.2,
+    "2,128": 11.799999999999999,
+    "2,293": 23.3,
+    "32,128": 143.2,
+    "4,1024": 143.3,
+    "4,1657": 229.1,
+    "4,256": 38.5,
+    "4,512": 73.6,
+    "8,128": 38.6,
+    "8,256": 73.7,
+    "8,773": 214.10000000000002
+   }
+  },
+  "card": "gen-1 knob variant: ROWS=2, NUM_WARPS=4, NUM_STAGES=1, FUSE=True, PERSIST=False, PROGS_PER_SM=0, EVICT=False",
+  "id": "v040",
+  "language": "triton",
+  "niche": {
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "spec": "all",
+   "tile": "rows2"
+  },
+  "operation": "knob_variant",
+  "parents": [],
+  "round": "gen1",
+  "solution": "poc/variants/v040.json",
+  "static_sm100": [
+   {
+    "kernel": "_qk_norm_kernel",
+    "local": 0,
+    "regs": 28,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 61.9995,
+    "1,128": 10.480500000000001,
+    "1,131": 10.687999999999999,
+    "1,256": 18.0955,
+    "1,8192": 500.0914999999999,
+    "16,256": 253.03799999999998,
+    "2,128": 18.528,
+    "2,293": 37.3435,
+    "32,128": 251.59749999999997,
+    "4,1024": 252.07800000000003,
+    "4,1657": 408.4595,
+    "4,256": 61.935500000000005,
+    "4,512": 121.407,
+    "8,128": 61.7275,
+    "8,256": 121.87100000000001,
+    "8,773": 376.0925
+   },
+   "H200": {
+    "1,1024": 33.872,
+    "1,128": 6.016,
+    "1,131": 6.0805,
+    "1,256": 10.016,
+    "1,8192": 254.863,
+    "16,256": 128.895,
+    "2,128": 9.952,
+    "2,293": 20.464000000000002,
+    "32,128": 128.87900000000002,
+    "4,1024": 128.70350000000002,
+    "4,1657": 207.103,
+    "4,256": 33.9365,
+    "4,512": 65.792,
+    "8,128": 33.952,
+    "8,256": 65.808,
+    "8,773": 193.5035
+   },
+   "L40S": {
+    "1,1024": 161.74450000000002,
+    "1,128": 20.416,
+    "1,131": 22.496000000000002,
+    "1,256": 44.384,
+    "1,8192": 1227.1239999999998,
+    "16,256": 620.7860000000001,
+    "2,128": 41.568,
+    "2,293": 93.2165,
+    "32,128": 622.2735,
+    "4,1024": 622.034,
+    "4,1657": 997.3149999999999,
+    "4,256": 159.921,
+    "4,512": 314.1135,
+    "8,128": 159.265,
+    "8,256": 315.82500000000005,
+    "8,773": 937.155
+   }
+  }
+ },
+ "v050": {
+  "b200": {
+   "geomean_us": 38.729,
+   "score": 0.433525,
+   "submission": "61444",
+   "timings": {
+    "1,1024": 28.9,
+    "1,128": 13.100000000000001,
+    "1,131": 13.2,
+    "1,256": 14.200000000000001,
+    "1,8192": 139.2,
+    "16,256": 77.3,
+    "2,128": 14.0,
+    "2,293": 19.2,
+    "32,128": 77.39999999999999,
+    "4,1024": 77.2,
+    "4,1657": 115.3,
+    "4,256": 28.9,
+    "4,512": 44.900000000000006,
+    "8,128": 28.9,
+    "8,256": 44.4,
+    "8,773": 108.8
+   }
+  },
+  "card": "gen-1 knob variant: ROWS=8, NUM_WARPS=1, NUM_STAGES=1, FUSE=False, PERSIST=False, PROGS_PER_SM=0, EVICT=False",
+  "id": "v050",
+  "language": "triton",
+  "niche": {
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "ldg128",
+   "spec": "all",
+   "tile": "rows8"
+  },
+  "operation": "knob_variant",
+  "parents": [],
+  "round": "gen1",
+  "solution": "poc/variants/v050.json",
+  "static_sm100": [
+   {
+    "kernel": "_qk_norm_kernel",
+    "local": 0,
+    "regs": 68,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 65.1515,
+    "1,128": 34.5755,
+    "1,131": 34.2555,
+    "1,256": 37.4875,
+    "1,8192": 479.98,
+    "16,256": 247.88549999999998,
+    "2,128": 38.224000000000004,
+    "2,293": 48.079499999999996,
+    "32,128": 247.72549999999998,
+    "4,1024": 248.254,
+    "4,1657": 390.9565,
+    "4,256": 65.08749999999999,
+    "4,512": 125.1825,
+    "8,128": 65.3115,
+    "8,256": 125.743,
+    "8,773": 366.66900000000004
+   },
+   "H200": {
+    "1,1024": 32.624,
+    "1,128": 11.232000000000001,
+    "1,131": 11.296000000000001,
+    "1,256": 13.6965,
+    "1,8192": 199.37550000000002,
+    "16,256": 104.3035,
+    "2,128": 13.807500000000001,
+    "2,293": 20.448,
+    "32,128": 104.19200000000001,
+    "4,1024": 104.256,
+    "4,1657": 163.45549999999997,
+    "4,256": 32.35150000000001,
+    "4,512": 56.416,
+    "8,128": 32.3035,
+    "8,256": 56.368,
+    "8,773": 152.192
+   },
+   "L40S": {
+    "1,1024": 161.37649999999996,
+    "1,128": 21.343999999999998,
+    "1,131": 22.576,
+    "1,256": 37.584,
+    "1,8192": 1249.988,
+    "16,256": 630.5939999999999,
+    "2,128": 37.727999999999994,
+    "2,293": 89.4085,
+    "32,128": 631.682,
+    "4,1024": 634.0980000000001,
+    "4,1657": 1012.98,
+    "4,256": 158.75300000000001,
+    "4,512": 317.025,
+    "8,128": 156.78449999999998,
+    "8,256": 316.92900000000003,
+    "8,773": 953.1075
+   }
+  }
+ }
+}

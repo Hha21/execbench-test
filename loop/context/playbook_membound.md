@@ -340,6 +340,7 @@ VERIFIED-CSF3 where marked; the rest are INFERRED from the harness code or the B
 | Device-side descriptors in the S path | per-program tensormap build, fences and global scratch |
 | Shared-memory rings so large that only 1 CTA fits per SM, in a one-shot grid | kills occupancy and in-flight bytes |
 | Persistent grid on S-band workloads | 1–3 tiles per program, so serial latency |
+| Persistent grid sized from another chip's occupancy | the extra programs wait for whole programs to finish, then run a full share: a second wave, up to about 1.5× slower. PoC v028 (ROWS=32, 2 warps, 8 programs per SM) uses 128 registers on sm_90a (8 fit) but **149 on sm_100a (6 fit)**. It ran 36.4 µs on H200 and **35.9 µs on B200** (score 0.451), so it gained nothing from 1.7× more bandwidth. Size `k` from the **sm_100a** register and shared-memory counts, or read `n_regs` from the compiled kernel at runtime [VERIFIED-CSF3; portal result 6 Oct, cause INFERRED] |
 | Fp32 `/` for constant divisors | Triton emits `div.full.f32` (approximate, ≤ 2 ulp; Gluon showed an extra `MUFU.RCP`) [VERIFIED-CSF3]; multiply by the reciprocal |
 | Masks on every element when ROWS ∤ 48 | extra predicates; choose ROWS dividing the row multiple |
 | `@triton.autotune` with large config lists | compile/benchmark time inside the 300 s limit, noisy choice; use a band table |

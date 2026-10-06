@@ -48,7 +48,9 @@ def estimate(gpu, knobs, axes, regs, smem):
     in_flight = resident * knobs["ROWS"] * D * 4
     bw = min(g["bw"], in_flight / g["lat"])
     waves = programs / capacity
-    quantisation = math.ceil(waves) / waves if waves > 1 and not knobs["PERSIST"] else 1.0
+    # Applies to persistent grids too: if more persistent programs are requested than fit on the SMs at once,
+    # the extras wait for a whole program to finish and then run a full share themselves (a second wave).
+    quantisation = math.ceil(waves) / waves if waves > 1 else 1.0
     t = launches * (bytes_per_launch / bw * quantisation + LAUNCH_S)
     return {
         "t_analytic": t,

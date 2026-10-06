@@ -152,6 +152,11 @@ passed, with 0.15% run-to-run noise.
   knobs.**
 - A100 and L40S agree on the broad ranking (Spearman 0.77) but not on the winner. The emulator helped a lot when the
   cheap source resembled the target (HBM) and little on L40S (GDDR6).
+- **First B200 result (6 October, portal #61435):** v028 scored **0.451 at 35.9 µs**, faster than the scoring
+  baseline on only 5 of 16 workloads, and no faster than on H200 (36.4 µs). Likely cause: on sm_100a v028 needs 149
+  registers, so only 6 of its 8 persistent programs per SM fit, giving a second wave (see playbook, anti-patterns).
+  Lesson: H200 timings cannot see sm_100a register growth; check the sm_100a compile before trusting them.
+  [portal; VERIFIED-CSF3 for the register counts; INFERRED for the cause]
 - **H200 (added 4 October):** best is again v028, geomean 36.4 µs, 73% of the 4.8 TB/s floor. H200 and A100 rank the
   72 variants almost identically (Spearman 0.93; H200's top 5 are all in A100's top 6); L40S is the outlier (0.77–0.85).
   v028 reaches 83–84% of peak on large workloads but only **44–45% on the two smallest**, against about 60% on A100:

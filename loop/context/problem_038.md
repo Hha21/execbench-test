@@ -103,15 +103,30 @@ Places 1–20 lie within 15% of each other. Every top-20 entry has `fast_1_count
 faster than the baseline); #21 has 12/16. Other teams' code
 is not downloadable. The field is active: entries are dated as recently as 2026-10-02.
 
-## 5. Floors, SOLAR and the aggregate (INFERRED)
+## 5. Floors, SOLAR and the aggregate (updated with portal data, 6 October)
 
 - The read+write floor at 8 TB/s is 16.0 µs (geometric mean), so the leader runs at **72% of the floor** (70.5% of the
-  15.6 µs floor at the locked-clock peak of 8.18 TB/s).
-- SOLAR's 9.195 µs is below that floor. It would match read+write traffic at about 13.9 TB/s, or reads only at about
-  7.0 TB/s. Either way **score 1.0 is unreachable**. A kernel exactly at 8 TB/s on every workload would score about
-  **0.75–0.76** (model below). Treat scores above about 0.72 as out of reach in practice.
-- The portal's aggregate latency is probably the geometric mean (evidence in harness_scoring.md §5). The score is the
-  arithmetic mean of per-workload scores.
+  15.6 µs floor at the locked-clock peak of 8.18 TB/s). [INFERRED]
+- The aggregate latency is the geometric mean of workload latencies and the score the arithmetic mean of workload
+  scores [VERIFIED: portal pages; see harness_scoring.md §5].
+- Per-workload Tb and Tsol, recovered from our five submission pages [VERIFIED for Tb, derived for Tsol]:
+
+| Workloads (B·S) | Tb µs | Tsol µs | Tsol / 8 TB/s floor | Score if exactly at 8 TB/s |
+|---|---|---|---|---|
+| 128, 131 | 9.3–9.4 | 1.24–1.29 | 0.77–0.82 | 0.96 |
+| 256 (×2) | 10.4–10.5 | 1.94–1.99 | 0.62 | 0.88 |
+| 586 | 17.5 | 4.24 | 0.59 | 0.82 |
+| 1024 (×3) | 22.4–22.5 | 6.8–7.0 | 0.55 | 0.73 |
+| 2048 (×2) | 37.4–37.6 | 13.4–13.5 | 0.53 | 0.67 |
+| 4096 (×3) | 66.5–66.7 | 26.7–26.8 | 0.53 | 0.63 |
+| 6184, 6628 | 102.7, 107.2 | 40.0, 42.8 | 0.53 | 0.63 |
+| 8192 | 123.4 | 53.0 | 0.53 | 0.60 |
+
+- SOLAR is about 0.53× the read+write floor on medium and large inputs (it behaves as if bandwidth were about
+  15 TB/s or half the bytes moved) and closer to the floor on the smallest. **Score 1.0 is unreachable.** Exactly
+  8 TB/s everywhere scores **0.736**; 8 TB/s plus 1.5 µs fixed per call scores about **0.68**. Latency depends only on
+  B·S (the three B·S = 4096 shapes time identically), so 16 workloads are really 10 sizes.
+- Score headroom per workload is far larger on small inputs (ceiling 0.82–0.96) than large ones (0.60–0.64).
 
 ## 6. Score targets
 
@@ -157,6 +172,19 @@ passed, with 0.15% run-to-run noise.
   registers, so only 6 of its 8 persistent programs per SM fit, giving a second wave (see playbook, anti-patterns).
   Lesson: H200 timings cannot see sm_100a register growth; check the sm_100a compile before trusting them.
   [portal; VERIFIED-CSF3 for the register counts; INFERRED for the cause]
+- **Five B200 submissions with per-workload results (6 October, `poc/results/b200_portal_workloads.csv`):**
+  - v039 (fused, persistent, ROWS=16, 8 warps, 8 programs per SM, 32 registers) is fastest on **every** workload,
+    so dispatching between the five gains nothing. Score 0.531, geomean 28.56 µs, faster than Tb on 9/16.
+  - v039 bandwidth by band: small 2.67 TB/s, medium 4.90, large 5.77. Baseline: small 1.81, medium 4.52,
+    **large 6.11**. We beat Tb on small/medium (1.3–1.7× on the smallest) and lose by 3–11% on large.
+  - B200 time / H200 time, geomean by band (bandwidth alone predicts 0.60): v039 small 1.02, medium 0.74, large 0.65;
+    v040 (one program per 2 rows) 1.21 / 1.13 / 1.11, i.e. **slower on B200 at every size**: hundreds of thousands
+    of tiny programs cannot keep B200's memory busy. **Small inputs get no faster from H200 to B200**; fixed cost
+    dominates. Per-workload ranking agreement with B200 over 4 variants: H200 0.60, A100 −0.10.
+  - What-if scores from v039 using the recovered Tb/Tsol: medium+large at 7.0 TB/s (+2 µs fixed) → 0.592;
+    small at 6.4 TB/s + 2 µs fixed → 0.555; both → 0.616; both with 1 µs fixed on small → **0.633 (above the
+    leader's 0.628)**. Raising sustained bandwidth on medium/large is the larger lever; small-input fixed cost
+    is needed too.
 - **H200 (added 4 October):** best is again v028, geomean 36.4 µs, 73% of the 4.8 TB/s floor. H200 and A100 rank the
   72 variants almost identically (Spearman 0.93; H200's top 5 are all in A100's top 6); L40S is the outlier (0.77–0.85).
   v028 reaches 83–84% of peak on large workloads but only **44–45% on the two smallest**, against about 60% on A100:

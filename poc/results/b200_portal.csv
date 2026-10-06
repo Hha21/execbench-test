@@ -1,6 +1,6 @@
 vid,latency_ms,sol_score,fast_1,avg_speedup,submission_id,kernel,device,eval_stack,mode,result,source_html
-v028,0.035889,0.450775,,,61435,,,,,,
-v028p6,0.031857,0.493272,,,61440,,,,,,
-v039,0.028564,0.531119,9,1.133,61441,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61441_v039.html
-v040,0.051296,0.346612,,,61442,,,,,,
-v050,0.038722,0.433525,,,61444,,,,,,
+v028,0.035882,0.450775,5,0.885,61435,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61435_v028.html
+v028p6,0.031845,0.493272,5,0.997,61440,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61440_v028p6.html
+v039,0.028564,0.531119,9,1.111,61441,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61441_v039.html
+v040,0.051331,0.346612,2,0.618,61442,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61442_v040.html
+v050,0.038729,0.433525,0,0.820,61444,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61444_v050.html

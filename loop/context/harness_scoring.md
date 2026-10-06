@@ -122,13 +122,14 @@ Consequences [INFERRED from the code above]:
 - Per workload: `S(t) = (Tb − Tsol)/((t − Tsol) + (Tb − Tsol))` (`sol_score.py`). Tb and Tsol come from precomputed
   per-workload tables; the reference is not timed in your run. [PAPER: portal guide]
 - Problem score = arithmetic mean of the per-workload S; failed workloads count as 0. [PAPER: portal guide]
-- Leaderboard "latency" is an aggregate over workloads. It is **probably a geometric mean** [INFERRED]. Evidence:
-  (a) the arithmetic-mean bandwidth floor for #38 at 8 TB/s is 32.1 µs but the leader shows 22.2 µs, while the
-  geometric-mean floor is 16.0 µs; (b) `avg_speedup` equals baseline latency divided by entry latency exactly (for
-  example 31.762/22.158 = 1.4334 against 1.4335 shown), which is what a geometric mean of per-workload speedups gives.
-  This is weak evidence: it would also hold if `avg_speedup` were simply a ratio of aggregates. (c) The score is not
-  monotone in that latency (#38 rank 7: 23.675 µs scores 0.602899; rank 8: 23.554 µs scores 0.602860), so scores are
-  averaged per workload and not computed from the aggregate.
+- Leaderboard "latency" is the **geometric mean of the per-workload latencies**; "Avg Speedup" is the **geometric
+  mean of baseline/latency** per workload; "Fast₁" is the **number of workloads faster than the baseline**
+  [VERIFIED: our portal submission pages, 6 Oct 2026. #61441: geomean 28.564 µs vs 28.562 shown, mean of workload
+  scores 0.531119 = page score; #61435: geomean speedup 0.885 vs 0.89 shown, 5/16 faster]. So the score is averaged
+  per workload, not computed from the aggregate latency, and the two can rank entries differently.
+- Your own submission page shows, per workload: latency, the hidden **baseline latency Tb**, speedup and score.
+  Tsol per workload then follows from `Tsol = (Tb − S·t − S·Tb)/(1 − 2S)` (ill-conditioned when S ≈ 0.5).
+  `poc/ingest_portal.py` parses saved pages into `poc/results/b200_portal_workloads.csv`.
 - Tb is the "Scoring Baseline": the fastest PyTorch-only solution found by NVIDIA's agentic system, hidden and allowed
   to change over time. The portal guide calls it "from a PyTorch reference implementation". [PAPER]
 - Tsol (SOLAR) is `max(FLOPs/peak, fused bytes/BW)` at 1.5 GHz. It can sit below what is physically reachable. For #38

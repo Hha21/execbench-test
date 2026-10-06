@@ -14,7 +14,8 @@ Writes
   results/portal_html/<id>_<vid>.html  a copy of each page, for provenance
 
 Portal arithmetic (checked against submission #61441): the overall latency is the geometric mean of the
-per-workload latencies and the overall score is the arithmetic mean of the per-workload scores.
+per-workload latencies, the overall score is the arithmetic mean of the per-workload scores, and the
+"Avg Speedup" is the geometric mean of baseline/latency (checked on #61435: 0.885 vs 0.89 shown).
 Standard library only.
 """
 
@@ -162,7 +163,7 @@ def main():
         sid = info["submission_id"]
         summary = [r for r in summary if r.get("submission_id") != sid]
         summary.append(dict(vid=vid, latency_ms=f"{geo:.6f}", sol_score=f"{mean_s:.6f}",
-                            fast_1=sum(x > 1 for x in speed), avg_speedup=f"{statistics.mean(speed):.3f}",
+                            fast_1=sum(x > 1 for x in speed), avg_speedup=f"{statistics.geometric_mean(speed):.3f}",
                             source_html=f"portal_html/{sid}_{vid}.html",
                             **{k: info[k] for k in ("submission_id", "kernel", "device", "eval_stack", "mode", "result")}))
         per_wl = [r for r in per_wl if r.get("submission_id") != sid]

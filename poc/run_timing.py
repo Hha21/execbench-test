@@ -63,7 +63,8 @@ def main():
         if complete(trace, expected):
             continue
         t0 = time.time()
-        cmd = ["sol-execbench", str(args.problem), "--solution", str(sol), "-o", str(trace), "--timeout", "900"]
+        cmd = ["sol-execbench", str(args.problem), "--solution", str(sol), "-o", str(trace), "--timeout", "900",
+               "--compile-timeout", "900"]  # C++/CUDA extension builds on CSF3 can exceed the 120 s default
         proc = subprocess.run(cmd, capture_output=True, text=True)
         st = statuses(trace)
         passed = sum(s == "PASSED" for s in st)

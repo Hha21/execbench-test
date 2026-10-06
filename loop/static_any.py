@@ -59,22 +59,47 @@ def tools():
 
 
 def inspect_cubin(path, meta):
+    """One record per kernel function in the cubin (Triton cubins hold one; CUDA C++ ones may hold several)."""
     t = tools()
     res = subprocess.run([t / "cuobjdump", "-res-usage", str(path)], capture_output=True, text=True).stdout
     sass = subprocess.run([t / "cuobjdump", "-sass", str(path)], capture_output=True, text=True).stdout
-    m = re.search(r"REG:(\d+) STACK:(\d+) SHARED:(\d+) LOCAL:(\d+)", res)
     ops = collections.Counter(mm[1].split(".")[0] for mm in
                               re.finditer(r"/\*[0-9a-f]{4,}\*/\s+(?:@!?U?P\w+\s+)?([A-Z0-9_.]+)", sass))
-    regs, local = (int(m[1]), int(m[4])) if m else (None, None)
-    smem = meta.get("shared", 0)
-    warps = meta.get("num_warps", 4)
-    fit = None
-    if regs:
-        by_regs = (B200["regs"] // (-(-regs // 8) * 8 * 32)) // warps
-        fit = min(32, B200["threads"] // (32 * warps), by_regs, B200["smem"] // (smem + 1024) if smem else 32)
-    return dict(kernel=meta.get("name", path.stem), num_warps=warps, regs=regs, smem=smem, local=local,
-                resident_per_sm=fit, target=meta.get("target"),
-                ops={k: v for k, v in ops.items() if k.startswith(("LDG", "STG", "UTMA", "LDGSTS", "UBLKCP"))})
+    ops = {k: v for k, v in ops.items() if k.startswith(("LDG", "STG", "UTMA", "LDGSTS", "UBLKCP"))}
+    out = []
+    for fn, regs, smem_static, local in re.findall(
+            r"Function ([^\s:]+):\s*\n\s*REG:(\d+) STACK:\d+ SHARED:(\d+) LOCAL:(\d+)", res):
+        regs, local = int(regs), int(local)
+        smem = meta.get("shared", int(smem_static))      # Triton: total incl. dynamic; CUDA: static only
+        warps = meta.get("num_warps")
+        fit = None
+        if warps:
+            by_regs = (B200["regs"] // (-(-regs // 8) * 8 * 32)) // warps
+            fit = min(32, B200["threads"] // (32 * warps), by_regs, B200["smem"] // (smem + 1024) if smem else 32)
+        out.append(dict(kernel=meta.get("name", fn), num_warps=warps, regs=regs, smem=smem, local=local,
+                        resident_per_sm=fit, ops=ops))
+    return out
+
+
+def cuda_cubins(work, sol):
+    """Compile each .cu source for sm_100a with nvcc (device code only) against PyTorch's headers."""
+    import sysconfig
+    import torch
+    from torch.utils.cpp_extension import include_paths
+    incs = include_paths(device_type="cuda") + [sysconfig.get_paths()["include"]]
+    flags = [f for f in sol["spec"].get("compile_options", {}).get("cuda_cflags", ["-O3", "--use_fast_math"])
+             if not f.startswith(("-gencode", "-arch"))]
+    abi = int(torch._C._GLIBCXX_USE_CXX11_ABI)
+    cubins, errors = [], []
+    for s in sol["sources"]:
+        if not s["path"].endswith(".cu"):
+            continue
+        out = work / (Path(s["path"]).stem + ".sm100a.cubin")
+        cmd = ["nvcc", "-arch=sm_100a", "-cubin", *flags, f"-D_GLIBCXX_USE_CXX11_ABI={abi}",
+               "-DTORCH_EXTENSION_NAME=cand", *[f"-I{i}" for i in incs], str(work / s["path"]), "-o", str(out)]
+        p = subprocess.run(cmd, capture_output=True, text=True, cwd=work, timeout=900)
+        (cubins if p.returncode == 0 else errors).append(out if p.returncode == 0 else p.stderr[-1500:])
+    return cubins, errors
 
 
 def main():
@@ -88,13 +113,18 @@ def main():
     for sol_path in sorted(args.candidates.glob("*.json")):
         sol = json.loads(sol_path.read_text())
         langs = sol["spec"].get("languages", [])
-        if not any(l in ("triton", "pytorch", "cute_dsl", "cutile") for l in langs):
-            recs.append(dict(id=sol_path.stem, error=f"static capture only supports Python languages, got {langs}"))
-            continue
         work = Path(tempfile.mkdtemp())
         for s in sol["sources"]:
             (work / s["path"]).parent.mkdir(parents=True, exist_ok=True)
             (work / s["path"]).write_text(s["content"])
+        if any(l in ("cuda_cpp", "cutlass", "cudnn", "cublas") for l in langs):
+            cubins, errors = cuda_cubins(work, sol)
+            kernels = [k for c in cubins for k in inspect_cubin(c, {})]
+            rec = dict(id=sol_path.stem, kernels=kernels, **({"error": " | ".join(errors)} if errors else {}))
+            recs.append(rec)
+            print(json.dumps({"id": rec["id"], "kernels": [(k["kernel"][:40], k["regs"], k["smem"]) for k in kernels],
+                              "error": rec.get("error", "")[:200]}), flush=True)
+            continue
         file, func = sol["spec"]["entry_point"].split("::")
         cache = work / "triton_cache"
         env = {**{k: v for k, v in os.environ.items() if k != "TRITON_OVERRIDE_ARCH"}, "TRITON_CACHE_DIR": str(cache)}
@@ -104,7 +134,7 @@ def main():
         for cubin in cache.rglob("*.cubin"):
             meta_path = cubin.with_suffix(".json")
             meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
-            kernels.append(inspect_cubin(cubin, meta))
+            kernels.extend(inspect_cubin(cubin, meta))
         rec = dict(id=sol_path.stem, kernels=kernels)
         if not kernels:
             rec["error"] = "no sm_100 cubin produced: " + (p.stderr[-1500:] or p.stdout[-500:])

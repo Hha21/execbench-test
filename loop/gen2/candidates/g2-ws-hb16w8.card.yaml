@@ -1,0 +1,25 @@
+id: "g2-ws-hb16w8"
+parents:
+  - "v039"
+operation: "structural_mutation"
+language: "triton"
+niche: {mem: "ldg128", st: "direct", grid: "persistent-wstat", launch: "fused", tile: "rows16", red: "warp", cache: "stream", spec: "L"}
+hypothesis: "v039 with weights loaded once per program: halves load instructions per tile and removes the weight address arithmetic, which matters at B200's 36 B/clk/SM."
+expected_effect:
+  S: {pct: 0, confidence: "low"}
+  M: {pct: -4, confidence: "low"}
+  L: {pct: -6, confidence: "medium"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {HB: 16, num_warps: 8, STAGES: 1, PROGS_PER_SM: 8, EVICT: true}
+dispatch:
+  - {max_tokens: "all", kernel: "wstat", HB: 16, num_warps: 8, STAGES: 1, PROGS_PER_SM: 8, EVICT: true}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: true}
+  L40S: {runs: true, representative: false}
+risks:
+  - "programs are tied to a head group; tail imbalance"
+measure_first:
+  - "A100"
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

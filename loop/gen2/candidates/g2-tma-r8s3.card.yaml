@@ -1,0 +1,25 @@
+id: "g2-tma-r8s3"
+parents:
+  - "v039"
+operation: "structural_mutation"
+language: "triton"
+niche: {mem: "tma-tensor", st: "bulk", grid: "persistent", launch: "fused", tile: "rows8", red: "warp", cache: "default", spec: "L"}
+hypothesis: "Playbook 3d: TMA moves tiles with few instructions and a 3-deep ring keeps bytes in flight."
+expected_effect:
+  S: {pct: 10, confidence: "low"}
+  M: {pct: -3, confidence: "low"}
+  L: {pct: -8, confidence: "low"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}
+dispatch:
+  - {max_tokens: "all", kernel: "tma", ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: false, note: "TMA compiles to a non-TMA fallback on sm_80; correctness only"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "weights go through cp.async and grow shared memory"
+  - "host descriptor path not yet run on a GPU"
+measure_first:
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

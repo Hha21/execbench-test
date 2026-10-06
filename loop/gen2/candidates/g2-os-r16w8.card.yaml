@@ -1,0 +1,25 @@
+id: "g2-os-r16w8"
+parents:
+  - "v039"
+operation: "specialisation"
+language: "triton"
+niche: {mem: "ldg128", st: "direct", grid: "oneshot", launch: "fused", tile: "rows16", red: "warp", cache: "stream", spec: "S"}
+hypothesis: "v039's tile without the persistent loop: small inputs already run one tile per program, so dropping the loop, the idle extra programs and the per-program setup should cut fixed cost."
+expected_effect:
+  S: {pct: -10, confidence: "low"}
+  M: {pct: 3, confidence: "low"}
+  L: {pct: 5, confidence: "low"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {ROWS: 16, num_warps: 8, EVICT: true}
+dispatch:
+  - {max_tokens: "all", kernel: "oneshot", ROWS: 16, num_warps: 8, EVICT: true}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: true}
+  L40S: {runs: true, representative: false}
+risks:
+  - "more CTAs to schedule on large inputs"
+measure_first:
+  - "A100"
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

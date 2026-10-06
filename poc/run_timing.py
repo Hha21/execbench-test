@@ -47,13 +47,14 @@ def main():
     ap.add_argument("--variants", type=Path, default=HERE / "variants")
     ap.add_argument("--out", type=Path, default=HERE / "results" / "timing")
     ap.add_argument("--replicates", type=int, default=4, help="variants re-timed to estimate noise")
+    ap.add_argument("--pattern", default="v*.json", help="which solution files in --variants to time")
     args = ap.parse_args()
 
     tag = gpu_tag()
     out = args.out / tag
     out.mkdir(parents=True, exist_ok=True)
     expected = n_workloads(args.problem)
-    sols = sorted(args.variants.glob("v*.json"))
+    sols = sorted(args.variants.glob(args.pattern))
     jobs = [(s, out / f"{s.stem}.jsonl") for s in sols]
     jobs += [(s, out / f"{s.stem}_rep{r}.jsonl") for s in sols[: args.replicates] for r in (1, 2)]
 

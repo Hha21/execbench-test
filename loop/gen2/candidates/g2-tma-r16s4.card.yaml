@@ -1,0 +1,24 @@
+id: "g2-tma-r16s4"
+parents:
+  - "v039"
+operation: "structural_mutation"
+language: "triton"
+niche: {mem: "tma-tensor", st: "bulk", grid: "persistent", launch: "fused", tile: "rows16", red: "warp", cache: "default", spec: "L"}
+hypothesis: "Bigger TMA tiles and a deeper ring: more bytes in flight per CTA; about 2 CTAs per SM by shared memory."
+expected_effect:
+  S: {pct: 15, confidence: "low"}
+  M: {pct: -3, confidence: "low"}
+  L: {pct: -8, confidence: "low"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {ROWS: 16, num_warps: 4, STAGES: 4, PROGS_PER_SM: 4}
+dispatch:
+  - {max_tokens: "all", kernel: "tma", ROWS: 16, num_warps: 4, STAGES: 4, PROGS_PER_SM: 4}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: false, note: "TMA compiles to a non-TMA fallback on sm_80; correctness only"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "107 KB shared memory caps residency at 2 CTAs/SM"
+measure_first:
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

@@ -1,0 +1,25 @@
+id: "g2-os-r8w4"
+parents:
+  - "v039"
+operation: "specialisation"
+language: "triton"
+niche: {mem: "ldg128", st: "direct", grid: "oneshot", launch: "fused", tile: "rows8", red: "warp", cache: "stream", spec: "S"}
+hypothesis: "Playbook 3a recipe: 8-row tiles give 1,536 CTAs on the smallest input, about 10 per SM in one wave."
+expected_effect:
+  S: {pct: -8, confidence: "low"}
+  M: {pct: 5, confidence: "low"}
+  L: {pct: 8, confidence: "low"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {ROWS: 8, num_warps: 4, EVICT: true}
+dispatch:
+  - {max_tokens: "all", kernel: "oneshot", ROWS: 8, num_warps: 4, EVICT: true}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: true}
+  L40S: {runs: true, representative: false}
+risks:
+  - "CTA launch rate on B200 is unknown; v040 showed tiny CTAs hurt"
+measure_first:
+  - "A100"
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

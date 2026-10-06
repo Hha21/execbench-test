@@ -1,0 +1,24 @@
+id: "g2-tmaws-hb8s4"
+parents:
+  - "v039"
+operation: "structural_mutation"
+language: "triton"
+niche: {mem: "tma-tensor", st: "bulk", grid: "persistent-wstat", launch: "fused", tile: "rows8", red: "warp", cache: "default", spec: "L"}
+hypothesis: "Smaller weight-stationary TMA tiles with a 4-deep ring and more programs per SM."
+expected_effect:
+  S: {pct: 8, confidence: "low"}
+  M: {pct: -5, confidence: "low"}
+  L: {pct: -10, confidence: "low"}
+resources_sm100a: "filled by static_sm100.py"
+knobs: {HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}
+dispatch:
+  - {max_tokens: "all", kernel: "tma_wstat", HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}
+runs_on:
+  H200: {runs: true, representative: true}
+  A100: {runs: true, representative: false, note: "TMA compiles to a non-TMA fallback on sm_80; correctness only"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "more programs, more descriptor traffic"
+measure_first:
+  - "H200"
+compliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}

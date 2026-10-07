@@ -1499,7 +1499,22 @@
   ],
   "round": "r4",
   "solution": "loop/rounds/r4/candidates/r4-cuda-ldg256-token-r2.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__61beed88_9_kernel_cu_a02f06f819qk_rms_token_kernelEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 2,
+     "LDG.NA.256": 2,
+     "STG.256": 2
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Explore the empty niche tile:token. Process one token's 48 heads per program (tile:token) so the weight tile is constant. It must be correct for every shape; aim to beat the parent somewhere and say where in the card.",
@@ -1509,7 +1524,26 @@
     "r3-cute-ldg256-os-r16"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 17.33,
+    "1,128": 4.29,
+    "1,131": 4.39,
+    "1,256": 5.79,
+    "1,8192": 119.2,
+    "16,256": 61.51,
+    "2,128": 5.89,
+    "2,293": 11.31,
+    "32,128": 61.5,
+    "4,1024": 61.79,
+    "4,1657": 97.29,
+    "4,256": 17.54,
+    "4,512": 32.5,
+    "8,128": 17.68,
+    "8,256": 32.23,
+    "8,773": 91.3
+   }
+  }
  },
  "r4-cute-ldg256-sw2-disp": {
   "card": "id: r4-cute-ldg256-sw2-disp\nparents:\n  - r3-cute-ldg256-os-r16\noperation: specialisation\nlanguage: cute_dsl\nniche:\n  mem: ldg256\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows24\n  red: halfwarp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  The parent's roughly 3 \u00b5s small-input fixed cost is, in my estimate:\n  (a) about 0.5\u20131 \u00b5s dispatching about 6k warps (768 CTAs of 8 warps at 128 tokens; 12k at 256);\n  (b) about 1 \u00b5s for the first DRAM round trip;\n  (c) about 0.5 \u00b5s of store drain and end-of-grid flush;\n  (d) write-backs of the dirty L2 lines left by the harness flush, which inflate the bandwidth term to about\n  6 TB/s.\n  The S path launches a fixed 2\u00d7SM grid (296 CTAs \u00d7 12 warps = 3,552 warps) of 384-thread CTAs. Each thread holds\n  2\u20134 rows of 256-bit loads, all issued before any arithmetic, and loads its weight once, because the even\n  half-token stride fixes its head. This cuts warp dispatch and per-row overhead while keeping 49\u201398 KB in flight\n  per SM, so it targets (a) and part of (b). Term (d) is deliberately untouched, so the result isolates the\n  dispatch and latency share.\nexpected_effect:\n  S:\n    pct: -10\n    confidence: low\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 56\n  smem_per_cta_bytes: 0\n  threads_per_cta: 384\n  ctas_per_sm: 2\n  bytes_in_flight_per_sm: 49152\n  launches_per_call: 1\nknobs:\n  S_ROWS: 24\n  VEC: 8\n  GS: 148\n  NT: \"2 if half-tokens <= 2*GS else 4\"\n  S_threshold_tokens: 296\ndispatch:\n  - max_tokens: 148\n    kernel: _QKRMSNormS\n    meta:\n      NT: 2\n      grid: 296\n      threads: 384\n  - max_tokens: 296\n    kernel: _QKRMSNormS\n    meta:\n      NT: 4\n      grid: 296\n      threads: 384\n  - max_tokens: 1000000000\n    kernel: _QKRMSNorm\n    meta:\n      VEC: 8\n      ROWS: 16\n      THREADS: 256\n      note: \"parent r3-cute-ldg256-os-r16, unchanged (includes the 586-token workload)\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"GS=132 there; sm_90 has no 256-bit LDG (falls back or splits); correctness and rough S-band signal only\"\n  A100:\n    runs: true\n    representative: false\n    note: \"correctness smoke test\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Registers: NT=4 needs <= 80 regs/thread for 2 CTAs/SM (384 threads). If CuTe/ptxas exceeds that, only 1 CTA/SM fits and the 256-token workloads run in 2 waves (large slowdown). Check the sm_100a regs for both NT variants.\"\n  - \"Dynamic if around copies into register fragments allocated outside the branch is an unverified CuTe DSL pattern. If it fails to compile or forces local memory, repair by clamping the unit index and predicating only the store.\"\n  - \"Unused fragments of CTAs with fewer units hold uninitialised data. Results computed from them are never stored, but this must be checked under compute-sanitizer for false alarms.\"\n  - \"Per-SM work at token-like granularity is uneven (max/mean about 1.16 at 128 tokens). The parent has the same 6/5.2 imbalance, so it is a wash.\"\n  - \"Three CuTe compiles (S NT=2, S NT=4, parent), about 60 s in total, all in round 0 of their first workloads, inside the 300 s limit.\"\n  - \"Fewer warps may cut nothing if the B200 fixed cost is dominated by the DRAM latency, the end-of-kernel flush or dirty-L2 write-backs; then the expected S effect is about 0.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1531,7 +1565,33 @@
   ],
   "round": "r4",
   "solution": "loop/rounds/r4/candidates/r4-cute-ldg256-sw2-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "kernel_cutlass_kernel_cand_QKRMSNormS_object_at__tensorptrf32gmemalign32o241281128130720_tensorptrf32gmemalign32o241281128130720_tensorptrf32gmemalign32o2412821128130720_tensorptrf32gmema_0",
+    "local": 0,
+    "num_warps": 12,
+    "ops": {
+     "LDG.256": 5,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 5,
+    "smem": 0
+   },
+   {
+    "kernel": "kernel_cutlass_kernel_cand_QKRMSNorm_object_at__tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o1612831128120480_tensorptrf32gmemal_0",
+    "local": 0,
+    "num_warps": 8,
+    "ops": {
+     "LDG.256": 4,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 8,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "gain": 0.02811561504789495,
@@ -1541,7 +1601,26 @@
     "r3-cute-ldg256-os-r16"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 17.25,
+    "1,128": 6.43,
+    "1,131": 6.3,
+    "1,256": 11.59,
+    "1,8192": 118.62,
+    "16,256": 61.5,
+    "2,128": 11.63,
+    "2,293": 11.36,
+    "32,128": 61.62,
+    "4,1024": 61.74,
+    "4,1657": 96.47,
+    "4,256": 17.65,
+    "4,512": 32.1,
+    "8,128": 17.74,
+    "8,256": 31.97,
+    "8,773": 90.07
+   }
+  }
  },
  "r4-ldg256-wstat-pf2": {
   "card": "id: r4-ldg256-wstat-pf2\nparents:\n  - r3-cute-ldg256-os-r16\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: persistent-wstat\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: default\n  spec: all\nhypothesis: >-\n  The one-shot parent caps each SM at about 64 KB in flight (one 32 B load per thread), and that cap falls further\n  while CTAs retire and new ones ramp up. At 36 B/clk/SM and roughly 1-2 us loaded latency on B200, this limits it\n  to about 6.7 TB/s. A single balanced wave of weight-stationary CTAs fixes this. Each CTA keeps a depth-2 register\n  ring of 256-bit loads, refilled right after each store, which sustains about 96 KB per SM with no turnover gaps and\n  no shared-memory round trip. It should move M/L toward 7.1-7.3 TB/s. For n_tok <= 148 it degenerates to a one-shot\n  grid with the same CTA count as the parent, so S should be unchanged.\nexpected_effect:\n  S:\n    pct: 1\n    confidence: low\n  M:\n    pct: -4\n    confidence: low\n  L:\n    pct: -6\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 40\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 6\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  P: 2\n  ROWS: 16\n  THREADS: 256\n  MIN_BLOCKS: 6\n  CLASSES: 6\n  grid_rule: \"nj = ceil(n_tok / ceil(n_tok / cap)), cap = SMs * occupancy / 6 (148 on B200 at 6 CTAs/SM); grid = 6 * nj\"\ndispatch: []\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"sm_90 path uses 2 x float4 instead of 256-bit; useful as a check of the persistence/prefetch structure and for correctness\"\n  A100:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; correctness and gross-regression check only\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Earlier persistent designs (v039, g2-ws-*, g2-tma-*) were slower than one-shot on B200. If the cause was not serial latency or tail imbalance but something about the strided per-class token order (DRAM page or partition locality), this design inherits the problem.\"\n  - \"If ptxas needs more than 40 registers, __launch_bounds__(256,6) may spill (check LOCAL=0 in the sm_100a compile). The occupancy query keeps the grid in one wave either way.\"\n  - \"With only P=2 tiles outstanding, the depth may still be short of the latency-bandwidth product. P=3 at 5 CTAs/SM (about 120 KB) is the next knob, but it breaks the 148-per-class balance.\"\n  - \"Inline-PTX v8.f32 loads and stores need PTX ISA >= 8.8 (CUDA 13.1 on the portal). Older archs compile the float4 fallback under the __CUDA_ARCH__ guard.\"\n  - \"The static occupancy cap is computed once per process from the device and the compiled kernel only (no data); it assumes a single GPU.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1563,7 +1642,21 @@
   ],
   "round": "r4",
   "solution": "loop/rounds/r4/candidates/r4-ldg256-wstat-pf2.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__b4dbea38_9_kernel_cu_a02f06f819qk_rms_wstat_ldg256EPKfS1_S1_S1_PfS2_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.NA.256": 5,
+     "STG.256": 2
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M,L",
    "gain": 0.030051887471214567,
@@ -1573,7 +1666,26 @@
     "r3-cute-ldg256-os-r16"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 18.5,
+    "1,128": 4.58,
+    "1,131": 4.67,
+    "1,256": 6.24,
+    "1,8192": 135.07,
+    "16,256": 69.66,
+    "2,128": 6.33,
+    "2,293": 11.07,
+    "32,128": 69.47,
+    "4,1024": 69.33,
+    "4,1657": 108.21,
+    "4,256": 18.7,
+    "4,512": 34.66,
+    "8,128": 19.28,
+    "8,256": 34.63,
+    "8,773": 101.0
+   }
+  }
  },
  "r5-ldg256-os-r16-stel": {
   "b200": {
@@ -1670,7 +1782,35 @@
   ],
   "round": "r6",
   "solution": "loop/rounds/r6/candidates/r6-gluon-cpasync-os-r16w8-stel.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_qk_rms",
+    "local": 0,
+    "num_warps": 8,
+    "ops": {
+     "LDGDEPBAR": 2,
+     "LDGSTS.128": 8,
+     "STG.EL.128": 4
+    },
+    "regs": 30,
+    "resident_per_sm": 8,
+    "smem": 16384
+   },
+   {
+    "kernel": "_qk_rms",
+    "local": 0,
+    "num_warps": 8,
+    "ops": {
+     "LDGDEPBAR": 2,
+     "LDGSTS.128": 8,
+     "STG.EL.128": 4
+    },
+    "regs": 30,
+    "resident_per_sm": 8,
+    "smem": 16384
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Explore the empty niche lang:gluon. Write the design in Gluon (triton.experimental.gluon) for explicit layout and memory control. It must be correct for every shape; aim to beat the parent somewhere and say where in the card.",
@@ -1680,7 +1820,26 @@
     "r5-ldg256-os-r16-stel"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 20.85,
+    "1,128": 5.28,
+    "1,131": 5.25,
+    "1,256": 7.36,
+    "1,8192": 143.49,
+    "16,256": 73.88,
+    "2,128": 7.66,
+    "2,293": 13.34,
+    "32,128": 73.86,
+    "4,1024": 73.87,
+    "4,1657": 116.74,
+    "4,256": 20.9,
+    "4,512": 38.69,
+    "8,128": 20.99,
+    "8,256": 38.66,
+    "8,773": 109.35
+   }
+  }
  },
  "r6-ldg256-qkpair-r16": {
   "card": "id: r6-ldg256-qkpair-r16\nparents:\n  - r5-ldg256-os-r16-stel\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  For B*S > 600, one CTA processes the same 16 rows of Q and of K. Each half-warp issues both 256-bit\n  row loads before either reduction, so each thread has 64 B of DRAM reads in flight instead of 32 B.\n  That raises the estimate per SM from 64 KB to about 96 KB at 6 CTAs/SM (39 regs on sm_100a). It also\n  halves the CTA count, which cuts per-CTA launch and exit overhead in the 40-plus-wave one-shot grid.\n  Weights are loaded only after the reductions; they are L1/L2 hits and hold no registers across the\n  DRAM latency. Stores keep the parent's L2 evict_last policy, so the outputs left in L2 at kernel end are\n  unchanged. On A100, which already has enough reads in flight, the change is neutral\n  (S +0.1, M +0.2, L -0.1%). The expected gain is B200-only, from its larger in-flight requirement.\n  Measured and rejected in this session on A100: evict_first x loads (S +0.5, M +2.0, L +8.5%). Also\n  rejected: a 32-register variant forced to 8 CTAs/SM (no spills on sm_100a), which was 3.5% slower on A100 M.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -3\n    confidence: low\n  L:\n    pct: -3\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 39\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 6\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  PAIR_MIN_TOKENS: 601\n  pair_min_blocks: 6\n  store_policy: \"L2 evict_last, fraction 1.0\"\n  load_policy: default\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_single\n    meta:\n      ROWS: 16\n      grid: \"2*n_tiles\"\n  - max_tokens: 9223372036854775807\n    kernel: qk_rms_pair\n    meta:\n      ROWS: 16\n      grid: \"n_tiles\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; needs fewer bytes in flight per SM than B200\"\n  A100:\n    runs: true\n    representative: false\n    note: \"measured: 16/16 pass, S +0.1 / M +0.2 / L -0.1% vs parent (128-bit fallback)\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"6 CTAs/SM (39 regs) instead of 8 means 1536 resident threads; if B200 is limited by CTA turnover rather than bytes in flight, the gain may be zero.\"\n  - \"Q and K reads and writes now interleave inside each CTA (4 concurrent address streams); DRAM page locality could get slightly worse.\"\n  - \"Weight loads after the reduction add an L1-hit latency (about 26 ns) per CTA; small, but present on every tile.\"\n  - \"The predicted gain is from reasoning only; A100 cannot show it.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1702,7 +1861,33 @@
   ],
   "round": "r6",
   "solution": "loop/rounds/r6/candidates/r6-ldg256-qkpair-r16.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__5c394726_9_kernel_cu_a02f06f811qk_rms_pairEPKfS1_S1_S1_PfS2_f",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 6,
+     "STG.256": 3
+    },
+    "regs": 39,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__5c394726_9_kernel_cu_a02f06f813qk_rms_singleEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 6,
+     "STG.256": 3
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M,L",
    "gain": 0.01576610161101355,
@@ -1712,7 +1897,26 @@
     "r5-ldg256-os-r16-stel"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 15.35,
+    "1,128": 4.13,
+    "1,131": 4.1,
+    "1,256": 5.57,
+    "1,8192": 115.75,
+    "16,256": 58.45,
+    "2,128": 5.58,
+    "2,293": 9.28,
+    "32,128": 58.45,
+    "4,1024": 58.66,
+    "4,1657": 94.18,
+    "4,256": 15.49,
+    "4,512": 29.31,
+    "8,128": 15.2,
+    "8,256": 29.28,
+    "8,773": 87.79
+   }
+  }
  },
  "r6-s-ldef-nc-disp": {
   "card": "id: r6-s-ldef-nc-disp\nparents:\n  - r5-ldg256-os-r16-stel\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  My estimate of what the parent's ~3.2 us fixed cost on small inputs is made of:\n  (a) CUPTI launch-to-end span of a near-empty kernel, about 1-1.5 us;\n  (b) loaded DRAM latency plus TLB misses on first touch of fresh pool addresses, about 1 us;\n  (c) store drain and grid exit, about 0.3-0.5 us;\n  (d) possibly extra DRAM write-backs: every line we allocate in an L2 full of the flush's dirty zero lines\n  may evict one of them.\n  (a)-(c) are mostly outside a kernel's control. r4-cute-ldg256-sw2-disp tests warp and CTA dispatch.\n  This candidate tests (d) only. For B*S <= 600, x loads carry L2 evict_first and weights use ld.global.nc,\n  the load policy CAKE kept after paired cold-L2 B200 tests. Allocations for input lines then recycle our\n  own clean lines instead of evicting dirty flush lines, and output stores (still evict_last) can take the\n  place of those clean input lines. Larger sizes run the parent unchanged, so the B200 result isolates the\n  effect on S.\n  Measured on A100 (128-bit fallback), against the parent: S +0.3% (noise; -2.2%, -1.1% at 25 MB, +1.5 to +1.8%\n  at 12.6 MB), M/L 0%. The near-peak marginal bandwidth on both GPUs already argues that (d) is small. So\n  this is mainly a cheap B200 check of the mechanism: an expected gain of 0 to 3% on S, B200-only if it\n  appears at all.\n  Also tried and rejected: 2-4 tiles per CTA. On A100 that was -6% at 128 tokens and +14% at 256 tokens. The\n  128-token gain is an A100 wave effect (the parent runs 1.8 waves on 108 SMs, but one wave on B200's 148).\n  It duplicates r4-cute, and the 2-tile kernel needs 48 registers on sm_100a, so 5 CTAs/SM would spill\n  256 tokens into a second wave.\nexpected_effect:\n  S:\n    pct: -1.5\n    confidence: low\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  S_MAX_TOKENS: 600\n  S_load_policy: \"x: L2::cache_hint 0x12F0000000000000 (evict_first); w: ld.global.nc\"\n  store_policy: \"L2 evict_last, fraction 1.0 (all sizes)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<true>\n    meta:\n      ROWS: 16\n      THREADS: 256\n      loads: \"x evict_first, w nc\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      ROWS: 16\n      THREADS: 256\n      note: \"identical to parent r5-ldg256-os-r16-stel\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; the L2 is 50 MB instead of 126 MB, so the dirty-flush interaction differs\"\n  A100:\n    runs: true\n    representative: false\n    note: \"measured S +0.3%, M 0.0%, L -0.1% vs parent (noise); 16/16 pass\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Term (d) may be negligible on B200, since marginal bandwidth between 12.6 and 25 MB is already about 7.9 TB/s. The expected result is then about 0 on S.\"\n  - \"On A100, evict_first loads hurt L by 4% (r5 session). That is why they apply only to B*S <= 600; the 586-token workload (57.6 MB) is the one most exposed if B200 behaves the same way.\"\n  - \"S-band noise on the portal is about 5%, so one submission cannot resolve an effect of 1-3%.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1734,11 +1938,154 @@
   ],
   "round": "r6",
   "solution": "loop/rounds/r6/candidates/r6-s-ldef-nc-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__b40f901f_9_kernel_cu_a02f06f813qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 3,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__b40f901f_9_kernel_cu_a02f06f813qk_rms_kernelILb1EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 3,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "gain": 0.020369583461286256,
    "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.2 us fixed + bytes / 7.5 TB/s on small and medium sizes; reaching 2.0 us fixed would add about +0.020 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is recoverable; see b200_sota.md section 4 for what they do. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: d1-os-r8w4-nohint (ldg128/oneshot): +4%; g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +3%; g2-tma-r8s3 (tma-tensor/persistent): +34%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +19%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +10%; r2-ldg256-os-r16 (ldg256/oneshot): +5%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +3%; v028 (ldg128/persistent): +42%; v039 (ldg128/persistent): +19%; v040 (ldg128/oneshot): +77%; v050 (ldg128/oneshot): +134%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp).",
+   "operation": "specialisation",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,1024": 14.66,
+    "1,128": 4.13,
+    "1,131": 4.13,
+    "1,256": 5.5,
+    "1,8192": 115.63,
+    "16,256": 57.97,
+    "2,128": 5.44,
+    "2,293": 8.61,
+    "32,128": 57.93,
+    "4,1024": 58.08,
+    "4,1657": 93.86,
+    "4,256": 14.5,
+    "4,512": 28.21,
+    "8,128": 14.53,
+    "8,256": 28.32,
+    "8,773": 87.11
+   }
+  }
+ },
+ "r7-cap4-qkcat": {
+  "card": "id: r7-cap4-qkcat\nparents:\n  - r5-ldg256-os-r16-stel\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Fills the grid:capped4 niche. For B*S <= 2048 the grid is capped at 4 CTAs per SM (148*4 rounded down\n  to a multiple of 3, i.e. 591 CTAs of 256 threads). Each half-warp walks the joined [Q;K] rows with\n  stride grid*16, which is a multiple of 48, so its head is fixed. The next row's 256-bit loads are\n  issued before the current row's reduction (ping-pong registers, no moves). Above 2048 tokens it runs\n  the parent's one-shot kernel. This is a negative result: on the rented B200 the capped path is slower\n  than the one-shot parent at every S and M size. Measured variants, change vs parent for S/M/L:\n  Q and K row pairs +8/+6/+11%; Q and K pairs with true two-step prefetch +23/+25/+19%, no spills, so more\n  loads in flight hurt; joined [Q;K] stream (this kernel) +4/+4/+11%; contiguous per-CTA tile ranges\n  +5/+9/0%. Probable cause, untested: DRAM access-pattern or read/write-mixing effects. One-shot CTAs keep\n  one narrow, moving address window and the hardware keeps it full. Long-lived persistent warps widen the\n  window and gain nothing from more prefetch. This matches CAKE's finding that persistent pipelined\n  grids do not beat one-shot. It does not beat the parent anywhere. Keep it as the niche representative,\n  not as a submission.\nexpected_effect:\n  S:\n    pct: 2\n    confidence: medium\n  M:\n    pct: 2\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 64\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  CPS: 4\n  THREADS: 256\n  P_MAX_TOKENS: 2048\n  prefetch_depth: 2\n  store_policy: \"L2 evict_last\"\ndispatch:\n  - max_tokens: 2048\n    kernel: qk_rms_persist\n    meta:\n      CPS: 4\n      THREADS: 256\n  - max_tokens: 4611686018427387904\n    kernel: qk_rms_kernel\n    meta:\n      ROWS: 16\n      THREADS: 256\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback path\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Measured slower than the parent on the rented B200: S +4.0%, M +3.5%, L 0% (projected portal score 0.604 vs 0.609); do not submit in place of r5.\"\n  - \"Register count reported 64 for the earlier QK-pair variant; this variant was not compiled separately and is probably below that; 4 CTAs per SM is enforced by launch_bounds.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r7-cap4-qkcat",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r5-ldg256-os-r16-stel"
+  ],
+  "round": "r7",
+  "solution": "loop/rounds/r7/candidates/r7-cap4-qkcat.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Explore the empty niche grid:capped4. Small/medium specialist after FlashInfer's CAKE B200 kernels (b200_sota.md section 4): a persistent grid capped at 4 CTAs per SM, each thread keeping 2-4 rows' 256-bit loads in flight and issuing the next row's loads before the current row's reduction; parent's kernel for large sizes. It must be correct for every shape; aim to beat the parent somewhere and say where in the card.",
+   "niche": "grid:capped4",
+   "operation": "new_design",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ]
+  },
+  "timings": {}
+ },
+ "r7-ldg256-l2pf-mdisp": {
+  "card": "id: r7-ldg256-l2pf-mdisp\nparents:\n  - r5-ldg256-os-r16-stel\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  For footprints that fit in L2 (B*S <= 1536), one cp.async.bulk.prefetch.L2 per CTA brings in the input tile\n  for the CTA one resident wave (148x8) later. That deepens the DRAM queue and turns most demand loads into\n  L2 hits, which cuts the latency-bound ramp and tail. Above that size the prefetched (normal-priority) lines\n  are evicted by evict_last outputs filling the L2: L was +4-5% slower with prefetch, and an evict_last hint\n  on the prefetch was worse at every size. So large sizes run r5 plus evict_first x loads and nc weights,\n  which is neutral. Measured on a rented B200 (unlocked clocks), all against r5:\n  - evict_first loads alone: S -1.8 / M -1.1 / L +0.2%.\n  - evict_last stores only on the last 96 MB of output: -2.3 / -1.0 / -0.3%.\n  - prefetch at all sizes: -2.7 / -2.5 / +4.3%.\n  - evict_last prefetch: -2.4 / +4.2 / +6.0%.\n  - 2-wave prefetch up to 2100 tokens: -1.1 / -0.6 / 0.0%.\n  - this dispatched version: S -2.9 / M -2.6 / L 0.0%, 16/16 pass, projected 0.6125.\n  Outputs left in L2 are not the limit any more: L stays at about 7.0 TB/s marginal under every cache policy\n  tried.\nexpected_effect:\n  S:\n    pct: -2\n    confidence: medium\n  M:\n    pct: -2\n    confidence: low\n  L:\n    pct: 0\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 28\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  PF_MAX_TOKENS: 1536\n  PF_DISTANCE: \"1 resident wave = num_SMs x 8 CTAs (8 KB per prefetch)\"\n  load_policy: \"x L2::cache_hint EVICT_FIRST constant; w ld.global.nc\"\n  store_policy: \"L2 evict_last, fraction 1.0\"\ndispatch:\n  - max_tokens: 1536\n    kernel: qk_rms_kernel<true>\n    meta:\n      prefetch: \"cp.async.bulk.prefetch.L2 one wave ahead\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      prefetch: none\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; the 50 MB L2 changes where prefetch stops paying\"\n  A100:\n    runs: false\n    representative: false\n    note: \"cp.async.bulk.prefetch needs sm_90+\"\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"The gain was measured on a rented B200 at unlocked clocks. Portal S/M changes are usually smaller (projection exponents 0.45 / 0.63).\"\n  - \"The 1536-token threshold sits between measured sizes 1024 (gain) and 2048 (neutral). Sizes in between are not tested.\"\n  - \"The 4,1024 and 16,256 L sizes moved by about \u00b10.4% across runs; that is noise.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r7-ldg256-l2pf-mdisp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r5-ldg256-os-r16-stel"
+  ],
+  "round": "r7",
+  "solution": "loop/rounds/r7/candidates/r7-ldg256-l2pf-mdisp.json",
+  "status": "proposed",
+  "task": {
+   "band": "M,L",
+   "gain": 0.01576610161101355,
+   "instructions": "Goal: cut medium and large input latency (B*S > 600) on B200. The parent reaches 6.45 TB/s (M) and 6.93 TB/s (L) effective; a further 5% would add about +0.016 to the score. Its fit is 7.5 TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. Slower on B200 than the parent in these bands already: d1-os-r8w4-nohint (ldg128/oneshot): +7%; g2-os-r16w8 (ldg128/oneshot): +9%; g2-os-r8w4 (ldg128/oneshot): +9%; g2-tma-r8s3 (tma-tensor/persistent): +26%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +24%; r2-ldg256-os-r16 (ldg256/oneshot): +9%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +5%; v028 (ldg128/persistent): +59%; v039 (ldg128/persistent): +22%; v040 (ldg128/oneshot): +143%; v050 (ldg128/oneshot): +38%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp); r6-gluon-cpasync-os-r16w8-stel (cpasync/oneshot, gluon); r6-ldg256-qkpair-r16 (ldg256/oneshot, cuda_cpp); r6-s-ldef-nc-disp (ldg256/oneshot, cuda_cpp).",
+   "operation": "structural_mutation",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ]
+  },
+  "timings": {}
+ },
+ "r7-s-r8w4-cta128-disp": {
+  "card": "id: r7-s-r8w4-cta128-disp\nparents:\n  - r5-ldg256-os-r16-stel\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  For B*S <= 600, use the parent's one-shot 256-bit kernel with 8-row, 128-thread CTAs (16 resident per SM),\n  so placement is finer-grained and each SM's load is more even. Every larger size runs the parent kernel with\n  its exact configuration. This was the best of five S-band structures tried on a rented B200; the gain is\n  within noise there. Measured against the parent: S -0.4% (noise), M/L 0 (identical code).\n  Other structures, all slower:\n  1 CTA/SM with balanced contiguous chunks and stride-48 weight reuse, +18% at S (+37% at 586 tokens);\n  the same with tokens interleaved across CTAs, +7%; 64-thread CTAs, +6 to +10% at 128/256 tokens;\n  768-thread one-token CTAs, +1 to +9%; bulk L2 prefetch of later-wave tiles, +9% at 586 tokens.\n  What I think the ~3.2 us fixed cost is (inferred):\n  about 0.5 us of launch, CTA ramp and kernel-end drain; about 1 us of first DRAM round trip under a burst;\n  and, the largest part, extra DRAM traffic. Our reads and writes allocate L2 lines, which evicts the dirty lines\n  left by the harness's zero-fill flush, so the S band moves more bytes than nominal at near-peak bandwidth.\n  The evidence: anything that adds early requests (prefetch) or concentrates the address front per SM\n  (contiguous chunks) gets slower, and launch-count or wave changes are neutral.\n  The remaining lever is cutting that write-back traffic (for example evict_first input lines, the r6 idea),\n  not grid shape.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  S_ROWS: 8\n  S_THREADS: 128\n  S_MINBLOCKS: 16\n  S_max_tokens: 600\n  other_sizes: \"parent r5: ROWS 16, 256 threads, minBlocks 8\"\n  store_policy: \"L2 evict_last, fraction 1.0\"\n  load_policy: default\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<8,16>\n    meta:\n      ROWS: 8\n      threads: 128\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<16,8>\n    meta:\n      ROWS: 16\n      threads: 256\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, different L2 size\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The S-band gain is within noise (rented B200 -0.4%); on the portal expect about 0 +/- 3%.\"\n  - \"If the portal's CTA scheduler differs, 128-thread CTAs could fall either side of the parent (64-thread CTAs were 6-10% slower).\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r7-s-r8w4-cta128-disp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "r5-ldg256-os-r16-stel"
+  ],
+  "round": "r7",
+  "solution": "loop/rounds/r7/candidates/r7-s-r8w4-cta128-disp.json",
+  "status": "proposed",
+  "task": {
+   "band": "S",
+   "gain": 0.020369583461286256,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.2 us fixed + bytes / 7.5 TB/s on small and medium sizes; reaching 2.0 us fixed would add about +0.020 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is recoverable; see b200_sota.md section 4 for what they do. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: d1-os-r8w4-nohint (ldg128/oneshot): +4%; g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +3%; g2-tma-r8s3 (tma-tensor/persistent): +34%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +19%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +10%; r2-ldg256-os-r16 (ldg256/oneshot): +5%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +3%; v028 (ldg128/persistent): +42%; v039 (ldg128/persistent): +19%; v040 (ldg128/oneshot): +77%; v050 (ldg128/oneshot): +134%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp); r6-gluon-cpasync-os-r16w8-stel (cpasync/oneshot, gluon); r6-ldg256-qkpair-r16 (ldg256/oneshot, cuda_cpp); r6-s-ldef-nc-disp (ldg256/oneshot, cuda_cpp).",
    "operation": "specialisation",
    "parents": [
     "r5-ldg256-os-r16-stel"

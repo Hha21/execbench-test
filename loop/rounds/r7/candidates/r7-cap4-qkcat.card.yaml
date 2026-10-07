@@ -1,0 +1,84 @@
+id: r7-cap4-qkcat
+parents:
+  - r5-ldg256-os-r16-stel
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Fills the grid:capped4 niche. For B*S <= 2048 the grid is capped at 4 CTAs per SM (148*4 rounded down
+  to a multiple of 3, i.e. 591 CTAs of 256 threads). Each half-warp walks the joined [Q;K] rows with
+  stride grid*16, which is a multiple of 48, so its head is fixed. The next row's 256-bit loads are
+  issued before the current row's reduction (ping-pong registers, no moves). Above 2048 tokens it runs
+  the parent's one-shot kernel. This is a negative result: on the rented B200 the capped path is slower
+  than the one-shot parent at every S and M size. Measured variants, change vs parent for S/M/L:
+  Q and K row pairs +8/+6/+11%; Q and K pairs with true two-step prefetch +23/+25/+19%, no spills, so more
+  loads in flight hurt; joined [Q;K] stream (this kernel) +4/+4/+11%; contiguous per-CTA tile ranges
+  +5/+9/0%. Probable cause, untested: DRAM access-pattern or read/write-mixing effects. One-shot CTAs keep
+  one narrow, moving address window and the hardware keeps it full. Long-lived persistent warps widen the
+  window and gain nothing from more prefetch. This matches CAKE's finding that persistent pipelined
+  grids do not beat one-shot. It does not beat the parent anywhere. Keep it as the niche representative,
+  not as a submission.
+expected_effect:
+  S:
+    pct: 2
+    confidence: medium
+  M:
+    pct: 2
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  CPS: 4
+  THREADS: 256
+  P_MAX_TOKENS: 2048
+  prefetch_depth: 2
+  store_policy: "L2 evict_last"
+dispatch:
+  - max_tokens: 2048
+    kernel: qk_rms_persist
+    meta:
+      CPS: 4
+      THREADS: 256
+  - max_tokens: 4611686018427387904
+    kernel: qk_rms_kernel
+    meta:
+      ROWS: 16
+      THREADS: 256
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback path"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Measured slower than the parent on the rented B200: S +4.0%, M +3.5%, L 0% (projected portal score 0.604 vs 0.609); do not submit in place of r5."
+  - "Register count reported 64 for the earlier QK-pair variant; this variant was not compiled separately and is probably below that; 4 CTAs per SM is enforced by launch_bounds."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

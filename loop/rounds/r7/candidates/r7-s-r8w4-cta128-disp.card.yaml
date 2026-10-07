@@ -1,0 +1,89 @@
+id: r7-s-r8w4-cta128-disp
+parents:
+  - r5-ldg256-os-r16-stel
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  For B*S <= 600, use the parent's one-shot 256-bit kernel with 8-row, 128-thread CTAs (16 resident per SM),
+  so placement is finer-grained and each SM's load is more even. Every larger size runs the parent kernel with
+  its exact configuration. This was the best of five S-band structures tried on a rented B200; the gain is
+  within noise there. Measured against the parent: S -0.4% (noise), M/L 0 (identical code).
+  Other structures, all slower:
+  1 CTA/SM with balanced contiguous chunks and stride-48 weight reuse, +18% at S (+37% at 586 tokens);
+  the same with tokens interleaved across CTAs, +7%; 64-thread CTAs, +6 to +10% at 128/256 tokens;
+  768-thread one-token CTAs, +1 to +9%; bulk L2 prefetch of later-wave tiles, +9% at 586 tokens.
+  What I think the ~3.2 us fixed cost is (inferred):
+  about 0.5 us of launch, CTA ramp and kernel-end drain; about 1 us of first DRAM round trip under a burst;
+  and, the largest part, extra DRAM traffic. Our reads and writes allocate L2 lines, which evicts the dirty lines
+  left by the harness's zero-fill flush, so the S band moves more bytes than nominal at near-peak bandwidth.
+  The evidence: anything that adds early requests (prefetch) or concentrates the address front per SM
+  (contiguous chunks) gets slower, and launch-count or wave changes are neutral.
+  The remaining lever is cutting that write-back traffic (for example evict_first input lines, the r6 idea),
+  not grid shape.
+expected_effect:
+  S:
+    pct: 0
+    confidence: medium
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  S_ROWS: 8
+  S_THREADS: 128
+  S_MINBLOCKS: 16
+  S_max_tokens: 600
+  other_sizes: "parent r5: ROWS 16, 256 threads, minBlocks 8"
+  store_policy: "L2 evict_last, fraction 1.0"
+  load_policy: default
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_kernel<8,16>
+    meta:
+      ROWS: 8
+      threads: 128
+  - max_tokens: 1000000000
+    kernel: qk_rms_kernel<16,8>
+    meta:
+      ROWS: 16
+      threads: 256
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback, different L2 size"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The S-band gain is within noise (rented B200 -0.4%); on the portal expect about 0 +/- 3%."
+  - "If the portal's CTA scheduler differs, 128-thread CTAs could fall either side of the parent (64-thread CTAs were 6-10% slower)."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

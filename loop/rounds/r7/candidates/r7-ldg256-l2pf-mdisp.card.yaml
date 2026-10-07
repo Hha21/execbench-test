@@ -1,0 +1,86 @@
+id: r7-ldg256-l2pf-mdisp
+parents:
+  - r5-ldg256-os-r16-stel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  For footprints that fit in L2 (B*S <= 1536), one cp.async.bulk.prefetch.L2 per CTA brings in the input tile
+  for the CTA one resident wave (148x8) later. That deepens the DRAM queue and turns most demand loads into
+  L2 hits, which cuts the latency-bound ramp and tail. Above that size the prefetched (normal-priority) lines
+  are evicted by evict_last outputs filling the L2: L was +4-5% slower with prefetch, and an evict_last hint
+  on the prefetch was worse at every size. So large sizes run r5 plus evict_first x loads and nc weights,
+  which is neutral. Measured on a rented B200 (unlocked clocks), all against r5:
+  - evict_first loads alone: S -1.8 / M -1.1 / L +0.2%.
+  - evict_last stores only on the last 96 MB of output: -2.3 / -1.0 / -0.3%.
+  - prefetch at all sizes: -2.7 / -2.5 / +4.3%.
+  - evict_last prefetch: -2.4 / +4.2 / +6.0%.
+  - 2-wave prefetch up to 2100 tokens: -1.1 / -0.6 / 0.0%.
+  - this dispatched version: S -2.9 / M -2.6 / L 0.0%, 16/16 pass, projected 0.6125.
+  Outputs left in L2 are not the limit any more: L stays at about 7.0 TB/s marginal under every cache policy
+  tried.
+expected_effect:
+  S:
+    pct: -2
+    confidence: medium
+  M:
+    pct: -2
+    confidence: low
+  L:
+    pct: 0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 28
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  PF_MAX_TOKENS: 1536
+  PF_DISTANCE: "1 resident wave = num_SMs x 8 CTAs (8 KB per prefetch)"
+  load_policy: "x L2::cache_hint EVICT_FIRST constant; w ld.global.nc"
+  store_policy: "L2 evict_last, fraction 1.0"
+dispatch:
+  - max_tokens: 1536
+    kernel: qk_rms_kernel<true>
+    meta:
+      prefetch: "cp.async.bulk.prefetch.L2 one wave ahead"
+  - max_tokens: 1000000000
+    kernel: qk_rms_kernel<false>
+    meta:
+      prefetch: none
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; the 50 MB L2 changes where prefetch stops paying"
+  A100:
+    runs: false
+    representative: false
+    note: "cp.async.bulk.prefetch needs sm_90+"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "The gain was measured on a rented B200 at unlocked clocks. Portal S/M changes are usually smaller (projection exponents 0.45 / 0.63)."
+  - "The 1536-token threshold sits between measured sizes 1024 (gain) and 2048 (neutral). Sizes in between are not tested."
+  - "The 4,1024 and 16,256 L sizes moved by about ±0.4% across runs; that is noise."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

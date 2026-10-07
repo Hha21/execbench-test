@@ -1,0 +1,268 @@
+=== TASK ===
+Round: r7   Operation: structural_mutation
+Problem: #38 038_flux_multi_head_rmsnorm_qk   Target niche: any empty niche   Target band: M,L
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r7-'.
+Goal: cut medium and large input latency (B*S > 600) on B200. The parent reaches 6.45 TB/s (M) and 6.93 TB/s (L) effective; a further 5% would add about +0.016 to the score. Its fit is 7.5 TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. Slower on B200 than the parent in these bands already: d1-os-r8w4-nohint (ldg128/oneshot): +7%; g2-os-r16w8 (ldg128/oneshot): +9%; g2-os-r8w4 (ldg128/oneshot): +9%; g2-tma-r8s3 (tma-tensor/persistent): +26%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +24%; r2-ldg256-os-r16 (ldg256/oneshot): +9%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +5%; v028 (ldg128/persistent): +59%; v039 (ldg128/persistent): +22%; v040 (ldg128/oneshot): +143%; v050 (ldg128/oneshot): +38%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp); r6-gluon-cpasync-os-r16w8-stel (cpasync/oneshot, gluon); r6-ldg256-qkpair-r16 (ldg256/oneshot, cuda_cpp); r6-s-ldef-nc-disp (ldg256/oneshot, cuda_cpp).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r5-ldg256-os-r16-stel | ldg256/oneshot/all | cuda_cpp | 5.6/19.1/75.7 | -/-/- | -/-/- | -/-/- | 6.4/20.8/75.7 | 0.608914 | - | passed |
+| r3-cute-ldg256-os-r16 | ldg256/oneshot/all | cute_dsl | 6.0/22.6/79.3 | -/-/- | 17.4/79.2/313.8 | -/-/- | 6.6/22.7/78.4 | 0.58818 | 32/0/8 | passed |
+| d1-os-r8w4-nohint | ldg128/oneshot/all | triton | 6.2/22.6/79.4 | -/-/- | -/-/- | -/-/- | 6.7/23.3/79.3 | 0.582207 | - | passed |
+| g2-os-r8w4 | ldg128/oneshot/S | triton | 6.1/22.7/81.0 | 7.4/34.4/131.4 | 15.4/79.0/322.8 | -/-/- | 6.6/23.4/82.1 | 0.576828 | 32/0/16 | passed |
+| g2-os-r16w8 | ldg128/oneshot/S | triton | -/-/- | 7.5/35.1/134.6 | 15.5/78.8/323.1 | -/-/- | 6.7/23.3/82.0 | 0.576663 | 32/0/8 | passed |
+| r2-ldg256-os-r16 | ldg256/oneshot/all | cuda_cpp | 6.2/22.7/80.8 | -/-/- | 17.4/83.0/339.9 | -/-/- | 6.7/23.4/82.0 | 0.575609 | 31/0/None | passed |
+| g2-ws-hb16w8s3 | cpasync/persistent-wstat/L | triton | -/-/- | 7.5/35.5/136.8 | 17.2/83.0/327.0 | -/-/- | 7.0/26.1/93.7 | 0.536856 | 32/16384/8 | passed |
+| g2-tmaws-hb8s4 | tma-tensor/persistent-wstat/L | triton | -/-/- | 7.9/36.7/139.5 | 20.4/86.7/349.0 | -/-/- | 7.7/25.9/89.4 | 0.536804 | 32/32824/6 | passed |
+| v039 | ldg128/persistent/all | triton | -/-/- | 8.0/36.3/139.7 | 16.3/82.8/337.9 | 37.8/238.5/912.2 | 7.7/26.5/90.9 | 0.531119 | 32/0/None | passed |
+| g2-tma-r8s3 | tma-tensor/persistent/L | triton | -/-/- | 8.6/36.9/136.9 | 23.0/95.3/358.0 | -/-/- | 8.6/27.8/93.6 | 0.509579 | 32/36896/6 | passed |
+| v028 | ldg128/persistent/all | triton | -/-/- | 8.3/34.5/131.0 | 16.5/81.0/322.1 | 37.2/223.0/860.3 | 9.0/34.0/118.8 | 0.450775 | 149/0/None | passed |
+| v050 | ldg128/oneshot/all | triton | -/-/- | 13.7/40.5/133.3 | 38.2/84.7/318.8 | 36.1/209.5/820.4 | 14.6/34.4/96.5 | 0.433525 | 68/0/None | passed |
+| v040 | ldg128/oneshot/all | triton | -/-/- | 9.4/44.2/167.2 | 17.0/81.1/327.5 | 38.0/210.0/806.7 | 11.3/49.9/185.4 | 0.346612 | 28/1024/None | passed |
+| r3-os-l2pf-r8w4 | ldg128/oneshot/L | cuda_cpp | -/-/- | -/-/- | 15.8/79.5/323.5 | -/-/- | -/-/- | pending | 31/0/None | passed |
+| r3-tokblk-s-disp | ldg128/oneshot/dispatch:size | triton | -/-/- | -/-/- | 16.0/79.0/323.0 | -/-/- | -/-/- | pending | 64/0/8; 64/0/8 | passed |
+| g2-os-r8w2 | ldg128/oneshot/S | triton | -/-/- | 7.4/35.1/133.4 | 16.3/80.3/325.5 | -/-/- | -/-/- | pending | 40/0/25 | passed |
+| g2-os-r16w4 | ldg128/oneshot/S | triton | -/-/- | 7.4/35.0/132.6 | 16.3/80.4/326.1 | -/-/- | -/-/- | pending | 40/0/12 | passed |
+| g2-ws-hb16w8 | ldg128/persistent-wstat/L | triton | -/-/- | 7.6/36.6/143.3 | 16.7/84.7/340.0 | -/-/- | -/-/- | pending | 32/0/8 | passed |
+| r1-bulk1d-ring-r16s16 | bulk1d/persistent/L | cuda_cpp | -/-/- | 8.1/36.5/141.9 | 17.4/86.6/342.6 | -/-/- | -/-/- | pending | 30/1024/None | passed |
+| g2-tmaws-hb16s3 | tma-tensor/persistent-wstat/L | triton | -/-/- | 8.2/36.2/135.5 | 21.0/87.7/348.2 | -/-/- | -/-/- | pending | 40/49184/4 | passed |
+| r2-ldg256-tokblk | ldg256/oneshot/dispatch:size | cuda_cpp | -/-/- | -/-/- | 17.4/108.9/429.1 | -/-/- | -/-/- | pending | 63/0/None; 40/0/None | passed |
+| g2-tma-r16s4 | tma-tensor/persistent/L | triton | -/-/- | 9.2/37.8/139.3 | 34.0/139.5/525.0 | -/-/- | -/-/- | pending | 46/106552/2 | passed |
+| r4-cuda-ldg256-token-r2 | ldg256/oneshot/all | cuda_cpp | 5.9/22.4/79.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 40/0/None | passed |
+| r4-cute-ldg256-sw2-disp | ldg256/persistent/dispatch:size | cute_dsl | 9.1/22.3/78.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/0/5; 32/0/8 | passed |
+| r4-ldg256-wstat-pf2 | ldg256/persistent-wstat/all | cuda_cpp | 6.2/24.0/88.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 40/0/None | passed |
+| r6-gluon-cpasync-os-r16w8-stel | cpasync/oneshot/all | gluon | 7.3/26.7/95.1 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/16384/8; 30/16384/8 | passed |
+| r6-ldg256-qkpair-r16 | ldg256/oneshot/dispatch:size | cuda_cpp | 5.5/19.9/75.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 39/0/None; 31/0/None | passed |
+| r6-s-ldef-nc-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/19.0/75.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/0/None; 31/0/None | passed |
+B200 results so far:
+- d1-os-r8w4-nohint: B200 score 0.582, geomean 24.9 µs, B200 S/M/L 6.7/23.3/79.3 µs
+- g2-os-r16w8: B200 score 0.577, geomean 25.3 µs, B200 S/M/L 6.7/23.3/82.0 µs
+- g2-os-r8w4: B200 score 0.577, geomean 25.3 µs, B200 S/M/L 6.6/23.4/82.1 µs
+- g2-tma-r8s3: B200 score 0.510, geomean 30.4 µs, B200 S/M/L 8.6/27.8/93.6 µs
+- g2-tmaws-hb8s4: B200 score 0.537, geomean 28.2 µs, B200 S/M/L 7.7/25.9/89.4 µs
+- g2-ws-hb16w8s3: B200 score 0.537, geomean 28.0 µs, B200 S/M/L 7.0/26.1/93.7 µs
+- r2-ldg256-os-r16: B200 score 0.576, geomean 25.4 µs, B200 S/M/L 6.7/23.4/82.0 µs
+- r3-cute-ldg256-os-r16: B200 score 0.588, geomean 24.6 µs, B200 S/M/L 6.6/22.7/78.4 µs
+- r5-ldg256-os-r16-stel: B200 score 0.609, geomean 23.4 µs, B200 S/M/L 6.4/20.8/75.7 µs
+- v028: B200 score 0.451, geomean 35.9 µs, B200 S/M/L 9.0/34.0/118.8 µs
+- v039: B200 score 0.531, geomean 28.6 µs, B200 S/M/L 7.7/26.5/90.9 µs
+- v040: B200 score 0.347, geomean 51.3 µs, B200 S/M/L 11.3/49.9/185.4 µs
+- v050: B200 score 0.434, geomean 38.7 µs, B200 S/M/L 14.6/34.4/96.5 µs
+
+=== PARENTS ===
+--- parent r5-ldg256-os-r16-stel ---
+design card:
+id: r5-ldg256-os-r16-stel
+parents:
+  - r3-cute-ldg256-os-r16
+  - r2-ldg256-os-r16
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  The kernel keeps the parent's one-shot ldg256 structure. The only change is that output stores carry an L2
+  evict_last policy, while loads keep the default policy. Outputs stay in L2 longer, and the used-once input lines
+  and the harness's flush lines are evicted first. That should cut DRAM write traffic and read/write mixing inside
+  the timed window, and leave more output dirty in L2 when the kernel ends. Evidence on B200: the r2 kernel has the
+  same structure with evict_first stores and loads, and it is 4-5% slower than the default-policy parent on M and L.
+  Evidence on A100 (128-bit fallback, same policies), against the CuTe parent: S -6.4%, M -3.6%, L -3.8%. Control
+  run with evict_normal stores: +0.8 / +2.4 / +1.1%, so the gain comes from the hint, not from the language.
+  evict_first loads plus evict_last stores gave L +4.3%, so it was rejected.
+expected_effect:
+  S:
+    pct: -3
+    confidence: low
+  M:
+    pct: -4
+    confidence: low
+  L:
+    pct: -4
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  store_policy: "L2 evict_last, fraction 1.0"
+  load_policy: default
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback with the same cache policies; the L2 is a different size"
+  A100:
+    runs: true
+    representative: false
+    note: "128-bit fallback with the same policies; measured S -6.4 / M -3.6 / L -3.8% vs the parent, and the evict_normal control at about +1%"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The L2 replacement behaviour on B200 (126 MB, two partitions) may differ from A100 (40 MB); the gain could shrink or vanish."
+  - "Evidence comes from A100 only. On B200 the effect of the evict_last store hint alone has not been measured; only the evict_first stores and loads of r2 have been."
+  - "The CUDA C++ build differs from the CuTe parent. The parent's B200 lead over the r2 CUDA kernel is attributed to cache policy, not to codegen."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 5.6/19.1/75.7
+B200 portal: score 0.608914, geomean 23.357 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=1, seq_len=128 | 4.8 | 9.3 | 0.692 |
+| batch_size=1, seq_len=131 | 4.9 | 9.4 | 0.691 |
+| batch_size=2, seq_len=128 | 6.4 | 10.4 | 0.656 |
+| batch_size=1, seq_len=256 | 6.5 | 10.5 | 0.653 |
+| batch_size=2, seq_len=293 | 10.9 | 17.5 | 0.663 |
+| batch_size=8, seq_len=128 | 16.4 | 22.5 | 0.623 |
+| batch_size=1, seq_len=1024 | 16.4 | 22.4 | 0.621 |
+| batch_size=4, seq_len=256 | 16.3 | 22.4 | 0.624 |
+| batch_size=4, seq_len=512 | 29.7 | 37.6 | 0.598 |
+| batch_size=8, seq_len=256 | 29.9 | 37.4 | 0.594 |
+| batch_size=4, seq_len=1024 | 58.3 | 66.7 | 0.559 |
+| batch_size=16, seq_len=256 | 58.3 | 66.5 | 0.557 |
+| batch_size=32, seq_len=128 | 58.3 | 66.6 | 0.558 |
+| batch_size=8, seq_len=773 | 87.7 | 102.7 | 0.568 |
+| batch_size=4, seq_len=1657 | 93.8 | 107.2 | 0.558 |
+| batch_size=1, seq_len=8192 | 115.9 | 123.4 | 0.528 |
+sm_100a static features: []
+source:
+--- file kernel.cu ---
+// r5-ldg256-os-r16-stEL: per-head RMSNorm of Q and K (fp32), one fused one-shot launch.
+// Same structure as r3-cute-ldg256-os-r16: 16 rows per 256-thread CTA, a half-warp per 128-float row,
+// 256-bit ld/st on sm_100a. Single change: output stores carry an L2 evict_last cache-hint policy.
+// Input and weight loads keep the default policy (evict_first loads were measured slower).
+// All maths fp32; rsqrtf -> rsqrt.approx.f32; 1/128 is an exact multiply.
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cstdint>
+
+namespace {
+constexpr int D = 128;
+constexpr int H = 48;
+constexpr int ROWS = 16;              // divides 48: no masks, fixed head block per tile
+constexpr int THREADS = 256;          // 16 lanes x 8 floats per row
+constexpr int GROUPS = H / ROWS;
+
+__device__ __forceinline__ uint64_t pol_evict_last() {
+    uint64_t p;
+    asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(p));
+    return p;
+}
+
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+__device__ __forceinline__ void ld8(const float* p, float (&v)[8]) {
+    asm volatile("ld.global.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                 : "=f"(v[0]), "=f"(v[1]), "=f"(v[2]), "=f"(v[3]),
+                   "=f"(v[4]), "=f"(v[5]), "=f"(v[6]), "=f"(v[7]) : "l"(p));
+}
+__device__ __forceinline__ void st8_h(float* p, const float (&v)[8], uint64_t pol) {
+    asm volatile("st.global.L2::cache_hint.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8}, %9;"
+                 :: "l"(p), "f"(v[0]), "f"(v[1]), "f"(v[2]), "f"(v[3]),
+                    "f"(v[4]), "f"(v[5]), "f"(v[6]), "f"(v[7]), "l"(pol) : "memory");
+}
+#else
+// sm_80/sm_90 local-test path: two 128-bit accesses with the same cache policies.
+__device__ __forceinline__ void ld4(const float* p, float* v) {
+    asm volatile("ld.global.v4.f32 {%0,%1,%2,%3}, [%4];"
+                 : "=f"(v[0]), "=f"(v[1]), "=f"(v[2]), "=f"(v[3]) : "l"(p));
+}
+__device__ __forceinline__ void st4_h(float* p, const float* v, uint64_t pol) {
+    asm volatile("st.global.L2::cache_hint.v4.f32 [%0], {%1,%2,%3,%4}, %5;"
+                 :: "l"(p), "f"(v[0]), "f"(v[1]), "f"(v[2]), "f"(v[3]), "l"(pol) : "memory");
+}
+__device__ __forceinline__ void ld8(const float* p, float (&v)[8]) { ld4(p, v); ld4(p + 4, v + 4); }
+__device__ __forceinline__ void st8_h(float* p, const float (&v)[8], uint64_t pol) {
+    st4_h(p, v, pol); st4_h(p + 4, v + 4, pol);
+}
+#endif
+
+__global__ void __launch_bounds__(THREADS, 8)
+qk_rms_kernel(const float* __restrict__ q, const float* __restrict__ k,
+              const float* __restrict__ wq, const float* __restrict__ wk,
+              float* __restrict__ qo, float* __restrict__ ko, int n_tiles, float eps) {
+    const int bid = blockIdx.x;
+    const bool is_k = bid >= n_tiles;
+    const int tile = is_k ? bid - n_tiles : bid;
+    const float* __restrict__ x = is_k ? k : q;
+    const float* __restrict__ w = is_k ? wk : wq;
+    float* __restrict__ y = is_k ? ko : qo;
+
+    const int r = threadIdx.x >> 4;
+    const int c = (threadIdx.x & 15) * 8;
+    const size_t row = (size_t)tile * ROWS + r;
+    const int head = (tile % GROUPS) * ROWS + r;   // == row % 48
+
+    float xv[8], wv[8], yv[8];
+    ld8(x + row * D + c, xv);                       // both loads issued before any use
+    ld8(w + (size_t)head * D + c, wv);
+    const uint64_t pol_out = pol_evict_last();
+
+    float s = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) s = fmaf(xv[i], xv[i], s);
+    s += __shfl_xor_sync(0xffffffffu, s, 8);
+    s += __shfl_xor_sync(0xffffffffu, s, 4);
+    s += __shfl_xor_sync(0xffffffffu, s, 2);
+    s += __shfl_xor_sync(0xffffffffu, s, 1);
+    const float inv = rsqrtf(s * (1.0f / (float)D) + eps);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) yv[i] = (xv[i] * inv) * wv[i];
+    st8_h(y + row * D + c, yv, pol_out);
+}
+
+void check_tensor(const torch::Tensor& t, const char* name) {
+    TORCH_CHECK(t.is_cuda() && t.scalar_type() == torch::kFloat32 && t.is_contiguous(), name,
+                " must be a contiguous fp32 CUDA tensor");
+    TORCH_CHECK((reinterpret_cast<uintptr_t>(t.data_ptr()) & 31) == 0, name, " must be 32-byte aligned");
+}
+}  // namespace
+
+void run(torch::Tensor query, torch::Tensor key, torch::Tensor weight_q, torch::Tensor weight_k,
+         double eps, torch::Tensor query_norm, torch::Tensor key_norm) {
+    check_tensor(query, "query"); check_tensor(key, "key");
+    check_tensor(weight_q, "weight_q"); check_tensor(weight_k, "weight_k");
+    check_tensor(query_norm, "query_norm"); check_tensor(key_norm, "key_norm");
+    TORCH_CHECK(weight_q.numel() == H * D && weight_k.numel() == H * D, "weights must be [48,128]");
+    TORCH_CHECK(query.numel() % ((int64_t)H * D) == 0 && key.numel() == query.numel() &&
+                query_norm.numel() == query.numel() && key_norm.numel() == query.numel(), "shape mismatch");
+    const int64_t n_rows = query.numel() / D;
+    if (n_rows == 0) return;
+    const int64_t n_tiles = n_rows / ROWS;          // exact: n_rows is a multiple of 48
+    TORCH_CHECK(2 * n_tiles <= (int64_t)0x7fffffff, "grid too large");
+    const c10::cuda::CUDAGuard guard(query.device());
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    qk_rms_kernel<<<dim3((unsigned)(2 * n_tiles)), THREADS, 0, stream>>>(
+        query.data_ptr<float>(), key.data_ptr<float>(), weight_q.data_ptr<float>(), weight_k.data_ptr<float>(),
+        query_norm.data_ptr<float>(), key_norm.data_ptr<float>(), (int)n_tiles, (float)eps);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("run", &run, "Fused per-head RMSNorm of Q and K (fp32, 256-bit, L2 evict_last stores)");
+}
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

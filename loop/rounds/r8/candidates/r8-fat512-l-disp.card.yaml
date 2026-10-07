@@ -1,0 +1,86 @@
+id: r8-fat512-l-disp
+parents:
+  - r6-s-ldef-nc-disp
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows32
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Explores tile:fat. Probes on the rented B200 (harness CUPTI timing, cold L2) show that cutting the CTA count
+  does not cut time, because the CTA launch and retire cost overlaps with the memory stream. Several rows per
+  thread was always slower: 2/4/8 same-head tokens per half-warp, contiguous or strided, 48-84 registers, gave
+  S/M +0-18% and L +1-10%, because occupancy drops. Bigger CTAs at one row per half-warp: 512 threads
+  (32 rows per CTA, 29-31 regs, 4 CTAs/SM) was L -0.8/-1.0/-1.3% at 4096/6628/8192 tokens, repeated twice,
+  but M +4.5% at 1024 tokens; 384 threads neutral, 768 and 1024 threads worse.
+  So 512-thread CTAs are used only for B*S >= 3000 (the L band). Smaller sizes run the parent's
+  configuration exactly.
+  Full run_tests on the B200 against the parent: 16/16 pass; S +0.8% (same configuration as the parent, so
+  noise), M +0.1%, L -0.4% (8192 tokens -1.0%, 6184/6628 -0.5%, 4096 0%). Projected score 0.6103 vs 0.6099.
+  The gain is within noise and appears only on the largest inputs.
+  Takeaway for the archive: CTA count is not the bottleneck; fat tiles are not a lever for #38.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: -0.5
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 512
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  THREADS_L: 512
+  ROWS_L: 32
+  THREADS_SM: 256
+  ROWS_SM: 16
+  S_MAX_TOKENS: 600
+  L_MIN_TOKENS: 3000
+dispatch:
+  - max_tokens: 600
+    kernel: "qk_rms_kernel<256,true>"
+    meta:
+      loads: "x evict_first, w nc"
+  - max_tokens: 2999
+    kernel: "qk_rms_kernel<256,false>"
+    meta:
+      note: "parent configuration"
+  - max_tokens: 1000000000
+    kernel: "qk_rms_kernel<512,false>"
+    meta:
+      ROWS: 32
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The L gain (about 0.5-1%) is below portal noise (about 5%); a single submission cannot confirm it."
+  - "Unlocked-clock B200 results may not carry over to the locked 1500 MHz SM clock, where per-CTA overhead weighs relatively more."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

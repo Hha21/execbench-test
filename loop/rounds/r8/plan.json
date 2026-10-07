@@ -1,0 +1,42 @@
+{
+ "best": "r6-s-ldef-nc-disp",
+ "best_score": 0.609882,
+ "gains": {
+  "base": 0.6100179590448721,
+  "fixed": 3.1246511228476965,
+  "bw": 7.60346016605779,
+  "S": 0.020107629326528542,
+  "ML": 0.01577762095760471,
+  "tbs_M": 6.470146544952974,
+  "tbs_L": 6.936663752963462
+ },
+ "tasks": [
+  {
+   "operation": "specialisation",
+   "parents": [
+    "r6-s-ldef-nc-disp"
+   ],
+   "band": "S",
+   "gain": 0.020107629326528542,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.1 us fixed + bytes / 7.6 TB/s on small and medium sizes; reaching 2.0 us fixed would add about +0.020 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is recoverable; see b200_sota.md section 4 for what they do. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: d1-os-r8w4-nohint (ldg128/oneshot): +5%; g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +4%; g2-tma-r8s3 (tma-tensor/persistent): +35%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +10%; r2-ldg256-os-r16 (ldg256/oneshot): +6%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +4%; v028 (ldg128/persistent): +43%; v039 (ldg128/persistent): +20%; v040 (ldg128/oneshot): +78%; v050 (ldg128/oneshot): +135%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp); r6-gluon-cpasync-os-r16w8-stel (cpasync/oneshot, gluon); r6-ldg256-qkpair-r16 (ldg256/oneshot, cuda_cpp); r7-cap4-qkcat (ldg256/persistent, cuda_cpp); r7-s-r8w4-cta128-disp (ldg256/oneshot, cuda_cpp)."
+  },
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r6-s-ldef-nc-disp"
+   ],
+   "band": "M,L",
+   "gain": 0.01577762095760471,
+   "instructions": "Goal: cut medium and large input latency (B*S > 600) on B200. The parent reaches 6.47 TB/s (M) and 6.94 TB/s (L) effective; a further 5% would add about +0.016 to the score. Its fit is 7.6 TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. Slower on B200 than the parent in these bands already: d1-os-r8w4-nohint (ldg128/oneshot): +7%; g2-os-r16w8 (ldg128/oneshot): +9%; g2-os-r8w4 (ldg128/oneshot): +9%; g2-tma-r8s3 (tma-tensor/persistent): +27%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +24%; r2-ldg256-os-r16 (ldg256/oneshot): +9%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +5%; v028 (ldg128/persistent): +59%; v039 (ldg128/persistent): +22%; v040 (ldg128/oneshot): +144%; v050 (ldg128/oneshot): +38%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp); r6-gluon-cpasync-os-r16w8-stel (cpasync/oneshot, gluon); r6-ldg256-qkpair-r16 (ldg256/oneshot, cuda_cpp); r7-cap4-qkcat (ldg256/persistent, cuda_cpp); r7-s-r8w4-cta128-disp (ldg256/oneshot, cuda_cpp)."
+  },
+  {
+   "operation": "new_design",
+   "parents": [
+    "r6-s-ldef-nc-disp"
+   ],
+   "band": "all",
+   "niche": "tile:fat",
+   "instructions": "Explore the empty niche tile:fat. Cut the CTA count 4-16x: an empty grid of 49,152 CTAs already spans 26 us on B200 (problem_038.md section 7). Give each thread several rows (loads for all of them issued first, then the reductions), or larger CTAs, keeping registers low enough for full occupancy. Measure the CTA-count effect with probe_b200 before writing the full kernel. It must be correct for every shape; aim to beat the parent somewhere and say where in the card."
+  }
+ ]
+}

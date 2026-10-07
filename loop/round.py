@@ -195,17 +195,23 @@ def b200_test(round_id):
         sol = json.loads(sol_path.read_text())
         m = measured.get(designer.code_key(sol), {})
         test_ok = m.get("test") and all(w["status"] == "PASSED" for w in m["test"].get("workloads") or [{}])
-        if test_ok and m.get("compile"):
+        if test_ok:
             b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", m["test"])
-            statics.append(dict(id=sol_path.stem, kernels=m["compile"].get("kernels") or [],
-                                error=m["compile"].get("error") or ""))
             reused += 1
-            print(f"B200r {sol_path.stem}: reused the session's B200 measurement (same code)", flush=True)
-        else:
-            ran.append((sol_path, sol, m))
+            print(f"B200r {sol_path.stem}: reused the session's B200 timing (same code)", flush=True)
+            if m.get("compile"):
+                statics.append(dict(id=sol_path.stem, kernels=m["compile"].get("kernels") or [],
+                                    error=m["compile"].get("error") or ""))
+                continue
+        ran.append((sol_path, sol, m, not test_ok))
     if ran:
         with b200_modal.app.run():
-            for sol_path, sol, m in ran:
+            for sol_path, sol, m, need_test in ran:
+                if not need_test:                     # timing reused; only the compile statistics are missing
+                    comp = b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile", solution=sol))
+                    statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [],
+                                        error=comp.get("error") or ""))
+                    continue
                 res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol))
                 b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
                 wl = res.get("workloads") or []
@@ -216,8 +222,8 @@ def b200_test(round_id):
     if statics:
         with open(d / "results" / "static_B200r.jsonl", "a") as f:
             f.write("".join(json.dumps(x) + "\n" for x in statics))
-    print(f"rented B200: {len(ran)} candidate(s) tested in {(time.time() - t0) / 60:.1f} min, {reused} reused from "
-          "the sessions", flush=True)
+    print(f"rented B200: {sum(1 for r in ran if r[3])} candidate(s) tested in {(time.time() - t0) / 60:.1f} min, "
+          f"{reused} timing(s) reused from the sessions", flush=True)
 
 
 def cmd_test(a):

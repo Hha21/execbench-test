@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PATH = ROOT / "loop" / "archive" / "archive.json"
 BANDS = (("S", 0, 600), ("M", 600, 2100), ("L", 2100, 1 << 30))   # by B*S tokens; S = 12.6-57.6 MB, M = 101-201 MB
-GPUS = ("H200", "A100", "L40S")
+GPUS = ("B200r", "H200", "A100", "L40S")    # B200r: rented B200 (Modal), unlocked clocks
 
 
 def load():
@@ -130,26 +130,31 @@ def refresh(arc):
     Timings, statuses, failure logs, sm_100a statistics and portal results are derived data, so they are re-read on
     every load. Concurrent writers (e.g. a background proposal round) can then never lose them by saving an older copy.
     """
-    timing_dirs = [ROOT / "loop" / "gen2" / "results" / "timing"] + \
+    timing_dirs = [ROOT / "loop" / "gen2" / "results" / "timing", ROOT / "loop" / "b200" / "timing"] + \
                   sorted((ROOT / "loop" / "rounds").glob("*/results/timing"))
+    verdicts = {}                                     # id -> {gpu: None (passed) or failure text}
     for tdir in timing_dirs:
         for gdir in sorted(p for p in tdir.glob("*") if p.is_dir()):
             for tr in gdir.glob("*.jsonl"):
                 cid = tr.stem
-                if "_rep" in cid or cid not in arc:
+                if "_rep" in cid or cid not in arc or not tr.read_text().strip():
                     continue
                 times, statuses = read_traces(tr)
                 arc[cid].setdefault("timings", {})[gdir.name] = times
-                arc[cid]["status"] = "passed" if statuses == {"PASSED"} else f"failed: {sorted(statuses)}"
+                ok = statuses == {"PASSED"}
+                verdicts.setdefault(cid, {})[gdir.name] = None if ok else f"failed on {gdir.name}: {sorted(statuses)}"
                 log = gdir / f"{cid}.log"
-                if log.exists() and statuses != {"PASSED"}:
+                if log.exists() and not ok:
                     arc[cid]["failure_log"] = log.read_text()[-3000:]
             for log in gdir.glob("*.log"):            # build failures leave a log but no (or an empty) trace
                 cid = log.stem
                 trace = gdir / f"{cid}.jsonl"
                 if cid in arc and (not trace.exists() or not trace.read_text().strip()):
-                    arc[cid]["status"] = f"failed: build or run error on {gdir.name}"
+                    verdicts.setdefault(cid, {})[gdir.name] = f"failed: build or run error on {gdir.name}"
                     arc[cid]["failure_log"] = log.read_text()[-3000:]
+    for cid, v in verdicts.items():                   # a failure on any GPU (above all the B200) beats a pass elsewhere
+        fails = [x for x in v.values() if x]
+        arc[cid]["status"] = "; ".join(fails) if fails else "passed"
     for sf in sorted((ROOT / "loop" / "rounds").glob("*/results/static_*.jsonl")):
         for line in open(sf):
             s = json.loads(line)
@@ -174,8 +179,8 @@ def table(arc, limit=40):
         key = (-(b200.get("score") or 0), a100 or 1e9)
         rows.append((key, rec))
     rows.sort(key=lambda x: x[0])
-    head = ("| id | niche (mem/grid/spec) | lang | H200 S/M/L | A100 S/M/L | L40S S/M/L | B200 S/M/L | B200 score | "
-            "B200 regs/smem/fit | status |\n|---|---|---|---|---|---|---|---|---|---|")
+    head = ("| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | "
+            "portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |\n|---|---|---|---|---|---|---|---|---|---|---|")
     lines = [head]
     for _, rec in rows[:limit]:
         n = rec.get("niche") or {}

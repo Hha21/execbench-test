@@ -166,9 +166,9 @@ def cmd_auto(a):
     p = make_plan(a)
     propose_tasks(a.round, p["tasks"], a)
     if not a.dry_run and any((rdir(a.round) / "candidates").glob("*.json")):
-        a.gpus = a.gpus or "A100,H200"
+        a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" else "A100,H200")
         cmd_test(a)
-        print(f"next: python3 loop/round.py status --round {a.round}; then collect and shortlist")
+        print(f"next: python3 loop/round.py collect --round {a.round} (after any CSF3 jobs finish); then shortlist")
 
 
 def sync_remote():
@@ -176,10 +176,41 @@ def sync_remote():
     subprocess.run(["rsync", "-a", f"{ROOT}/poc/run_timing.py", f"{REMOTE}:{RSOLX}/poc/"], check=True)
 
 
+def b200_test(round_id):
+    """Test every candidate of a round on the rented B200 (Modal): timings -> results/timing/B200r, compile stats ->
+    results/static_B200r.jsonl. Runs in this process (a few minutes); candidates already timed are skipped."""
+    import b200_modal
+    b200_modal.load_token()
+    d = rdir(round_id)
+    out = d / "results" / "timing" / "B200r"
+    todo = [p for p in sorted((d / "candidates").glob("*.json")) if not (out / f"{p.stem}.jsonl").exists()]
+    statics = []
+    t0 = time.time()
+    with b200_modal.app.run():
+        for sol_path in todo:
+            sol = json.loads(sol_path.read_text())
+            res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol))
+            b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
+            wl = res.get("workloads") or []
+            comp = b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile", solution=sol))
+            statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [], error=comp.get("error") or ""))
+            print(f"B200r {sol_path.stem}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed", flush=True)
+    if statics:
+        with open(d / "results" / "static_B200r.jsonl", "a") as f:
+            f.write("".join(json.dumps(x) + "\n" for x in statics))
+    print(f"rented B200: {len(todo)} candidate(s) in {(time.time() - t0) / 60:.1f} min", flush=True)
+
+
 def cmd_test(a):
+    gpus = a.gpus.split(",")
+    if "B200" in gpus:
+        b200_test(a.round)
+        gpus = [g for g in gpus if g != "B200"]
+    if not gpus:
+        return
     sync_remote()
     jobs = {}
-    for gpu in a.gpus.split(","):
+    for gpu in gpus:
         acct, part = SLURM[gpu]
         out = ssh(f"cd {RSOLX} && sbatch --parsable -A {acct} -p {part} --export=ALL,ROUND={a.round} "
                   f"loop/jobs/test_round.sbatch")
@@ -198,7 +229,9 @@ def cmd_status(a):
 def cmd_collect(a):
     d = rdir(a.round)
     (d / "results").mkdir(parents=True, exist_ok=True)
-    subprocess.run(["rsync", "-a", f"{REMOTE}:{RSOLX}/loop/rounds/{a.round}/results/", f"{d}/results/"], check=True)
+    r = subprocess.run(["rsync", "-a", f"{REMOTE}:{RSOLX}/loop/rounds/{a.round}/results/", f"{d}/results/"])
+    if r.returncode:
+        print("(no CSF3 results for this round; using local results only)")
     arc = get_archive()            # archive.load() re-reads every result file, including the ones just pulled
     archive.save(arc)
     print(archive.table({k: v for k, v in arc.items() if v.get("round") == a.round or v.get("b200")}))
@@ -212,7 +245,8 @@ def cmd_shortlist(a):
     out.mkdir(parents=True)
     lines = [f"# Portal shortlist for round {a.round}", "",
              f"Reference: {s['best']} (B200 score {s['best_score']:.4f}). Predicted scores project each candidate's "
-             f"speed relative to the reference, per workload, on its most representative cheap GPU, onto the reference's "
+             f"speed relative to the reference, per workload, on the rented B200 when measured there (else its most "
+             f"representative cheap GPU), onto the reference's "
              f"B200 per-workload times.", "",
              "| file | basis | change vs reference S/M/L | predicted B200 score |", "|---|---|---|---|"]
     for w in s.get("awaiting", []):
@@ -264,12 +298,13 @@ def main():
         q.add_argument("--round", required=True)
         q.add_argument("--max-tasks", type=int, default=3)
         q.add_argument("--last-round", help="round whose failures get repair tasks")
-        q.add_argument("--gpus", default="A100,H200")
+        q.add_argument("--gpus", help="where to test the final candidates: B200 (rented, Modal) and/or CSF3 GPUs; "
+                       "default B200 with --tool-gpu B200, else A100,H200")
     for name in ("test", "status", "collect", "shortlist"):
         q = sub.add_parser(name)
         q.add_argument("--round", required=True)
         if name == "test":
-            q.add_argument("--gpus", default="A100,H200")
+            q.add_argument("--gpus", default="A100,H200", help="B200 (rented, Modal) and/or CSF3 GPU types")
     sub.add_parser("table")
     a = ap.parse_args()
     if getattr(a, "round", None) and not re.fullmatch(r"[a-z0-9-]+", a.round):

@@ -30,8 +30,39 @@ def write_json(path, obj):
     os.replace(tmp, path)
 
 
-def harness(problem, sol_path, trace):
-    """Run NVIDIA's harness on one solution; returns (records, console tail)."""
+FLAKE = "Expected kernel activity sequence not found"   # CUPTI dropped a whole iteration's records (seen on Modal)
+
+
+def harness(problem, sol_path, trace, retries=2):
+    """Run NVIDIA's harness on one solution; returns (records, console tail).
+
+    Workloads that fail only because CUPTI recorded no kernels in one timing iteration are re-run on their own (a
+    copy of the problem with just those workloads), up to `retries` times; their correctness had already passed.
+    """
+    recs, console = harness_once(problem, sol_path, trace)
+    for attempt in range(retries):
+        flaky = [r["workload"] for r in recs if r["status"] == "RUNTIME_ERROR" and FLAKE in r["log"]]
+        if not flaky:
+            break
+        sub = trace.parent / f"retry{attempt}"
+        shutil.rmtree(sub, ignore_errors=True)
+        sub.mkdir()
+        for f in problem.iterdir():
+            if f.name != "workload.jsonl" and f.is_file():
+                shutil.copy(f, sub / f.name)
+        with open(problem / "workload.jsonl") as src, open(sub / "workload.jsonl", "w") as dst:
+            for line in src:
+                if line.strip():
+                    a = json.loads(line)["axes"]
+                    if f"{a['batch_size']},{a['seq_len']}" in flaky:
+                        dst.write(line)
+        again, _ = harness_once(sub, sol_path, trace.parent / f"retry{attempt}.jsonl")
+        fixed = {r["workload"]: dict(r, retried=attempt + 1) for r in again if r["status"] == "PASSED"}
+        recs = [fixed.get(r["workload"], r) for r in recs]
+    return recs, console
+
+
+def harness_once(problem, sol_path, trace):
     cmd = ["sol-execbench", str(problem), "--solution", str(sol_path), "-o", str(trace), "--timeout", "900",
            "--compile-timeout", "900"]
     p = subprocess.run(cmd, capture_output=True, text=True)

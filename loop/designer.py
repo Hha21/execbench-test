@@ -90,8 +90,7 @@ def ssh(cmd, stdin=None, check=True):
                           check=check).stdout
 
 
-def band_of(bs):
-    return "S" if bs <= planner.S_MAX else "M" if bs <= planner.M_MAX else "L"
+band_of = planner.band_of
 
 
 def gmean(xs):
@@ -245,7 +244,7 @@ def fmt_compile(res):
     return "\n".join(lines)
 
 
-def fmt_test(res, ref, best, anc):
+def fmt_test(res, ref, best, anc, k=None):
     wl = res.get("workloads") or []
     passed = sum(w["status"] == "PASSED" for w in wl)
     lines = [f"run_tests on {res.get('gpu', '?')} ({res.get('seconds', '?')} s): {passed}/{len(wl) or 16} workloads "
@@ -275,10 +274,18 @@ def fmt_test(res, ref, best, anc):
     by_band = {b: gmean([x for bs, v in rel.items() if band_of(bs) == b for x in v]) for b in "SML"}
     lines.append("change by band (geomean): " + ", ".join(f"{b} {100 * (v - 1):+.1f}%" for b, v in by_band.items() if v))
     bt = planner.b200_times(best)
-    pred = {bs: t * (gmean(rel[bs]) if rel.get(bs) else 1.0) for bs, t in bt.items()}
-    lines.append(f"projected B200 score (emulator: the reference's B200 times x this GPU's relative speed): "
-                 f"{planner.score(pred, anc):.4f} (current best {best['b200']['score']:.4f}). Not valid for B200-only "
-                 "paths, which run a fallback on this GPU.")
+    on_b200 = "B200" in str(res.get("gpu"))
+    k = (k or {}) if on_b200 else {}
+    pred = {bs: t * (gmean(rel[bs]) ** k.get(band_of(bs), 1.0) if rel.get(bs) else 1.0) for bs, t in bt.items()}
+    if on_b200:
+        lines.append(f"projected portal score: {planner.score(pred, anc):.4f} (current best {best['b200']['score']:.4f}). "
+                     f"This is a real B200 with unlocked clocks; differences at S/M come out larger than on the portal, "
+                     f"so the projection shrinks them (portal change ~ measured change ** k, k = "
+                     f"{', '.join(f'{b} {v:.2f}' for b, v in k.items())}, fitted on kernels measured on both).")
+    else:
+        lines.append(f"projected B200 score (emulator: the reference's B200 times x this GPU's relative speed): "
+                     f"{planner.score(pred, anc):.4f} (current best {best['b200']['score']:.4f}). Not valid for "
+                     "B200-only paths, which run a fallback on this GPU.")
     return "\n".join(lines)
 
 
@@ -317,6 +324,7 @@ class Session:
         self.messages = [llm.system_message(static),
                          {"role": "user", "content": [{"type": "text", "text": dyn, "cache_control": CACHE}]}]
         self.gpu_calls, self.drafts = 0, 0
+        self.k = planner.rented_exponents(arc, best)
         self.totals = dict(prompt_tokens=0, completion_tokens=0, cached_tokens=0, reasoning_tokens=0, cost_usd=0.0,
                            seconds=0.0)
         self.log_json, self.log_md = d / f"{name}.jsonl", d / f"{name}.md"
@@ -356,7 +364,7 @@ class Session:
         self.note(f"\n### {fn} (draft {self.drafts}): {args.get('note', '')}\n")
         if fn == "compile_b200":
             return fmt_compile(self.server.call("compile", sol))
-        return fmt_test(self.server.call("test", sol), self.server.reference(), self.best, self.anc)
+        return fmt_test(self.server.call("test", sol), self.server.reference(), self.best, self.anc, self.k)
 
     def turn(self, n, tool_choice=None):
         effort = self.a.effort if n == 0 else self.a.turn_effort

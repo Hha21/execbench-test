@@ -175,6 +175,31 @@ def plan(arc, max_tasks=3, last_round=None):
     return dict(best=best["id"], best_score=best["b200"]["score"], gains=g, tasks=tasks)
 
 
+def band_of(bs):
+    return "S" if bs <= S_MAX else "M" if bs <= M_MAX else "L"
+
+
+def rented_exponents(arc, best=None):
+    """Per size band, k such that (portal time ratio) ~ (rented-B200 time ratio) ** k, both relative to the best kernel.
+
+    Least squares through the origin in log space over every kernel timed on both. The rented B200 runs unlocked
+    clocks, which exaggerated S/M differences about 1.5-2x in the 7 October calibration (k < 1); L matched (k ~ 1).
+    """
+    best = best or best_kernel(arc)
+    toks = lambda t: {archive.tokens(k): v for k, v in t.items()}
+    bp, br = b200_times(best), toks((best.get("timings") or {}).get("B200r", {}))
+    num, den = defaultdict(float), defaultdict(float)
+    for r in arc.values():
+        if r["id"] == best["id"]:
+            continue
+        p, q = b200_times(r), toks((r.get("timings") or {}).get("B200r", {}))
+        for bs in set(p) & set(q) & set(bp) & set(br):
+            x, y = math.log(q[bs] / br[bs]), math.log(p[bs] / bp[bs])
+            num[band_of(bs)] += x * y
+            den[band_of(bs)] += x * x
+    return {b: min(1.5, max(0.3, num[b] / den[b])) if den[b] > 1e-6 else 1.0 for b in "SML"}
+
+
 def representative_gpu(rec):
     """(gpu with timings, gpu the card names but without timings yet), H200 preferred."""
     card = archive.parse_card(rec.get("card", ""))
@@ -198,6 +223,8 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
         if r.get("round") != round_id or r.get("status") != "passed" or r.get("b200"):
             continue
         gpu, waiting = representative_gpu(r)
+        if (r.get("timings") or {}).get("B200r") and (best.get("timings") or {}).get("B200r"):
+            gpu, waiting = "B200r", None          # a rented B200 beats any cheap GPU (calibration 7 October)
         if waiting:
             awaiting.append(dict(id=r["id"], gpu=waiting))
             continue
@@ -208,7 +235,9 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
             for key, v in ct.items():
                 if v and ref.get(key):
                     rel[archive.tokens(key)].append(v / ref[key])
-            pred = {bs: bt[bs] * (sum(rel[bs]) / len(rel[bs]) if rel.get(bs) else 1.0) for bs in bt}
+            k = rented_exponents(arc, best) if gpu == "B200r" else {"S": 1.0, "M": 1.0, "L": 1.0}
+            pred = {bs: bt[bs] * ((sum(rel[bs]) / len(rel[bs])) ** k[band_of(bs)] if rel.get(bs) else 1.0)
+                    for bs in bt}
             ranked.append(dict(id=r["id"], gpu=gpu, predicted_score=score(pred, anc),
                                rel=f"{fmt_rel(rel, 0, S_MAX)}/{fmt_rel(rel, S_MAX, M_MAX)}/{fmt_rel(rel, M_MAX, 1 << 30)}"))
         else:

@@ -40,6 +40,7 @@ def main():
             ok = wl and all(w["status"] == "PASSED" for w in wl)
             print(f"{cid}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed in {time.time() - t0:.0f} s"
                   + ("" if ok else f"\n{str(res.get('error') or res.get('console_tail'))[-2000:]}"), flush=True)
+            b200_modal.write_trace(archive.ROOT / "loop" / "b200" / "timing" / "B200r" / f"{cid}.jsonl", res)
             out["kernels"][cid] = dict(rented={w["workload"]: w["latency_us"] for w in wl if w.get("latency_us")},
                                        portal=arc[cid]["b200"]["timings"], gpu=res.get("gpu"))
     d = archive.ROOT / "loop" / "b200"

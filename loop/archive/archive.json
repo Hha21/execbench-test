@@ -43,7 +43,26 @@
   "round": "d1",
   "solution": "loop/rounds/d1/candidates/d1-os-r8w4-nohint.json",
   "status": "passed",
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 17.94,
+    "1,128": 4.29,
+    "1,131": 4.42,
+    "1,256": 6.51,
+    "1,8192": 119.58,
+    "16,256": 61.58,
+    "2,128": 6.37,
+    "2,293": 11.2,
+    "32,128": 61.78,
+    "4,1024": 61.52,
+    "4,1657": 98.18,
+    "4,256": 17.71,
+    "4,512": 32.75,
+    "8,128": 17.7,
+    "8,256": 32.25,
+    "8,773": 91.37
+   }
+  }
  },
  "g2-os-r16w4": {
   "card": "id: \"g2-os-r16w4\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Half the threads per tile: 4 x LDG.128 per thread issued back to back, fewer threads to launch.\"\nexpected_effect:\n  S: {pct: -8, confidence: \"low\"}\n  M: {pct: 3, confidence: \"low\"}\n  L: {pct: 5, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 4, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 16, num_warps: 4, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"fewer resident warps to hide latency\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
@@ -362,6 +381,24 @@
     "8,128": 59.327,
     "8,256": 121.7745,
     "8,773": 374.172
+   },
+   "B200r": {
+    "1,1024": 18.02,
+    "1,128": 4.29,
+    "1,131": 4.45,
+    "1,256": 6.46,
+    "1,8192": 122.17,
+    "16,256": 62.6,
+    "2,128": 6.34,
+    "2,293": 11.04,
+    "32,128": 62.62,
+    "4,1024": 63.14,
+    "4,1657": 99.8,
+    "4,256": 17.78,
+    "4,512": 32.93,
+    "8,128": 17.67,
+    "8,256": 32.43,
+    "8,773": 93.35
    },
    "H200": {
     "1,1024": 26.368,
@@ -1063,6 +1100,24 @@
     "8,128": 62.288,
     "8,256": 126.87900000000002,
     "8,773": 393.41949999999997
+   },
+   "B200r": {
+    "1,1024": 18.13,
+    "1,128": 4.35,
+    "1,131": 4.48,
+    "1,256": 6.4,
+    "1,8192": 121.86,
+    "16,256": 62.5,
+    "2,128": 6.4,
+    "2,293": 11.07,
+    "32,128": 62.59,
+    "4,1024": 62.99,
+    "4,1657": 99.69,
+    "4,256": 17.82,
+    "4,512": 32.69,
+    "8,128": 17.73,
+    "8,256": 32.47,
+    "8,773": 93.22
    }
   }
  },
@@ -1237,6 +1292,24 @@
     "8,128": 60.735499999999995,
     "8,256": 117.43900000000001,
     "8,773": 364.7015
+   },
+   "B200r": {
+    "1,1024": 17.95,
+    "1,128": 4.26,
+    "1,131": 4.35,
+    "1,256": 6.4,
+    "1,8192": 118.94,
+    "16,256": 61.52,
+    "2,128": 6.24,
+    "2,293": 10.94,
+    "32,128": 61.56,
+    "4,1024": 62.21,
+    "4,1657": 97.54,
+    "4,256": 17.67,
+    "4,512": 32.48,
+    "8,128": 17.63,
+    "8,256": 32.16,
+    "8,773": 91.09
    }
   }
  },
@@ -1546,7 +1619,7 @@
   ],
   "round": "r5",
   "solution": "loop/rounds/r5/candidates/r5-ldg256-os-r16-stel.json",
-  "status": "proposed",
+  "status": "passed",
   "task": {
    "band": "M,L",
    "gain": 0.030148347235080086,
@@ -1556,7 +1629,26 @@
     "r3-cute-ldg256-os-r16"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.75,
+    "1,128": 4.22,
+    "1,131": 4.16,
+    "1,256": 5.68,
+    "1,8192": 116.15,
+    "16,256": 58.24,
+    "2,128": 5.57,
+    "2,293": 9.52,
+    "32,128": 58.36,
+    "4,1024": 58.11,
+    "4,1657": 93.88,
+    "4,256": 14.42,
+    "4,512": 28.59,
+    "8,128": 14.63,
+    "8,256": 28.55,
+    "8,773": 87.54
+   }
+  }
  },
  "r6-gluon-cpasync-os-r16w8-stel": {
   "card": "id: r6-gluon-cpasync-os-r16w8-stel\nparents:\n  - r5-ldg256-os-r16-stel\noperation: new_design\nlanguage: gluon\nniche:\n  mem: cpasync\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: all\nhypothesis: >-\n  This is the first working kernel in the Gluon niche. It is the one-shot r5 structure (16 rows per 256-thread\n  CTA, a half-warp per row, evict_last output stores), but each thread loads x and w with 128-bit cp.async into\n  shared memory, as FlashInfer and quack do, and then reads them back into registers. Plain gl.load could not be\n  used: in this Gluon build it returns a tensor with no layout, and both gl.sum and gl.convert_layout then fail to\n  compile. Measured on A100 (all 16 workloads pass): +40 to +50% slower than r5 in every band (S +50, M +46,\n  L +40%). The time did not change with .cg copies or with stores without a hint. So the cause is the cp.async ->\n  shared -> register path, or Gluon's sm_80 lowering of it, not the cache policy. No band is expected to beat the\n  parent on B200. This kernel puts a working Gluon baseline in the archive and records the gl.load limitation.\nexpected_effect:\n  S:\n    pct: 30\n    confidence: low\n  M:\n    pct: 30\n    confidence: low\n  L:\n    pct: 25\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 16384\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  num_warps: 8\n  smem_vec: 8\n  store_policy: evict_last\n  load_policy: default\nruns_on:\n  H200:\n    runs: true\n    representative: true\n  A100:\n    runs: true\n    representative: true\n    note: \"measured: 16/16 pass; +40-50% vs r5 in every band; the .cg and no-hint controls gave identical times\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Measured 40-50% slower than the parent on A100; probably slower on B200 too. Not worth a portal slot unless the cp.async slowdown is understood.\"\n  - \"gl.load / gl.convert_layout on pointer loads fail in this Gluon build (layout-less result); any Gluon follow-up must use cp.async or TMA.\"\n  - \"The sm_100a SASS uses LDGSTS.128, not 256-bit loads, and pays a round trip through shared memory.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",

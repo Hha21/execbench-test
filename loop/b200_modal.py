@@ -5,7 +5,8 @@ environment, fbtriton 3.7.1, cutlass-dsl-libs-cu13 4.4.2), so candidates run on 
 Each call handles one compile/test request with loop/toolserver.py --once. Containers have no network access and
 stay warm for two minutes between calls. Clocks are not locked (the portal locks SM 1500 MHz / DRAM 3996 MHz).
 
-Auth: MODAL_TOKEN_ID / MODAL_TOKEN_SECRET from the environment or the repo's .env (never printed).
+Auth: the profile saved by `modal setup` (~/.modal.toml), or MODAL_TOKEN_ID / MODAL_TOKEN_SECRET from the
+environment or the repo's .env (never printed).
 
   .venv/bin/python loop/b200_modal.py info                 # GPU name, clocks, whether clocks can be locked
   .venv/bin/python loop/calibrate_b200.py                  # time portal-measured kernels, compare with the portal
@@ -47,8 +48,26 @@ def load_token():
                 name = name.strip().removeprefix("export ").strip().upper()
                 if name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET") and not os.environ.get(name):
                     os.environ[name] = value.strip().strip('"').strip("'")
-    if not (os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET")):
-        raise SystemExit("No MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in the environment or in .env")
+    if not (os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET")) and \
+            not (Path.home() / ".modal.toml").exists():
+        raise SystemExit("No Modal token: run `.venv/bin/python -m modal setup`, or put MODAL_TOKEN_ID / "
+                         "MODAL_TOKEN_SECRET in .env")
+
+
+def write_trace(path, res):
+    """A Modal test result -> a harness-style JSONL trace (read by archive.read_traces), plus a .log on failure."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for w in res.get("workloads") or []:
+        b, s = (int(x) for x in w["workload"].split(","))
+        lines.append(json.dumps({"workload": {"axes": {"batch_size": b, "seq_len": s}}, "evaluation": {
+            "status": w["status"], "log": w.get("log", ""),
+            "performance": {"latency_ms": w["latency_us"] / 1e3 if w.get("latency_us") else None}}}))
+    path.write_text("\n".join(lines) + ("\n" if lines else ""))
+    wl = res.get("workloads") or []
+    if not wl or any(w["status"] != "PASSED" for w in wl):
+        bad = "\n".join(f"{w['workload']}: {w['status']}\n{w.get('log', '')}" for w in wl if w["status"] != "PASSED")
+        path.with_suffix(".log").write_text(f"{bad}\n{res.get('error') or ''}\n{res.get('console_tail') or ''}")
 
 
 image = (
@@ -68,6 +87,8 @@ image = (
         " && uv pip install --python /venv --no-deps fbtriton==3.7.1"
         " && uv pip install --python /venv --no-deps --force-reinstall nvidia-cutlass-dsl-libs-cu13==4.4.2",
         env=UV_ENV)
+    # fbtriton 3.7.1 ships triton/runtime/launch.h but looks for it under backends/nvidia (same fix as on CSF3).
+    .run_commands("ln -sf ../../runtime/launch.h /venv/lib/python3.12/site-packages/triton/backends/nvidia/launch.h")
     .env({"SOLX_IMAGE": "sol-execbench-v1.1"})
     .add_local_dir(PROBLEM, "/problem")
     .add_local_file(ROOT / "loop" / "toolserver.py", "/solx/loop/toolserver.py")

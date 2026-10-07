@@ -1,0 +1,71 @@
+id: r3-cute-ldg256-os-r16
+parents:
+  - g2-os-r8w4
+operation: new_design
+language: cute_dsl
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: default
+  spec: all
+hypothesis: >-
+  The design is the parent's one-shot fused structure, but each thread moves 256-bit vectors through a CuTe DSL
+  CopyUniversalOp with num_bits_per_copy=256, which Triton cannot emit. That halves the LDG/STG count per byte and
+  doubles the bytes per outstanding instruction, which matters at 36 B/clk/SM at the 1.5 GHz lock. The parent sits
+  at 6.4 TB/s on the L band, and this should move it toward about 7 TB/s. A single dynamic-shape compile serves all
+  16 workloads.
+expected_effect:
+  S:
+    pct: 0
+    confidence: low
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -5
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  VEC: 8
+  THREADS: 256
+  ROWS: 16
+  TPR: 16
+  fallback: "VEC=4, ROWS=8, TPR=32 if the 256-bit atom fails to compile"
+dispatch: []
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 has no 256-bit LDG; the atom either fails (falls back to 128-bit) or splits; correctness and S-band signal only"
+  A100:
+    runs: true
+    representative: false
+    note: "correctness smoke test; the vector width may differ from the B200 path"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "CuTe DSL 4.4.2 API details are unverified on CSF3 and may need a repair round: mark_compact_shape_dynamic stride_order, make_fragment_like naming, cute.math.rsqrt(fastmath), TensorSSA.reduce signature, a jit helper called inside a dynamic if."
+  - "CopyUniversalOp with 256 bits may lower to 2 x LDG.128. That is still correct, but it brings no gain over the parent. Check the sm_100a SASS for LDG.E.ENL2.256."
+  - "Without evict_first hints the L2 policy may differ slightly from the parent."
+  - "The first-call compile is about 20 s, or about 40 s if the fallback triggers. It happens once, in round 0, well inside 300 s."
+  - "If the CuTe DSL compiler leaves a background thread alive, the harness thread-count check would flag it. Verify on CSF3 with threading.active_count() before and after the first call."
+  - "Each call builds DLPack wrappers and a CUstream on the CPU. This is host-only work and is not timed."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

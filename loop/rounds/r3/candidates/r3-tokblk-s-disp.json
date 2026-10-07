@@ -1,0 +1,27 @@
+{
+ "name": "r3-tokblk-s-disp",
+ "definition": "038_flux_multi_head_rmsnorm_qk",
+ "author": "solx-loop",
+ "description": "{\"On B200 the parent's S-band fixed cost of about 3 us is estimated to consist of\": ''}",
+ "spec": {
+  "languages": [
+   "triton"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "kernel.py::run",
+  "dependencies": [
+   "torch",
+   "triton"
+  ],
+  "destination_passing_style": true
+ },
+ "sources": [
+  {
+   "path": "kernel.py",
+   "content": "\"\"\"r3-tokblk-s-disp: SOL-ExecBench #38, per-head RMSNorm of Q and K, fp32, [B, S, 48, 128].\n\nSize dispatch (shapes only):\n  tokens = B*S <= 320 : _qk_tokblk  (new small-input specialist)\n  otherwise           : _qk_oneshot (parent g2-os-r8w4, identical kernel and config: ROWS=8, 4 warps, evict hints)\n\n_qk_tokblk: program (c, g, s) handles stream s (0=Q, 1=K), head group g (HB heads) and tokens c*NT .. c*NT+NT-1\nas one [NT, HB, 128] block. Each tile row is 512 contiguous bytes, and token blocks are H*D*4 bytes apart.\n- The weight tile [HB, 128] is loaded once per program and broadcast over the NT tokens.\n- All x loads of a thread are issued together; there is no loop and no shared memory.\n- The grid is small (about 2.6 CTAs per SM on the smallest inputs), so every CTA is resident in a single wave.\nA token mask is compiled in only when NT does not divide B*S (the 1x131 workload).\n\"\"\"\n\nimport triton\nimport triton.language as tl\n\nD = 128\nH = 48\n\n# (max tokens, meta) for the small-input specialist; checked in order.\nSMALL = [\n    (160, {'NT': 2, 'HB': 16, 'num_warps': 4}),   # B*S = 128, 131 -> 384 / 396 CTAs, 16 KB of x each\n    (320, {'NT': 4, 'HB': 16, 'num_warps': 8}),   # B*S = 256      -> 384 CTAs, 32 KB of x each\n]\n# Parent g2-os-r8w4 configuration, used unchanged for every larger size.\nPARENT = {'ROWS': 8, 'num_warps': 4, 'EVICT': True}\n\n\n@triton.jit\ndef _qk_tokblk(q_ptr, k_ptr, wq_ptr, wk_ptr, qo_ptr, ko_ptr, n_tok, eps,\n               NT: tl.constexpr, HB: tl.constexpr, D: tl.constexpr, H: tl.constexpr,\n               MASKED: tl.constexpr):\n    c = tl.program_id(0)\n    g = tl.program_id(1)\n    is_k = tl.program_id(2) == 1\n    x_ptr = tl.where(is_k, k_ptr, q_ptr)\n    w_ptr = tl.where(is_k, wk_ptr, wq_ptr)\n    y_ptr = tl.where(is_k, ko_ptr, qo_ptr)\n\n    tok = c * NT + tl.arange(0, NT)                      # [NT]\n    heads = g * HB + tl.arange(0, HB)                    # [HB]\n    cols = tl.arange(0, D)                               # [D]\n    hc = heads[:, None] * D + cols[None, :]              # [HB, D] offsets inside one token (and into w)\n    offs = (tok * (H * D))[:, None, None] + hc[None, :, :]   # [NT, HB, D]\n\n    # Issue the DRAM stream first, then the (L2-resident) weight tile, once per program.\n    if MASKED:\n        m = tl.broadcast_to((tok < n_tok)[:, None, None], [NT, HB, D])\n        x = tl.load(x_ptr + offs, mask=m, other=0.0, eviction_policy=\"evict_first\")\n    else:\n        x = tl.load(x_ptr + offs, eviction_policy=\"evict_first\")\n    w = tl.load(w_ptr + hc, eviction_policy=\"evict_last\")\n\n    inv = tl.math.rsqrt(tl.sum(x * x, axis=2) * (1.0 / D) + eps)    # [NT, HB]; * (1/D) is exact\n    y = (x * inv[:, :, None]) * w[None, :, :]\n\n    if MASKED:\n        tl.store(y_ptr + offs, y, mask=m, eviction_policy=\"evict_first\")\n    else:\n        tl.store(y_ptr + offs, y, eviction_policy=\"evict_first\")\n\n\n@triton.jit\ndef _qk_oneshot(q_ptr, k_ptr, wq_ptr, wk_ptr, qo_ptr, ko_ptr, n_rows, eps,\n                ROWS: tl.constexpr, D: tl.constexpr, H: tl.constexpr, EVICT: tl.constexpr):\n    # Parent g2-os-r8w4 kernel, unchanged.\n    pid = tl.program_id(0)\n    n_tiles = n_rows // ROWS\n    is_k = pid >= n_tiles\n    tile = tl.where(is_k, pid - n_tiles, pid)\n    x_ptr = tl.where(is_k, k_ptr, q_ptr)\n    w_ptr = tl.where(is_k, wk_ptr, wq_ptr)\n    y_ptr = tl.where(is_k, ko_ptr, qo_ptr)\n    rows = tile * ROWS + tl.arange(0, ROWS)\n    cols = tl.arange(0, D)\n    offs = rows[:, None] * D + cols[None, :]\n    w_offs = (rows % H)[:, None] * D + cols[None, :]\n    if EVICT:\n        x = tl.load(x_ptr + offs, eviction_policy=\"evict_first\")\n        w = tl.load(w_ptr + w_offs, eviction_policy=\"evict_last\")\n    else:\n        x = tl.load(x_ptr + offs)\n        w = tl.load(w_ptr + w_offs)\n    inv = tl.math.rsqrt(tl.sum(x * x, axis=1) * (1.0 / D) + eps)\n    y = (x * inv[:, None]) * w\n    if EVICT:\n        tl.store(y_ptr + offs, y, eviction_policy=\"evict_first\")\n    else:\n        tl.store(y_ptr + offs, y)\n\n\ndef run(query, key, weight_q, weight_k, eps, query_norm, key_norm):\n    n_rows = query.numel() // D\n    n_tok = n_rows // H\n    eps = float(eps)\n\n    for limit, meta in SMALL:\n        if n_tok <= limit:\n            nt = meta['NT']\n            hb = meta['HB']\n            grid = (triton.cdiv(n_tok, nt), H // hb, 2)\n            _qk_tokblk[grid](query, key, weight_q, weight_k, query_norm, key_norm, n_tok, eps,\n                             NT=nt, HB=hb, D=D, H=H, MASKED=(n_tok % nt != 0),\n                             num_warps=meta['num_warps'])\n            return\n\n    rows = PARENT['ROWS']\n    _qk_oneshot[(2 * (n_rows // rows),)](query, key, weight_q, weight_k, query_norm, key_norm, n_rows, eps,\n                                         ROWS=rows, D=D, H=H, EVICT=PARENT['EVICT'],\n                                         num_warps=PARENT['num_warps'])\n"
+  }
+ ]
+}

@@ -1,0 +1,69 @@
+id: r3-os-l2pf-r8w4
+parents:
+  - g2-os-r8w4
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: stream
+  spec: L
+hypothesis: >-
+  The one-shot parent's in-flight reads are tied to resident CTAs. CTA turnover and each CTA's own cold-DRAM wait
+  therefore cost bandwidth in steady state and in the M-band tail. One cp.async.bulk.prefetch.L2 per CTA, two
+  resident waves ahead, keeps about 10 MB of reads queued at DRAM regardless of residency. Demand loads become L2
+  hits. Dynamic CTA scheduling is kept, unlike the persistent designs that all lost on B200. H200 cannot show the
+  B200-specific size of this effect (36 B/clk/SM at 1.5 GHz, higher loaded latency).
+expected_effect:
+  S:
+    pct: 0
+    confidence: medium
+  M:
+    pct: -6
+    confidence: low
+  L:
+    pct: -4
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  ROWS: 8
+  num_warps: 4
+  PF_WAVES: 2
+  PF_BYTES: 4096
+runs_on:
+  H200:
+    runs: true
+    representative: true
+    note: "has cp.async.bulk.prefetch.L2; closest proxy for the prefetch effect"
+  A100:
+    runs: true
+    representative: false
+    note: "prefetch compiled out below sm_90; measures only the plain CUDA port"
+  L40S:
+    runs: true
+    representative: false
+    note: "prefetch compiled out below sm_90; correctness smoke test"
+risks:
+  - "L2 bulk prefetches may be throttled or dropped under load, giving no gain (the cost is only 1 instruction per CTA)"
+  - "If DRAM efficiency (read/write mix, write-backs of the flush's dirty L2 lines) is the true limit at about 82%, more queued reads cannot help"
+  - "Prefetched lines (about 10 MB in flight) could be evicted before use; then only extra request overhead, no extra DRAM bytes, since misses merge"
+  - "Assumes CTAs are dispatched in roughly increasing blockIdx order; if not, part of the prefetch lead is lost"
+  - "The CUDA C++ port may differ from the Triton parent's codegen (registers, scheduling); compare the A100 timing against the parent to isolate the port effect"
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

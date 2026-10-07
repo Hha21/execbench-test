@@ -963,12 +963,12 @@
   "static_error": "ptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tm",
   "static_sm100": [
    {
-    "kernel": "_ZN41_GLOBAL__N__26ef558e_9_kernel_cu_a02f06f820qk_rms_ldg256_kernelEPKfS1_S1_S1_PfS2_if",
+    "kernel": "_ZN41_GLOBAL__N__a6dbf95e_9_kernel_cu_a02f06f820qk_rms_ldg256_kernelEPKfS1_S1_S1_PfS2_if",
     "local": 0,
     "num_warps": null,
     "ops": {
-     "LDG": 2,
-     "STG": 1
+     "LDG.256": 2,
+     "STG.256": 1
     },
     "regs": 31,
     "resident_per_sm": null,
@@ -1021,36 +1021,39 @@
   "static_error": "xceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Vector type too large, exceeds 128 bit limit\nptx",
   "static_sm100": [
    {
-    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi4ELi4EEEvPKfS2_S2_S2_PfS3_iif",
+    "kernel": "_ZN41_GLOBAL__N__8b9c6dc7_9_kernel_cu_a02f06f810qk_rms_tokILi4ELi4EEEvPKfS2_S2_S2_PfS3_iif",
     "local": 0,
     "num_warps": null,
     "ops": {
-     "LDG": 13,
-     "STG": 7
+     "LDG.128": 6,
+     "LDG.256": 7,
+     "STG.256": 7
     },
     "regs": 63,
     "resident_per_sm": null,
     "smem": 0
    },
    {
-    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi2ELi6EEEvPKfS2_S2_S2_PfS3_iif",
+    "kernel": "_ZN41_GLOBAL__N__8b9c6dc7_9_kernel_cu_a02f06f810qk_rms_tokILi2ELi6EEEvPKfS2_S2_S2_PfS3_iif",
     "local": 0,
     "num_warps": null,
     "ops": {
-     "LDG": 13,
-     "STG": 7
+     "LDG.128": 6,
+     "LDG.256": 7,
+     "STG.256": 7
     },
     "regs": 40,
     "resident_per_sm": null,
     "smem": 0
    },
    {
-    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "kernel": "_ZN41_GLOBAL__N__8b9c6dc7_9_kernel_cu_a02f06f810qk_rms_tokILi1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
     "local": 0,
     "num_warps": null,
     "ops": {
-     "LDG": 13,
-     "STG": 7
+     "LDG.128": 6,
+     "LDG.256": 7,
+     "STG.256": 7
     },
     "regs": 30,
     "resident_per_sm": null,
@@ -1123,6 +1126,20 @@
   "round": "r3",
   "solution": "loop/rounds/r3/candidates/r3-cute-ldg256-os-r16.json",
   "static_error": "no sm_100 cubin produced: ",
+  "static_sm100": [
+   {
+    "kernel": "kernel_cutlass_kernel_cand_QKRMSNorm_object_at__tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o1612831128120480_tensorptrf32gmemal_0",
+    "local": 0,
+    "num_warps": 8,
+    "ops": {
+     "LDG.256": 4,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 8,
+    "smem": 0
+   }
+  ],
   "status": "passed",
   "task": {
    "band": "all",
@@ -1176,12 +1193,12 @@
   "solution": "loop/rounds/r3/candidates/r3-os-l2pf-r8w4.json",
   "static_sm100": [
    {
-    "kernel": "_ZN41_GLOBAL__N__f249dfae_9_kernel_cu_a02f06f816qk_rms_pf_kernelEPKfS1_S1_S1_PfS2_iif",
+    "kernel": "_ZN41_GLOBAL__N__06ff8336_9_kernel_cu_a02f06f816qk_rms_pf_kernelEPKfS1_S1_S1_PfS2_iif",
     "local": 0,
     "num_warps": null,
     "ops": {
-     "LDG": 4,
-     "STG": 2
+     "LDG.128": 4,
+     "STG.128": 2
     },
     "regs": 31,
     "resident_per_sm": null,
@@ -1245,23 +1262,23 @@
     "local": 0,
     "num_warps": 4,
     "ops": {
-     "LDG": 12,
-     "STG": 8
+     "LDG.128": 12,
+     "STG.128": 8
     },
     "regs": 64,
     "resident_per_sm": 8,
     "smem": 0
    },
    {
-    "kernel": "_qk_oneshot",
+    "kernel": "_qk_tokblk",
     "local": 0,
     "num_warps": 4,
     "ops": {
-     "LDG": 4,
-     "STG": 2
+     "LDG.128": 12,
+     "STG.128": 8
     },
-    "regs": 32,
-    "resident_per_sm": 16,
+    "regs": 64,
+    "resident_per_sm": 8,
     "smem": 0
    },
    {
@@ -1269,23 +1286,23 @@
     "local": 0,
     "num_warps": 8,
     "ops": {
-     "LDG": 10,
-     "STG": 8
+     "LDG.128": 10,
+     "STG.128": 8
     },
     "regs": 61,
     "resident_per_sm": 4,
     "smem": 0
    },
    {
-    "kernel": "_qk_tokblk",
+    "kernel": "_qk_oneshot",
     "local": 0,
     "num_warps": 4,
     "ops": {
-     "LDG": 12,
-     "STG": 8
+     "LDG.128": 4,
+     "STG.128": 2
     },
-    "regs": 64,
-    "resident_per_sm": 8,
+    "regs": 32,
+    "resident_per_sm": 16,
     "smem": 0
    }
   ],

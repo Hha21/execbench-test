@@ -1,0 +1,70 @@
+id: r5-ldg256-os-r16-stel
+parents:
+  - r3-cute-ldg256-os-r16
+  - r2-ldg256-os-r16
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  The kernel keeps the parent's one-shot ldg256 structure. The only change is that output stores carry an L2
+  evict_last policy, while loads keep the default policy. Outputs stay in L2 longer, and the used-once input lines
+  and the harness's flush lines are evicted first. That should cut DRAM write traffic and read/write mixing inside
+  the timed window, and leave more output dirty in L2 when the kernel ends. Evidence on B200: the r2 kernel has the
+  same structure with evict_first stores and loads, and it is 4-5% slower than the default-policy parent on M and L.
+  Evidence on A100 (128-bit fallback, same policies), against the CuTe parent: S -6.4%, M -3.6%, L -3.8%. Control
+  run with evict_normal stores: +0.8 / +2.4 / +1.1%, so the gain comes from the hint, not from the language.
+  evict_first loads plus evict_last stores gave L +4.3%, so it was rejected.
+expected_effect:
+  S:
+    pct: -3
+    confidence: low
+  M:
+    pct: -4
+    confidence: low
+  L:
+    pct: -4
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  store_policy: "L2 evict_last, fraction 1.0"
+  load_policy: default
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback with the same cache policies; the L2 is a different size"
+  A100:
+    runs: true
+    representative: false
+    note: "128-bit fallback with the same policies; measured S -6.4 / M -3.6 / L -3.8% vs the parent, and the evict_normal control at about +1%"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The L2 replacement behaviour on B200 (126 MB, two partitions) may differ from A100 (40 MB); the gain could shrink or vanish."
+  - "Evidence comes from A100 only. On B200 the effect of the evict_last store hint alone has not been measured; only the evict_first stores and loads of r2 have been."
+  - "The CUDA C++ build differs from the CuTe parent. The parent's B200 lead over the r2 CUDA kernel is attributed to cache policy, not to codegen."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

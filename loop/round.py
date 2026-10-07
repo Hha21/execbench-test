@@ -2,6 +2,7 @@
 and shortlist the best for the B200 portal.
 
   python3 loop/round.py auto      --round r3 [--max-tasks 3] [--gpus A100,H200]   plan + propose + test
+                                  [--interactive [--tool-gpu A100,L40S] [--turns 12] [--gpu-calls 8]]
   python3 loop/round.py plan      --round r3                                    show what the planner would do
   python3 loop/round.py propose   --round r3 --operation structural_mutation --parents g2-os-r16w8 \
                                   --band L --instructions "..." [--dry-run]      one hand-written task
@@ -10,6 +11,9 @@ and shortlist the best for the B200 portal.
   python3 loop/round.py collect   --round r3
   python3 loop/round.py shortlist --round r3                                    -> rounds/r3/portal/
   python3 loop/round.py table
+
+With --interactive, each task is a design session (loop/designer.py): the LLM can compile its drafts for sm_100a,
+test and time them on a CSF3 GPU against the current best, and query the score model before it answers.
 
 Candidates live in loop/rounds/<round>/candidates/ (solution JSON + design card); lint failures go to rejected/.
 Portal results arrive through poc/ingest_portal.py and are picked up by collect, shortlist and table.
@@ -88,20 +92,27 @@ def propose_tasks(round_id, tasks, a):
         for i, t, dyn, name in jobs:
             print(f"dry run {name}: static ~{len(static) // 4:,} tokens (cached), dynamic ~{len(dyn) // 4:,} tokens")
         return
-    results = {}
-    first, rest = jobs[0], jobs[1:]
-    results[first[0]] = call_llm(static, first[2], first[1], round_id, first[0], a)   # warms the prompt cache
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futs = {j[0]: pool.submit(call_llm, static, j[2], j[1], round_id, j[0], a) for j in rest}
-        for i, f in futs.items():
-            results[i] = f.result()
+    if a.interactive:
+        import designer
+        sync_remote()
+        results = designer.run_sessions(round_id, jobs, static, a, SLURM, d / "sessions")
+    else:
+        results = {}
+        first, rest = jobs[0], jobs[1:]
+        results[first[0]] = call_llm(static, first[2], first[1], round_id, first[0], a)   # warms the prompt cache
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            futs = {j[0]: pool.submit(call_llm, static, j[2], j[1], round_id, j[0], a) for j in rest}
+            for i, f in futs.items():
+                results[i] = f.result()
     total = 0.0
     for i, t, dyn, name in jobs:
         text, info = results[i]
         (d / "replies" / f"{name}.reply.md").write_text(text)
         total += info.get("cost_usd") or 0
+        extra = f", {info['turns']} turns, {info['gpu_calls']} GPU calls" if "turns" in info else ""
         print(f"{name}: {info['prompt_tokens']} in ({info['cached_tokens']} cached), {info['completion_tokens']} out "
-              f"({info['reasoning_tokens']} reasoning), ${info['cost_usd']}, {info['seconds']} s, finish={info['finish']}")
+              f"({info['reasoning_tokens']} reasoning), ${info['cost_usd']}, {info['seconds']} s, "
+              f"finish={info.get('finish')}{extra}")
         cands = reply.candidates(text)
         if not cands:
             print("  no parseable candidate in the reply")
@@ -160,9 +171,13 @@ def cmd_auto(a):
         print(f"next: python3 loop/round.py status --round {a.round}; then collect and shortlist")
 
 
-def cmd_test(a):
+def sync_remote():
     subprocess.run(["rsync", "-a", "--exclude", "__pycache__", f"{ROOT}/loop/", f"{REMOTE}:{RSOLX}/loop/"], check=True)
     subprocess.run(["rsync", "-a", f"{ROOT}/poc/run_timing.py", f"{REMOTE}:{RSOLX}/poc/"], check=True)
+
+
+def cmd_test(a):
+    sync_remote()
     jobs = {}
     for gpu in a.gpus.split(","):
         acct, part = SLURM[gpu]
@@ -224,6 +239,16 @@ def main():
     llm_args.add_argument("--effort", default="high")
     llm_args.add_argument("--max-tokens", type=int, default=64000)
     llm_args.add_argument("--dry-run", action="store_true")
+    llm_args.add_argument("--interactive", action="store_true",
+                          help="design sessions with tools (compile, test, score model) on a CSF3 GPU tool server")
+    llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server; several "
+                          "with the same Slurm account are queued together and the first free one is used")
+    llm_args.add_argument("--gpu-wait", type=int, default=180, help="interactive: minutes to wait for the tool server")
+    llm_args.add_argument("--turns", type=int, default=12, help="interactive: max LLM turns per session")
+    llm_args.add_argument("--gpu-calls", type=int, default=8, help="interactive: max compile/test calls per session")
+    llm_args.add_argument("--turn-effort", default="medium", help="interactive: reasoning effort after the first turn")
+    llm_args.add_argument("--session-budget", type=float, default=5.0, help="interactive: USD per session before "
+                          "the model is told to finish")
     p = sub.add_parser("propose", parents=[llm_args])
     p.add_argument("--round", required=True)
     p.add_argument("--operation", required=True)

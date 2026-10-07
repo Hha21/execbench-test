@@ -1,0 +1,72 @@
+id: r4-ldg256-wstat-pf2
+parents:
+  - r3-cute-ldg256-os-r16
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent-wstat
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: default
+  spec: all
+hypothesis: >-
+  The one-shot parent caps each SM at about 64 KB in flight (one 32 B load per thread), and that cap falls further
+  while CTAs retire and new ones ramp up. At 36 B/clk/SM and roughly 1-2 us loaded latency on B200, this limits it
+  to about 6.7 TB/s. A single balanced wave of weight-stationary CTAs fixes this. Each CTA keeps a depth-2 register
+  ring of 256-bit loads, refilled right after each store, which sustains about 96 KB per SM with no turnover gaps and
+  no shared-memory round trip. It should move M/L toward 7.1-7.3 TB/s. For n_tok <= 148 it degenerates to a one-shot
+  grid with the same CTA count as the parent, so S should be unchanged.
+expected_effect:
+  S:
+    pct: 1
+    confidence: low
+  M:
+    pct: -4
+    confidence: low
+  L:
+    pct: -6
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 6
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  P: 2
+  ROWS: 16
+  THREADS: 256
+  MIN_BLOCKS: 6
+  CLASSES: 6
+  grid_rule: "nj = ceil(n_tok / ceil(n_tok / cap)), cap = SMs * occupancy / 6 (148 on B200 at 6 CTAs/SM); grid = 6 * nj"
+dispatch: []
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 path uses 2 x float4 instead of 256-bit; useful as a check of the persistence/prefetch structure and for correctness"
+  A100:
+    runs: true
+    representative: false
+    note: "128-bit fallback; correctness and gross-regression check only"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Earlier persistent designs (v039, g2-ws-*, g2-tma-*) were slower than one-shot on B200. If the cause was not serial latency or tail imbalance but something about the strided per-class token order (DRAM page or partition locality), this design inherits the problem."
+  - "If ptxas needs more than 40 registers, __launch_bounds__(256,6) may spill (check LOCAL=0 in the sm_100a compile). The occupancy query keeps the grid in one wave either way."
+  - "With only P=2 tiles outstanding, the depth may still be short of the latency-bandwidth product. P=3 at 5 CTAs/SM (about 120 KB) is the next knob, but it breaks the 148-per-class balance."
+  - "Inline-PTX v8.f32 loads and stores need PTX ISA >= 8.8 (CUDA 13.1 on the portal). Older archs compile the float4 fallback under the __CUDA_ARCH__ guard."
+  - "The static occupancy cap is computed once per process from the device and the compiled kernel only (no data); it assumes a single GPU."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

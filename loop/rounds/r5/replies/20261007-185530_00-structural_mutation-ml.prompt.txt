@@ -1,0 +1,300 @@
+=== TASK ===
+Round: r5   Operation: structural_mutation
+Problem: #38 038_flux_multi_head_rmsnorm_qk   Target niche: any empty niche   Target band: M,L
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r5-'.
+Goal: raise sustained bandwidth on medium and large inputs (B*S > 600) on B200. The parent reaches 5.90 TB/s (M) and 6.74 TB/s (L); 7.2 TB/s would add about +0.030 to the score. Propose the single change most likely to get there, correct for every shape, one launch. Slower on B200 than the parent in these bands already: g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +4%; g2-tma-r8s3 (tma-tensor/persistent): +20%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +14%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +18%; r2-ldg256-os-r16 (ldg256/oneshot): +4%; v028 (ldg128/persistent): +51%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +132%; v050 (ldg128/oneshot): +31%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | H200 S/M/L | A100 S/M/L | L40S S/M/L | B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|
+| r3-cute-ldg256-os-r16 | ldg256/oneshot/all | cute_dsl | -/-/- | 17.4/79.2/313.8 | -/-/- | 6.6/22.7/78.4 | 0.58818 | 32/0/8 | passed |
+| g2-os-r8w4 | ldg128/oneshot/S | triton | 7.4/34.4/131.4 | 15.4/79.0/322.8 | -/-/- | 6.6/23.4/82.1 | 0.576828 | 32/0/16 | passed |
+| g2-os-r16w8 | ldg128/oneshot/S | triton | 7.5/35.1/134.6 | 15.5/78.8/323.1 | -/-/- | 6.7/23.3/82.0 | 0.576663 | 32/0/8 | passed |
+| r2-ldg256-os-r16 | ldg256/oneshot/all | cuda_cpp | -/-/- | 17.4/83.0/339.9 | -/-/- | 6.7/23.4/82.0 | 0.575609 | 31/0/None | passed |
+| g2-ws-hb16w8s3 | cpasync/persistent-wstat/L | triton | 7.5/35.5/136.8 | 17.2/83.0/327.0 | -/-/- | 7.0/26.1/93.7 | 0.536856 | 32/16384/8 | passed |
+| g2-tmaws-hb8s4 | tma-tensor/persistent-wstat/L | triton | 7.9/36.7/139.5 | 20.4/86.7/349.0 | -/-/- | 7.7/25.9/89.4 | 0.536804 | 32/32824/6 | passed |
+| v039 | ldg128/persistent/all | triton | 8.0/36.3/139.7 | 16.3/82.8/337.9 | 37.8/238.5/912.2 | 7.7/26.5/90.9 | 0.531119 | 32/0/None | passed |
+| g2-tma-r8s3 | tma-tensor/persistent/L | triton | 8.6/36.9/136.9 | 23.0/95.3/358.0 | -/-/- | 8.6/27.8/93.6 | 0.509579 | 32/36896/6 | passed |
+| v028 | ldg128/persistent/all | triton | 8.3/34.5/131.0 | 16.5/81.0/322.1 | 37.2/223.0/860.3 | 9.0/34.0/118.8 | 0.450775 | 149/0/None | passed |
+| v050 | ldg128/oneshot/all | triton | 13.7/40.5/133.3 | 38.2/84.7/318.8 | 36.1/209.5/820.4 | 14.6/34.4/96.5 | 0.433525 | 68/0/None | passed |
+| v040 | ldg128/oneshot/all | triton | 9.4/44.2/167.2 | 17.0/81.1/327.5 | 38.0/210.0/806.7 | 11.3/49.9/185.4 | 0.346612 | 28/1024/None | passed |
+| r3-os-l2pf-r8w4 | ldg128/oneshot/L | cuda_cpp | -/-/- | 15.8/79.5/323.5 | -/-/- | -/-/- | pending | 31/0/None | passed |
+| r3-tokblk-s-disp | ldg128/oneshot/dispatch:size | triton | -/-/- | 16.0/79.0/323.0 | -/-/- | -/-/- | pending | 64/0/8; 64/0/8 | passed |
+| g2-os-r8w2 | ldg128/oneshot/S | triton | 7.4/35.1/133.4 | 16.3/80.3/325.5 | -/-/- | -/-/- | pending | 40/0/25 | passed |
+| g2-os-r16w4 | ldg128/oneshot/S | triton | 7.4/35.0/132.6 | 16.3/80.4/326.1 | -/-/- | -/-/- | pending | 40/0/12 | passed |
+| g2-ws-hb16w8 | ldg128/persistent-wstat/L | triton | 7.6/36.6/143.3 | 16.7/84.7/340.0 | -/-/- | -/-/- | pending | 32/0/8 | passed |
+| r1-bulk1d-ring-r16s16 | bulk1d/persistent/L | cuda_cpp | 8.1/36.5/141.9 | 17.4/86.6/342.6 | -/-/- | -/-/- | pending | 30/1024/None | passed |
+| g2-tmaws-hb16s3 | tma-tensor/persistent-wstat/L | triton | 8.2/36.2/135.5 | 21.0/87.7/348.2 | -/-/- | -/-/- | pending | 40/49184/4 | passed |
+| r2-ldg256-tokblk | ldg256/oneshot/dispatch:size | cuda_cpp | -/-/- | 17.4/108.9/429.1 | -/-/- | -/-/- | pending | 63/0/None; 40/0/None | passed |
+| g2-tma-r16s4 | tma-tensor/persistent/L | triton | 9.2/37.8/139.3 | 34.0/139.5/525.0 | -/-/- | -/-/- | pending | 46/106552/2 | passed |
+| r4-cuda-ldg256-token-r2 | ldg256/oneshot/all | cuda_cpp | -/-/- | -/-/- | -/-/- | -/-/- | pending | - | proposed |
+| r4-cute-ldg256-sw2-disp | ldg256/persistent/dispatch:size | cute_dsl | -/-/- | -/-/- | -/-/- | -/-/- | pending | - | proposed |
+| r4-ldg256-wstat-pf2 | ldg256/persistent-wstat/all | cuda_cpp | -/-/- | -/-/- | -/-/- | -/-/- | pending | - | proposed |
+B200 results so far:
+- g2-os-r16w8: B200 score 0.577, geomean 25.3 µs, B200 S/M/L 6.7/23.3/82.0 µs
+- g2-os-r8w4: B200 score 0.577, geomean 25.3 µs, B200 S/M/L 6.6/23.4/82.1 µs
+- g2-tma-r8s3: B200 score 0.510, geomean 30.4 µs, B200 S/M/L 8.6/27.8/93.6 µs
+- g2-tmaws-hb8s4: B200 score 0.537, geomean 28.2 µs, B200 S/M/L 7.7/25.9/89.4 µs
+- g2-ws-hb16w8s3: B200 score 0.537, geomean 28.0 µs, B200 S/M/L 7.0/26.1/93.7 µs
+- r2-ldg256-os-r16: B200 score 0.576, geomean 25.4 µs, B200 S/M/L 6.7/23.4/82.0 µs
+- r3-cute-ldg256-os-r16: B200 score 0.588, geomean 24.6 µs, B200 S/M/L 6.6/22.7/78.4 µs
+- v028: B200 score 0.451, geomean 35.9 µs, B200 S/M/L 9.0/34.0/118.8 µs
+- v039: B200 score 0.531, geomean 28.6 µs, B200 S/M/L 7.7/26.5/90.9 µs
+- v040: B200 score 0.347, geomean 51.3 µs, B200 S/M/L 11.3/49.9/185.4 µs
+- v050: B200 score 0.434, geomean 38.7 µs, B200 S/M/L 14.6/34.4/96.5 µs
+
+=== PARENTS ===
+--- parent r3-cute-ldg256-os-r16 ---
+design card:
+id: r3-cute-ldg256-os-r16
+parents:
+  - g2-os-r8w4
+operation: new_design
+language: cute_dsl
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: default
+  spec: all
+hypothesis: >-
+  The design is the parent's one-shot fused structure, but each thread moves 256-bit vectors through a CuTe DSL
+  CopyUniversalOp with num_bits_per_copy=256, which Triton cannot emit. That halves the LDG/STG count per byte and
+  doubles the bytes per outstanding instruction, which matters at 36 B/clk/SM at the 1.5 GHz lock. The parent sits
+  at 6.4 TB/s on the L band, and this should move it toward about 7 TB/s. A single dynamic-shape compile serves all
+  16 workloads.
+expected_effect:
+  S:
+    pct: 0
+    confidence: low
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -5
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  VEC: 8
+  THREADS: 256
+  ROWS: 16
+  TPR: 16
+  fallback: "VEC=4, ROWS=8, TPR=32 if the 256-bit atom fails to compile"
+dispatch: []
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 has no 256-bit LDG; the atom either fails (falls back to 128-bit) or splits; correctness and S-band signal only"
+  A100:
+    runs: true
+    representative: false
+    note: "correctness smoke test; the vector width may differ from the B200 path"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "CuTe DSL 4.4.2 API details are unverified on CSF3 and may need a repair round: mark_compact_shape_dynamic stride_order, make_fragment_like naming, cute.math.rsqrt(fastmath), TensorSSA.reduce signature, a jit helper called inside a dynamic if."
+  - "CopyUniversalOp with 256 bits may lower to 2 x LDG.128. That is still correct, but it brings no gain over the parent. Check the sm_100a SASS for LDG.E.ENL2.256."
+  - "Without evict_first hints the L2 policy may differ slightly from the parent."
+  - "The first-call compile is about 20 s, or about 40 s if the fallback triggers. It happens once, in round 0, well inside 300 s."
+  - "If the CuTe DSL compiler leaves a background thread alive, the harness thread-count check would flag it. Verify on CSF3 with threading.active_count() before and after the first call."
+  - "Each call builds DLPack wrappers and a CUstream on the CPU. This is host-only work and is not timed."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): A100 17.4/79.2/313.8
+B200 portal: score 0.58818, geomean 24.592 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=1, seq_len=128 | 4.8 | 9.3 | 0.695 |
+| batch_size=1, seq_len=131 | 4.8 | 9.4 | 0.694 |
+| batch_size=2, seq_len=128 | 6.9 | 10.4 | 0.631 |
+| batch_size=1, seq_len=256 | 7.0 | 10.5 | 0.632 |
+| batch_size=2, seq_len=293 | 11.5 | 17.5 | 0.645 |
+| batch_size=8, seq_len=128 | 17.9 | 22.5 | 0.587 |
+| batch_size=1, seq_len=1024 | 17.9 | 22.4 | 0.585 |
+| batch_size=4, seq_len=256 | 18.0 | 22.4 | 0.584 |
+| batch_size=4, seq_len=512 | 32.4 | 37.6 | 0.561 |
+| batch_size=8, seq_len=256 | 32.3 | 37.4 | 0.559 |
+| batch_size=4, seq_len=1024 | 60.9 | 66.7 | 0.539 |
+| batch_size=16, seq_len=256 | 61.0 | 66.5 | 0.537 |
+| batch_size=32, seq_len=128 | 61.0 | 66.6 | 0.538 |
+| batch_size=8, seq_len=773 | 90.1 | 102.7 | 0.556 |
+| batch_size=4, seq_len=1657 | 96.3 | 107.2 | 0.546 |
+| batch_size=1, seq_len=8192 | 117.8 | 123.4 | 0.520 |
+sm_100a static features: [{"kernel": "kernel_cutlass_kernel_cand_QKRMSNorm_object_at__tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o161281128120480_tensorptrf32gmemalign32o1612831128120480_tensorptrf32gmemal_0", "num_warps": 8, "regs": 32, "smem": 0, "local": 0, "resident_per_sm": 8, "ops": {"LDG.256": 4, "STG.256": 2}}]
+source:
+--- file kernel.py ---
+"""r3-cute-ldg256-os-r16: CuTe DSL kernel for SOL-ExecBench #38 (per-head RMSNorm of Q and K, fp32).
+
+View every tensor as [R, 128] with R = B*S*48. One launch covers both streams: CTAs [0, n_tiles) do Q tiles and
+CTAs [n_tiles, 2*n_tiles) do K tiles. A tile is ROWS consecutive rows (ROWS divides 48, so there are no masks), and
+its weights are tile % (48 // ROWS) of the [48,128] weight matrix.
+
+Per thread: one contiguous VEC-float segment of one row (VEC=8, i.e. 256-bit, on sm_100a). Weights are loaded in
+the same way. The row sum of squares is a butterfly over the TPR = 128/VEC lanes that share the row. Then
+y = (x * rsqrt(mean + eps)) * w, written with the same vector width.
+
+The kernel is compiled once, at the first call, with a dynamic row count, so one binary serves every workload
+shape. If the 256-bit copy atom fails to compile, it is recompiled with 128-bit atoms (VEC=4, 8 rows per CTA).
+That choice depends only on the toolchain, never on data. All maths is fp32. The kernel is launched on the current
+PyTorch stream.
+"""
+
+import torch
+import cutlass
+import cutlass.cute as cute
+from cutlass.cute.runtime import from_dlpack
+import cuda.bindings.driver as cuda
+
+D = 128
+H = 48
+THREADS = 256
+
+_frag_like = getattr(cute, "make_fragment_like", None) or getattr(cute, "make_rmem_tensor_like")
+
+
+@cute.jit
+def _row_tile(gX: cute.Tensor, gW: cute.Tensor, gY: cute.Tensor, tile, tidx, eps,
+              thr_layout: cute.Layout, val_layout: cute.Layout,
+              vec: cutlass.Constexpr, n_shfl: cutlass.Constexpr, groups: cutlass.Constexpr):
+    atom = cute.make_copy_atom(cute.nvgpu.CopyUniversalOp(), gX.element_type, num_bits_per_copy=32 * vec)
+    tiled_copy = cute.make_tiled_copy_tv(atom, thr_layout, val_layout)
+    thr_copy = tiled_copy.get_slice(tidx)
+
+    blkX = gX[((None, None), tile)]
+    blkW = gW[((None, None), tile % groups)]
+    blkY = gY[((None, None), tile)]
+
+    tXgX = thr_copy.partition_S(blkX)
+    tWgW = thr_copy.partition_S(blkW)
+    tYgY = thr_copy.partition_D(blkY)
+
+    rX = _frag_like(tXgX)
+    rW = _frag_like(tWgW)
+    # issue both loads before any dependent work
+    cute.copy(atom, tXgX, rX)
+    cute.copy(atom, tWgW, rW)
+
+    x = rX.load()
+    ss = (x * x).reduce(cute.ReductionOp.ADD, init_val=0.0, reduction_profile=0)
+    for i in cutlass.range_constexpr(n_shfl):          # lanes of one row are contiguous: offsets < TPR
+        ss = ss + cute.arch.shuffle_sync_bfly(ss, offset=1 << i)
+    r = cute.math.rsqrt(ss * (1.0 / 128.0) + eps, fastmath=True)   # * (1/128) is exact
+
+    y = (x * r) * rW.load()
+    rY = _frag_like(tYgY)
+    rY.store(y)
+    cute.copy(atom, rY, tYgY)
+
+
+class _QKRMSNorm:
+    def __init__(self, vec):
+        self.vec = vec                     # floats per thread per copy (8 -> 256-bit, 4 -> 128-bit)
+        self.tpr = D // vec                # threads per row
+        self.rows = THREADS // self.tpr    # rows per CTA tile (16 or 8; both divide 48)
+        self.groups = H // self.rows       # distinct weight tiles
+        self.n_shfl = (self.tpr - 1).bit_length()
+
+    @cute.jit
+    def __call__(self, mQ: cute.Tensor, mK: cute.Tensor, mWq: cute.Tensor, mWk: cute.Tensor,
+                 mQo: cute.Tensor, mKo: cute.Tensor, eps: cutlass.Float32, stream: cuda.CUstream):
+        thr_layout = cute.make_ordered_layout((self.rows, self.tpr), order=(1, 0))
+        val_layout = cute.make_ordered_layout((1, self.vec), order=(1, 0))
+        tiler_mn, tv_layout = cute.make_layout_tv(thr_layout, val_layout)   # tiler = (rows, 128)
+
+        gQ = cute.zipped_divide(mQ, tiler_mn)
+        gK = cute.zipped_divide(mK, tiler_mn)
+        gQo = cute.zipped_divide(mQo, tiler_mn)
+        gKo = cute.zipped_divide(mKo, tiler_mn)
+        gWq = cute.zipped_divide(mWq, tiler_mn)
+        gWk = cute.zipped_divide(mWk, tiler_mn)
+
+        n_tiles = cute.size(gQ, mode=[1])
+        self.kernel(gQ, gK, gWq, gWk, gQo, gKo, eps, thr_layout, val_layout).launch(
+            grid=[2 * n_tiles, 1, 1],
+            block=[cute.size(tv_layout, mode=[0]), 1, 1],
+            stream=stream,
+        )
+
+    @cute.kernel
+    def kernel(self, gQ: cute.Tensor, gK: cute.Tensor, gWq: cute.Tensor, gWk: cute.Tensor,
+               gQo: cute.Tensor, gKo: cute.Tensor, eps: cutlass.Float32,
+               thr_layout: cute.Layout, val_layout: cute.Layout):
+        tidx, _, _ = cute.arch.thread_idx()
+        bidx, _, _ = cute.arch.block_idx()
+        n_tiles = cute.size(gQ, mode=[1])
+        if bidx < n_tiles:       # uniform per CTA
+            _row_tile(gQ, gWq, gQo, bidx, tidx, eps, thr_layout, val_layout,
+                      self.vec, self.n_shfl, self.groups)
+        else:
+            _row_tile(gK, gWk, gKo, bidx - n_tiles, tidx, eps, thr_layout, val_layout,
+                      self.vec, self.n_shfl, self.groups)
+
+
+_COMPILED = None   # (compiled kernel, vec); compiled-kernel cache only, no tensors or data kept
+
+
+def _wrap_rows(t, align):
+    # dynamic row count, static 128-float row stride (needed so vector copies are provably aligned)
+    return from_dlpack(t, assumed_align=align).mark_compact_shape_dynamic(
+        mode=0, stride_order=t.dim_order(), divisibility=16)
+
+
+def _wrap_w(t, align):
+    return from_dlpack(t, assumed_align=align)   # [48,128], fully static layout
+
+
+def _args(vec, q, k, wq, wk, qo, ko):
+    align = 4 * vec
+    return (_wrap_rows(q, align), _wrap_rows(k, align), _wrap_w(wq, align), _wrap_w(wk, align),
+            _wrap_rows(qo, align), _wrap_rows(ko, align))
+
+
+def _get(tensors, eps, stream):
+    global _COMPILED
+    if _COMPILED is None:
+        last_err = None
+        for vec in (8, 4):      # 256-bit first; 128-bit only if the toolchain rejects 256-bit atoms
+            try:
+                c = cute.compile(_QKRMSNorm(vec), *_args(vec, *tensors), eps, stream)
+                _COMPILED = (c, vec)
+                break
+            except Exception as e:   # compile-time only; independent of data
+                last_err = e
+        if _COMPILED is None:
+            raise last_err
+    return _COMPILED
+
+
+def run(query, key, weight_q, weight_k, eps, query_norm, key_norm):
+    q = query.view(-1, D)
+    k = key.view(-1, D)
+    qo = query_norm.view(-1, D)
+    ko = key_norm.view(-1, D)
+    tensors = (q, k, weight_q, weight_k, qo, ko)
+    eps = float(eps)
+    stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+    compiled, vec = _get(tensors, eps, stream)
+    compiled(*_args(vec, *tensors), eps, stream)
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

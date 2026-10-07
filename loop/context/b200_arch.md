@@ -27,8 +27,8 @@ keys refer to `sources.md`. Labels: VERIFIED-CSF3, SPEC, PAPER, LITERATURE, INFE
 | L1D hit latency | 39 cycles (19.6 ns at about 2 GHz); at the 1.5 GHz lock, 39 cycles ≈ 26 ns | [LITERATURE: chipsandcheese-b200], [INFERRED] |
 | L2 latency, local partition | about 150 ns; "dramatically" higher when the data sits in the other die's partition | [LITERATURE: chipsandcheese-b200] |
 | L2 bandwidth | about 21 TB/s within a partition, 16.8 TB/s crossing partitions (Vulkan test) | [LITERATURE: chipsandcheese-b200] |
-| DRAM latency | **unknown**. Chips and Cheese finds it higher than H100/A100 (no number in text); arXiv 2512.02189 v1 claims 58% lower than H200 on cache misses. **These disagree.** Planning value: 800 ns loaded (range 700–1000 ns) | [LITERATURE], [INFERRED] |
-| Achieved HBM bandwidth | arXiv 2512.02189 **v1**: STREAM triad 7.48 TB/s (94%); **v3** of the same paper: 4.14 TB/s (51.8%). The versions disagree; v3 gives no thread/block configuration. Planning value: 85–92% of 8 TB/s for a well-fed streaming kernel | [LITERATURE], [INFERRED] |
+| DRAM latency | **unknown**. Chips and Cheese finds it higher than H100/A100 (no number in text); arXiv 2512.02189 v1's "58% lower" claim is about TMEM vs Hopper global memory, not DRAM (`b200_sota.md` §5). Planning value: 800 ns loaded (range 700–1000 ns) | [LITERATURE], [INFERRED] |
+| Achieved HBM bandwidth | arXiv 2512.02189 **v1**: STREAM triad 7.48 TB/s (94%); **v3** of the same paper: 4.14 TB/s (51.8%). The versions disagree; v3 gives no thread/block configuration. Planning value: 85–92% of 8 TB/s for a well-fed streaming kernel. Best public B200 read+write streams fit 7.05–7.10 TB/s marginal (86–87%); see `b200_sota.md` §2 | [LITERATURE], [INFERRED] |
 | Global atomics | 90–100 ns between threads on the same partition, 190–220 ns across | [LITERATURE: chipsandcheese-b200] |
 
 Dual die: each die has 4 of the 8 HBM3e stacks attached, and the dies are joined by the 10 TB/s NV-HBI

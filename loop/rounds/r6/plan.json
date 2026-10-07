@@ -1,0 +1,42 @@
+{
+ "best": "r3-cute-ldg256-os-r16",
+ "best_score": 0.58818,
+ "gains": {
+  "base": 0.5875779780973129,
+  "fixed": 3.113021555061014,
+  "bw": 6.868883834353518,
+  "S": 0.018621625079278115,
+  "ML": 0.007188960761953078,
+  "tbs_M": 5.9040310174650665,
+  "tbs_L": 6.736977654252112
+ },
+ "tasks": [
+  {
+   "operation": "specialisation",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "S",
+   "gain": 0.018621625079278115,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.1 us fixed + bytes / 6.9 TB/s on small and medium sizes; reaching 2.0 us fixed would add about +0.019 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is recoverable; see b200_sota.md section 4 for what they do. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: g2-tma-r8s3 (tma-tensor/persistent): +30%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +16%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +7%; r2-ldg256-os-r16 (ldg256/oneshot): +2%; v028 (ldg128/persistent): +39%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +71%; v050 (ldg128/oneshot): +129%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."
+  },
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "M,L",
+   "gain": 0.007188960761953078,
+   "instructions": "Goal: raise sustained bandwidth on medium and large inputs (B*S > 600) on B200. The parent reaches 5.90 TB/s (M) and 6.74 TB/s (L); 7.1 TB/s would add about +0.007 to the score. Marginal bandwidth is already near the best public B200 kernels (7.05-7.10 TB/s), so expect small gains. Propose the single change most likely to get there, correct for every shape, one launch. Slower on B200 than the parent in these bands already: g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +4%; g2-tma-r8s3 (tma-tensor/persistent): +20%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +14%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +18%; r2-ldg256-os-r16 (ldg256/oneshot): +4%; v028 (ldg128/persistent): +51%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +132%; v050 (ldg128/oneshot): +31%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."
+  },
+  {
+   "operation": "new_design",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "all",
+   "niche": "lang:gluon",
+   "instructions": "Explore the empty niche lang:gluon. Write the design in Gluon (triton.experimental.gluon) for explicit layout and memory control. It must be correct for every shape; aim to beat the parent somewhere and say where in the card."
+  }
+ ]
+}

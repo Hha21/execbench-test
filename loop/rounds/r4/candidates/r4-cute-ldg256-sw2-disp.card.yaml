@@ -1,0 +1,96 @@
+id: r4-cute-ldg256-sw2-disp
+parents:
+  - r3-cute-ldg256-os-r16
+operation: specialisation
+language: cute_dsl
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows24
+  red: halfwarp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  The parent's roughly 3 µs small-input fixed cost is, in my estimate:
+  (a) about 0.5–1 µs dispatching about 6k warps (768 CTAs of 8 warps at 128 tokens; 12k at 256);
+  (b) about 1 µs for the first DRAM round trip;
+  (c) about 0.5 µs of store drain and end-of-grid flush;
+  (d) write-backs of the dirty L2 lines left by the harness flush, which inflate the bandwidth term to about
+  6 TB/s.
+  The S path launches a fixed 2×SM grid (296 CTAs × 12 warps = 3,552 warps) of 384-thread CTAs. Each thread holds
+  2–4 rows of 256-bit loads, all issued before any arithmetic, and loads its weight once, because the even
+  half-token stride fixes its head. This cuts warp dispatch and per-row overhead while keeping 49–98 KB in flight
+  per SM, so it targets (a) and part of (b). Term (d) is deliberately untouched, so the result isolates the
+  dispatch and latency share.
+expected_effect:
+  S:
+    pct: -10
+    confidence: low
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 56
+  smem_per_cta_bytes: 0
+  threads_per_cta: 384
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 49152
+  launches_per_call: 1
+knobs:
+  S_ROWS: 24
+  VEC: 8
+  GS: 148
+  NT: "2 if half-tokens <= 2*GS else 4"
+  S_threshold_tokens: 296
+dispatch:
+  - max_tokens: 148
+    kernel: _QKRMSNormS
+    meta:
+      NT: 2
+      grid: 296
+      threads: 384
+  - max_tokens: 296
+    kernel: _QKRMSNormS
+    meta:
+      NT: 4
+      grid: 296
+      threads: 384
+  - max_tokens: 1000000000
+    kernel: _QKRMSNorm
+    meta:
+      VEC: 8
+      ROWS: 16
+      THREADS: 256
+      note: "parent r3-cute-ldg256-os-r16, unchanged (includes the 586-token workload)"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "GS=132 there; sm_90 has no 256-bit LDG (falls back or splits); correctness and rough S-band signal only"
+  A100:
+    runs: true
+    representative: false
+    note: "correctness smoke test"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Registers: NT=4 needs <= 80 regs/thread for 2 CTAs/SM (384 threads). If CuTe/ptxas exceeds that, only 1 CTA/SM fits and the 256-token workloads run in 2 waves (large slowdown). Check the sm_100a regs for both NT variants."
+  - "Dynamic if around copies into register fragments allocated outside the branch is an unverified CuTe DSL pattern. If it fails to compile or forces local memory, repair by clamping the unit index and predicating only the store."
+  - "Unused fragments of CTAs with fewer units hold uninitialised data. Results computed from them are never stored, but this must be checked under compute-sanitizer for false alarms."
+  - "Per-SM work at token-like granularity is uneven (max/mean about 1.16 at 128 tokens). The parent has the same 6/5.2 imbalance, so it is a wash."
+  - "Three CuTe compiles (S NT=2, S NT=4, parent), about 60 s in total, all in round 0 of their first workloads, inside the 300 s limit."
+  - "Fewer warps may cut nothing if the B200 fixed cost is dominated by the DRAM latency, the end-of-kernel flush or dirty-L2 write-backs; then the expected S effect is about 0."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

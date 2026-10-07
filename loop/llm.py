@@ -33,21 +33,33 @@ def api_key():
     raise SystemExit("No OPENROUTER_API_KEY in the environment or in .env")
 
 
+def system_message(static_text):
+    # 1-hour cache: reasoning-heavy calls can run longer than the default 5-minute TTL, so sequential calls in a round
+    # would otherwise miss the cache (seen in round r2).
+    return {"role": "system", "content": [{"type": "text", "text": static_text,
+                                           "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}
+
+
 def chat(static_text, dynamic_text, model=DEFAULT_MODEL, max_tokens=64000, effort="high", timeout=2400, tag=""):
     """One completion. Returns (text, info) where info has model, finish reason, tokens and cost."""
-    body = {
-        "model": model,
-        "max_tokens": max_tokens,
-        "messages": [
-            # 1-hour cache: reasoning-heavy calls can run longer than the default 5-minute TTL, so sequential calls
-            # in a round would otherwise miss the cache (seen in round r2).
-            {"role": "system", "content": [{"type": "text", "text": static_text,
-                                            "cache_control": {"type": "ephemeral", "ttl": "1h"}}]},
-            {"role": "user", "content": dynamic_text},
-        ],
-        "reasoning": {"effort": effort},
-        "usage": {"include": True},
-    }
+    msg, info = complete([system_message(static_text), {"role": "user", "content": dynamic_text}],
+                         model=model, max_tokens=max_tokens, effort=effort, timeout=timeout, tag=tag)
+    return msg.get("content") or "", info
+
+
+def complete(messages, tools=None, tool_choice=None, model=DEFAULT_MODEL, max_tokens=64000, effort="high",
+             timeout=2400, tag=""):
+    """One turn of a conversation. Returns (assistant message, info).
+
+    The message keeps OpenRouter's reasoning_details and tool_calls, so it can be appended to `messages` as is:
+    Claude needs its earlier reasoning passed back unchanged to continue after a tool result.
+    """
+    body = {"model": model, "max_tokens": max_tokens, "messages": messages, "reasoning": {"effort": effort},
+            "usage": {"include": True}}
+    if tools:
+        body["tools"] = tools
+        if tool_choice:
+            body["tool_choice"] = tool_choice
     t0 = time.time()
     r = requests.post(URL, json=body, timeout=timeout,
                       headers={"Authorization": f"Bearer {api_key()}", "Content-Type": "application/json",
@@ -68,4 +80,8 @@ def chat(static_text, dynamic_text, model=DEFAULT_MODEL, max_tokens=64000, effor
     USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
     with open(USAGE_LOG, "a") as f:
         f.write(json.dumps(info) + "\n")
-    return choice["message"].get("content") or "", info
+    msg = choice["message"]
+    keep = {k: msg[k] for k in ("role", "content", "tool_calls", "reasoning_details") if msg.get(k) is not None}
+    keep.setdefault("role", "assistant")
+    keep.setdefault("content", "")
+    return keep, info

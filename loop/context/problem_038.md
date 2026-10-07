@@ -185,8 +185,11 @@ passed, with 0.15% run-to-run noise.
   default cache policy, one dynamic-shape compile), scores **0.588 at 24.6 µs** and beats the baseline on **16/16**.
   Against `g2-os-r8w4`: S unchanged (−2.5% to +3%), M −1.5% to −4.3%, L −3.7% to −4.9%; the 805 MB workload reaches
   **6.84 TB/s** (was 6.50). Fit: 3.1 µs fixed + 6.9 TB/s. Its design card predicted S 0 / M −3 / L −5%. The CuTe DSL
-  in NVIDIA's image (4.4.2) runs on the portal. Fewer, wider memory instructions help the bandwidth-bound sizes and
-  do nothing for small-input fixed cost. [portal]
+  in NVIDIA's image (4.4.2) runs on the portal. **The gain is probably from dropping the cache hints, not from the
+  width:** `r2-ldg256-os-r16` (portal #62016, 0.576) has the same 256-bit structure in CUDA C++ but keeps the evict
+  hints, and it is no faster than the 128-bit, hinted `g2-os-r8w4`. Small sizes are the same for all three. The
+  untested combination is 128-bit loads without hints, which would separate width from hints (`b200_sota.md` §3).
+  [portal; INFERRED]
 - **Five B200 submissions with per-workload results (6 October, `poc/results/b200_portal_workloads.csv`):**
   - v039 (fused, persistent, ROWS=16, 8 warps, 8 programs per SM, 32 registers) is fastest on **every** workload,
     so dispatching between the five gains nothing. Score 0.531, geomean 28.56 µs, faster than Tb on 9/16.

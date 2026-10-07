@@ -59,9 +59,14 @@ def tools():
 
 
 def op_key(name):
-    """SASS opcode -> base name plus access width when given, e.g. LDG.E.ENL2.256.CONSTANT -> LDG.256."""
+    """SASS opcode -> base name, cache-hint modifiers and access width, e.g. LDG.E.EF.128 -> LDG.EF.128.
+
+    Kept modifiers: EF/EL (evict first/last), LU (last use), NA (no L1 allocate), CONSTANT (read-only path).
+    """
+    parts = name.split(".")
+    mods = [m for m in parts[1:] if m in ("EF", "EL", "LU", "NA", "CONSTANT")]
     w = re.search(r"\.(64|128|256)(?=\.|$)", name)
-    return name.split(".")[0] + (f".{w[1]}" if w else "")
+    return ".".join([parts[0], *mods] + ([w[1]] if w else []))
 
 
 def inspect_cubin(path, meta):

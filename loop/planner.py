@@ -18,8 +18,8 @@ import archive
 from archive import ROOT
 
 S_MAX, M_MAX = 600, 2100            # band edges in B*S tokens (S = 12.6-57.6 MB, M = 101-201 MB)
-FIXED_TARGET_US = 1.5               # what a strong small-input kernel might reach (problem card)
-BW_TARGET_TBS = 7.2                 # what a strong medium/large kernel might reach (~90% of 8 TB/s)
+FIXED_TARGET_US = 2.0               # public B200 floor for a tiny streaming kernel is ~2.2-2.5 µs in total (b200_sota.md)
+BW_TARGET_TBS = 7.1                 # best public B200 read+write streams fit 7.05-7.10 TB/s marginal (b200_sota.md)
 EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order until one is missing from the archive
     # Dropped: launch:pdl (one-kernel designs gain nothing) and red:halfwarp (the r3 CuTe winner already does it).
     ("lang", "cutedsl", "Write the design in CuTe DSL (Python), which compiles for sm_100a; use it to reach a memory "
@@ -96,7 +96,7 @@ def gains(best, anc):
     base = score(t, anc)
     fixed, bw = fit_fixed_bw(t)
     s_t = {bs: (min(v, FIXED_TARGET_US + mb(bs) / bw) if bs <= S_MAX else v) for bs, v in t.items()}
-    l_t = {bs: (min(v, 1.0 + mb(bs) / BW_TARGET_TBS) if bs > S_MAX else v) for bs, v in t.items()}
+    l_t = {bs: (min(v, fixed + mb(bs) / BW_TARGET_TBS) if bs > S_MAX else v) for bs, v in t.items()}   # same fixed cost
     return dict(base=base, fixed=fixed, bw=bw, S=score(s_t, anc) - base, ML=score(l_t, anc) - base,
                 tbs_M=band_tbs(t, S_MAX, M_MAX), tbs_L=band_tbs(t, M_MAX, 1 << 30))
 
@@ -145,12 +145,15 @@ def plan(arc, max_tasks=3, last_round=None):
         f"+ bytes / {g['bw']:.1f} TB/s on small and medium sizes; reaching {FIXED_TARGET_US} us fixed would add about "
         f"{g['S']:+.3f} to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger "
         f"size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. "
+        f"The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is "
+        f"recoverable; see b200_sota.md section 4 for what they do. "
         f"Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. "
         f"Slower on B200 than the parent in this band already: {'; '.join(worse_in_band(arc, best, 0, S_MAX)) or 'none'}." + note))
     l_task = dict(operation="structural_mutation", parents=[best["id"]], band="M,L", gain=g["ML"], instructions=(
         f"Goal: raise sustained bandwidth on medium and large inputs (B*S > {S_MAX}) on B200. The parent reaches "
         f"{g['tbs_M']:.2f} TB/s (M) and {g['tbs_L']:.2f} TB/s (L); {BW_TARGET_TBS} TB/s would add about {g['ML']:+.3f} "
-        f"to the score. Propose the single change most likely to get there, correct for every shape, one launch. "
+        f"to the score. Marginal bandwidth is already near the best public B200 kernels (7.05-7.10 TB/s), so expect "
+        f"small gains. Propose the single change most likely to get there, correct for every shape, one launch. "
         f"Slower on B200 than the parent in these bands already: "
         f"{'; '.join(worse_in_band(arc, best, S_MAX, 1 << 30)) or 'none'}." + note))
     for t in sorted([s_task, l_task], key=lambda t: -t["gain"]):

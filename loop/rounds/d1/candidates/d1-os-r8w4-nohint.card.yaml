@@ -1,0 +1,33 @@
+id: d1-os-r8w4-nohint
+parents:
+  - g2-os-r8w4
+operation: knob_variant
+language: triton
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: default
+  spec: all
+hypothesis: >-
+  Diagnostic. g2-os-r8w4 (128-bit loads, x and stores evict_first, weights evict_last) scores 0.577; the unhinted
+  256-bit CuTe kernel scores 0.588; the hinted 256-bit CUDA kernel 0.576. If the hints cost 2-5% on medium/large
+  inputs, this unhinted 128-bit version should score about 0.588, and load width does not matter.
+expected_effect:
+  S:
+    pct: 0
+    confidence: medium
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -4
+    confidence: low
+runs_on:
+  A100:
+    representative: false
+  H200:
+    representative: false

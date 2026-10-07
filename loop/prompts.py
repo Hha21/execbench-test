@@ -12,8 +12,8 @@ from pathlib import Path
 from archive import ROOT, band_geomeans, fmt, table
 
 CTX = ROOT / "loop" / "context"
-STATIC_DOCS = ["core_brief.md", "problem_038.md", "harness_scoring.md", "b200_arch.md", "playbook_membound.md",
-               "generation_protocol.md"]
+STATIC_DOCS = ["core_brief.md", "problem_038.md", "harness_scoring.md", "b200_arch.md", "b200_sota.md",
+               "playbook_membound.md", "generation_protocol.md"]
 CONTRACT = """=== OUTPUT CONTRACT ===
 Optional "### Rationale" (<=150 words). Then, per candidate:
 1) ```json solution-spec``` (the solution JSON without "sources")

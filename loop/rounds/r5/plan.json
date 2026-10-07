@@ -1,0 +1,24 @@
+{
+ "best": "r3-cute-ldg256-os-r16",
+ "best_score": 0.58818,
+ "gains": {
+  "base": 0.5875779780973129,
+  "fixed": 3.113021555061014,
+  "bw": 6.868883834353518,
+  "S": 0.02811561504789495,
+  "ML": 0.030148347235080086,
+  "tbs_M": 5.9040310174650665,
+  "tbs_L": 6.736977654252112
+ },
+ "tasks": [
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "M,L",
+   "gain": 0.030148347235080086,
+   "instructions": "Goal: raise sustained bandwidth on medium and large inputs (B*S > 600) on B200. The parent reaches 5.90 TB/s (M) and 6.74 TB/s (L); 7.2 TB/s would add about +0.030 to the score. Propose the single change most likely to get there, correct for every shape, one launch. Slower on B200 than the parent in these bands already: g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +4%; g2-tma-r8s3 (tma-tensor/persistent): +20%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +14%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +18%; r2-ldg256-os-r16 (ldg256/oneshot): +4%; v028 (ldg128/persistent): +51%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +132%; v050 (ldg128/oneshot): +31%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."
+  }
+ ]
+}

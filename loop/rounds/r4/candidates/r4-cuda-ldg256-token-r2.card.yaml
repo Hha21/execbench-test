@@ -1,0 +1,72 @@
+id: r4-cuda-ldg256-token-r2
+parents:
+  - r3-cute-ldg256-os-r16
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: token
+  red: halfwarp
+  cache: default
+  spec: all
+hypothesis: >-
+  One CTA per (token, stream) makes the weight tile constant and the weight address a function of threadIdx only.
+  The real lever is that each of the 384 threads owns two rows (heads h and h+24), so it issues two 256-bit DRAM
+  loads up front. At 40 regs and 4 CTAs/SM that is about 96 KB of reads in flight per SM, against the parent's
+  64 KB. B200 needs about 43 KB nominally and more under load, so the M/L bands should move from 6.84 toward 7.2+ TB/s.
+  On the S band the coarse token granularity (256 CTAs at 128 tokens) leaves 40 SMs with half the load, so S may get
+  slightly worse.
+expected_effect:
+  S:
+    pct: 3
+    confidence: low
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -4
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 0
+  threads_per_cta: 384
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  THREADS: 384
+  ROWS_PER_THREAD: 2
+  VEC: 8
+  MIN_BLOCKS: 4
+  tile_rows: 48
+dispatch: []
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 path uses 2 x float4 instead of v8.f32; correctness and rough S-band signal only"
+  A100:
+    runs: true
+    representative: false
+    note: "float4 fallback path; correctness smoke test"
+  L40S:
+    runs: true
+    representative: false
+    note: "1536 threads/SM, so 4 CTAs of 384 still fit; correctness only"
+risks:
+  - "__launch_bounds__(384,4) caps registers at 40. With 32 data registers live (2 x and 2 w vectors), ptxas could spill; check LOCAL=0 in the sm_100a compile. If it spills, use MIN_BLOCKS=3 (48 regs, 72 KB in flight)."
+  - "S band: 256-262 CTAs on 148 SMs is uneven (108 SMs get 2 tokens, 40 get 1), so the smallest workloads may lose about 0-8% against the parent."
+  - "M band (1024 tokens) gives 2048 CTAs over 592 resident slots, about 3.5 waves; tail behaviour differs from the parent's 5.2 waves."
+  - "ld.global.v8.f32 without L1 qualifiers for the weights is not yet compile-verified, unlike the probe's L1::no_allocate form; ptxas may reject it on sm_100a. If so, use the L1::no_allocate form for the weights too (they then come from L2)."
+  - "The alignment TORCH_CHECK relies on the harness's 256-B aligned pointers. It is only a guard, not a dispatch."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

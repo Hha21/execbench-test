@@ -35,8 +35,10 @@ flowchart TB
         PLAN["planner.py<br/>which size band has the most score to gain;<br/>tasks, repairs, one unexplored niche"]
         ARC --> PLAN
     end
-    subgraph inner["Inner loop: LLM proposals and CSF3 tests (hours)"]
-        PROP["round.py propose<br/>Claude Opus 5.5 via OpenRouter<br/>context docs + archive + parent kernels"]
+    subgraph inner["Inner loop: LLM design sessions and CSF3 tests (hours)"]
+        PROP["round.py propose / auto --interactive<br/>Claude Opus 5.5 via OpenRouter<br/>briefing + archive + parent kernels"]
+        TOOLS["design-session tools (designer.py)<br/>compile_b200 and run_tests on a CSF3 GPU (toolserver.py)<br/>predict_score, get_kernel, read_example"]
+        PROP <-->|"draft, measure, revise"| TOOLS
         LINT["reply.py<br/>parse candidates, reject forbidden behaviour"]
         TEST["jobs/test_round.sbatch on CSF3<br/>NVIDIA harness: correctness + timing on A100/H200<br/>static_any.py: compile for sm_100a, read registers"]
         COL["round.py collect"]
@@ -49,7 +51,10 @@ flowchart TB
 ```
 
 - **Inner loop (hours).** The inner LLM writes a kernel and a design card stating its hypothesis and expected effect
-  per size band. Each prompt holds a cached briefing (`loop/context/`) plus the archive table and the parent kernels
+  per size band. With `--interactive`, each task is a design session: the LLM can compile its drafts for the B200
+  (registers, CTAs per SM, 128- or 256-bit loads), run them through NVIDIA's harness on a CSF3 GPU against the current
+  best kernel (with a projected B200 score), ask the score model which size band is worth effort, and read annotated
+  excerpts of the best public B200 norm kernels. It revises until it is satisfied or its budget runs out. Each prompt holds a cached briefing (`loop/context/`) plus the archive table and the parent kernels
   with their per-size B200 results. Candidates that look like reward hacking are rejected before they reach a GPU.
   Survivors go through NVIDIA's own harness on CSF3, and are compiled for the B200 so their register and
   shared-memory use is checked against the real target.
@@ -65,6 +70,7 @@ flowchart TB
 ```bash
 python3 loop/round.py plan      --round r3 --last-round r2   # what the planner would do (free)
 python3 loop/round.py auto      --round r3 --last-round r2   # plan + LLM proposals + submit CSF3 tests
+python3 loop/round.py auto      --round r3 --interactive     # the same, as design sessions with GPU tools
 python3 loop/round.py status    --round r3                   # Slurm job states
 python3 loop/round.py collect   --round r3                   # pull timings and B200 compile stats into the archive
 python3 loop/round.py shortlist --round r3                   # -> loop/rounds/r3/portal/ (files to upload)
@@ -73,7 +79,8 @@ python3 poc/ingest_portal.py html_results/<page>.html
 python3 loop/round.py table                                  # archive summary
 ```
 
-One LLM call costs about $0.50–0.70 with Claude Opus 5.5. The briefing (about 41k tokens) is cached for an hour, so
+One LLM call costs about $0.50–0.70 with Claude Opus 5.5; an interactive session costs a few dollars (it stops at
+`--session-budget`, default $5) and first waits for a free A100 or L40S, so no LLM time is spent while the queue is full. The briefing (about 41k tokens) is cached for an hour, so
 the later calls in a round pay a fraction of it. Tokens and cost of every call are logged in `loop/runs/usage.jsonl`.
 The OpenRouter key is read from `.env` (git-ignored) and never printed.
 
@@ -83,6 +90,8 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
 |---|---|
 | `loop/context/` | the inner LLM's briefing: core brief, B200 architecture, harness and scoring rules, problem card, kernel playbook, generation protocol, sources. Facts carry confidence labels |
 | `loop/round.py` | the loop driver (plan, propose, test, collect, shortlist, table) |
+| `loop/designer.py`, `loop/toolserver.py` | interactive design sessions, and the GPU tool server they share on CSF3 |
+| `loop/context/b200_sota.md`, `examples/` | what the best public B200 memory-bound kernels do, with licensed excerpts |
 | `loop/planner.py` | task planning and portal shortlisting from B200 per-workload data |
 | `loop/llm.py`, `prompts.py`, `reply.py` | OpenRouter client, prompt assembly, reply parsing and lint |
 | `loop/static_any.py` | compile any Triton, CuTe DSL or CUDA C++ candidate for sm_100a on a non-B200 node and read its resources and load widths |
@@ -100,6 +109,9 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
 - **B200 compiles differently.** `v028` used 149 registers on sm_100a against 128 on sm_90a, so its persistent grid
   oversubscribed the SMs and it gained nothing from B200's bandwidth. Every candidate is now compiled for sm_100a
   before submission, and persistent grids size themselves from the compiled kernel.
+- **Cache hints hurt on B200.** The 256-bit CUDA kernel with evict hints scored the same as the 128-bit Triton kernel
+  with the same hints (0.576 vs 0.577); the 256-bit CuTe kernel without hints scored 0.588. Public B200 kernels agree.
+  The harness fills the L2 with dirty lines before every call, which is the likely reason.
 - **H200 is the best cheap guide, within limits.** It ranks HBM-friendly variants like B200 does, but small inputs run
   no faster on B200 than on H200, and B200-only features (256-bit loads) cannot be timed on any cheap GPU. The first
   256-bit kernel was sent as an exploration slot on its design card's reasoning alone and became the best (+0.011).

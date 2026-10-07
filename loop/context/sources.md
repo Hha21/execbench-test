@@ -84,3 +84,54 @@ Local clone `/home/lain/execbench-test/SOL-ExecBench`, commit `a9fa080` ("Add v1
    (239.6 µs) as separate entries, which matches the paper.
 6. **SOL bound**: SOLAR's 9.195 µs for #38 is below the 8 TB/s read+write floor (16.0 µs geometric mean). On some
    other problems entries beat SOL (L1 `062_kv_cache_update_with_rope_backward`). SOLAR is not a physical lower bound.
+
+## Added 2026-10-07 for `b200_sota.md` and `examples/` (access date 2026-10-07)
+
+Licences are given for code we excerpt or summarise. Clones are in the session scratchpad (`research_raw/`); none
+were executed.
+
+### Third-party code and write-ups (LITERATURE)
+
+| Key | URL | Used for |
+|---|---|---|
+| [quack] | https://github.com/Dao-AILab/quack, commit `35266c3298f0` (2026-09-12): `quack/rmsnorm.py`, `quack/rmsnorm_config.py`, `quack/copy_utils.py`, `quack/reduction_base.py`, `quack/gemm_base.py` (L2-hint note), `quack/tile_scheduler.py`. Apache-2.0 | N=128 forward config (128 threads, 16 threads/row, 128-bit cp.async → smem); same ladder on Hopper and Blackwell; no cache hints; sm100 GEMM "evict_first D stores + evict_last B loads → net REGRESSION (−0.9% / −3.5%)"; excerpt `examples/quack_rmsnorm_fwd_excerpt.py` |
+| [quack-blog] | https://sysml.cs.princeton.edu/blogs/memory-bound-kernels.html (Guo, Zadouri, Dao; copy in repo `media/2025-07-10-membound-sol.md`) | memory-bound SOL recipe (vectorised coalesced loads, hierarchical reduction, clusters for long rows); H100 only: ≈3 TB/s (≈90%) for N ≥ 4 K |
+| [quack-notes] | quack `AI/global_memory_coalescing_notes.md`, `AI/hadamard_roofline_analysis.md`, `microbenchmarks/global_memory_coalescing.py` (same commit). Apache-2.0 | H100: contiguous 512 B per warp instruction is fastest; four far 128 B pieces ≈8% slower; sparse stores much worse; `torch.clone` = 90.4% of H100 peak as the empirical ceiling; CuTe DSL inline-PTX load/store pattern (excerpt `examples/quack_cutedsl_inline_ptx_excerpt.py`) |
+| [fi-qknorm] | https://github.com/flashinfer-ai/flashinfer, commit `b6b4f1ec35c4` (2026-10-07), `flashinfer/norm/kernels/rmsnorm.py` (`QKRMSNormKernel`), `flashinfer/norm/utils.py`. Apache-2.0 | CuTe DSL QK RMSNorm: `_LATENCY_BOUND_SMS = (100, 103, 107)`, 4 threads/row for head_dim 128 on Blackwell, cp.async → smem, no hints; excerpt `examples/flashinfer_qk_rmsnorm_sm100_excerpt.py` |
+| [fi-norm-cuh] | FlashInfer `include/flashinfer/norm.cuh` (same commit). Apache-2.0 | CUDA `QKRMSNormKernel`: warp per (token, head), 128-bit, 4 warps/CTA, occupancy-sized grid-stride grid, PDL |
+| [fi-pr5305] | https://github.com/flashinfer-ai/flashinfer/pull/5305 (merged 2026-09-18) | B200 qk_rmsnorm, bf16: 1.14× (M=8192), 1.20× (M=32768), 0.98–1.00× (M ≤ 512) for head_dim 128 from fewer threads per row; "adding threads per CTA … monotonically worse"; "only 32 KB in flight per SM" diagnosis |
+| [fi-pr2777] | https://github.com/flashinfer-ai/flashinfer/pull/2777 (merged 2026-03-17) | CuTe DSL norm rewrite: multi-row CTAs with cp.async, cluster reduction for large H; B200/H200 heatmaps are images only (no numbers extracted) |
+| [cake-pr5741] | https://github.com/flashinfer-ai/flashinfer/pull/5741 (merged 2026-10-05); kernels `csrc/cake_rmsnorm_train/*_kernel.cu`, table `flashinfer/jit/cake_rmsnorm_train.py` (commit `b6b4f1ec35c4`). Apache-2.0 | B200/GB300/R200 CUPTI cold-L2 RMSNorm times (table in `b200_sota.md` §2); per-size program tables; x loads with EVICT_FIRST policy constant, `.nc` weights, plain stores; 256-bit "not faster"; evict-first looped variant "no gain" (GB300); pipelined persistent 0.96–1.00× at large sizes; 5–9% launch-order noise under 10 µs; excerpt `examples/cake_rmsnorm_fwd_l2hint_excerpt.cu` |
+| [fi-pr5692] | https://github.com/flashinfer-ai/flashinfer/pull/5692 (2026-09-29) | evict_first on a once-read weight stream: 1.07–1.11× on B200 because it protects re-read activations in L2 (a reuse case #38 does not have) |
+| [sglang-flux2] | https://github.com/sgl-project/sglang, commit `0b635266d4a0` (2026-10-07): `python/sglang/kernels/kda_kernels/csrc/diffusion/flux2_qkv_epilogue.cuh`, `python/sglang/kernels/kda_kernels/README.md`, `python/sglang/kernels/ops/diffusion/README.md`; docs https://docs.sglang.io/docs/sglang-diffusion/fused_kernels.md. Apache-2.0 | production FLUX.2 QK RMSNorm(+RoPE) by a "Kernel Design Agent": warp per (token, head), persistent occupancy grid, no hints; excerpt `examples/sglang_flux2_qknorm_excerpt.cuh` |
+| [trtllm-qknorm] | https://github.com/NVIDIA/TensorRT-LLM/blob/main/cpp/tensorrt_llm/kernels/fusedQKNormRopeKernel.cu (main, fetched 2026-10-07). Apache-2.0 | fused QK-norm+RoPE: warp per (token, head), bf16 packed vectors |
+| [tk] | https://github.com/HazyResearch/ThunderKittens `kernels/layernorm/layernorm.cu` (HEAD, pushed 2026-09-12). MIT | Hopper-era layernorm (2 warps, double-buffered async loads); no Blackwell memory-bound kernels |
+| [te-3601] | https://github.com/NVIDIA/TransformerEngine/issues/3601 and PR #3602 (2026-10-01). Apache-2.0 | ptxas 12.9 accepts `ld.global.nc.L2::evict_first` only with `.v8.b32`/`.v4.b64` (256-bit); 12.8 rejects it on `ld`; `createpolicy` + `.L2::cache_hint` works at any width |
+| [cursor-blog] | https://cursor.com/blog/multi-agent-kernels (2026-04-14) | multi-agent SOL-ExecBench work; no memory-bound technique details |
+| [cursor-results] | https://github.com/anysphere/kernel-optimization-results (pushed 2026-04-14), `L1/038_flux_multi_head_rmsnorm_qk/{solution.json,traces.jsonl}`, `problem_level_metrics.csv`. **No licence file: read only, nothing excerpted** | public #38 solution (CUDA, warp per (token, head), float4, 1024-thread CTAs, SOL 0.551); v1.0-harness B200 times 5.5 µs (12.6 MB) … 128.0 µs (805 MB) |
+| [sf-tensor] | https://sf-tensor.com/news/sol-execbench (2026-09-25) | #1 overall team write-up: no kernel-level details for norms; ≈5% environment noise; 32 kernels ≥ 0.95 |
+| [kernelarc] | https://arxiv.org/abs/2608.17071 (2026-08-17) | multi-agent framework evaluated on SOL-ExecBench (H100/B200); abstract only, no memory-bound details |
+| [hazy-megakernel] | https://hazyresearch.stanford.edu/blog/2025-05-27-no-bubbles | H100 launch cost ≈2.1 µs with streams, ≈1.3 µs with CUDA graphs (CPU-side; context for gaps) |
+| [ascend-l2] | https://github.com/triton-lang/triton-ascend/pull/2349 (2026-09-22) | a zero-fill L2 flush leaves dirty lines whose write-back is charged to the next kernel (Ascend NPU, not NVIDIA); read-only `sum()` flush as the fix |
+| [nv-forum-l2] | https://forums.developer.nvidia.com/t/flushing-dirty-l2-cache-lines/258812 | NVIDIA (R. Crovella): no CUDA method to flush dirty L2 lines |
+| [sglang-l2rule] | https://github.com/sgl-project/sglang/pull/41545 (2026-09-28) | SGLang kernel-benchmark rule: measure with cold L2; no NVIDIA dirty-line data |
+| [arxiv-2605.04178] | https://arxiv.org/abs/2605.04178 (HTML https://arxiv.org/html/2605.04178) | "sustained HBM is 6.8–7.1 TB/s vs. 8.0" on B200; low weight (its table lists 176 SMs and a 64 MB L2) |
+| [arxiv-2507.10789] | https://arxiv.org/abs/2507.10789 | "Dissecting the NVIDIA Blackwell Architecture": RTX 5080 (GB203) and H100 PCIe, **not B200**; not used for B200 facts |
+| [arxiv-2512.02189-recheck] | https://arxiv.org/html/2512.02189v1, …v3 (re-read) | the "58% reduction in memory access latency in cache-misses" is TMEM (420 cycles) vs Hopper's 1000-cycle global memory, not B200 DRAM; v3 STREAM 4.14 TB/s is blamed on 4–16 GB arrays being too small |
+| [chipsandcheese-b200-recheck] | https://chipsandcheese.com/p/nvidias-b200-keeping-the-cuda-juggernaut (re-read) | "Perhaps Nvidia's scheduler tries to fill one partition's SMs before going to the other"; no VRAM bandwidth/latency number in the text |
+
+### NVIDIA code (SPEC)
+
+| Key | URL | Used for |
+|---|---|---|
+| [cutlass-cachehint] | https://github.com/NVIDIA/cutlass/blob/0b55a2f691d69981583568fd9eb69687b1f0de8a/include/cute/arch/copy_sm90_desc.hpp (2026-09-23). BSD-3-Clause | `CacheHintSm90`: EVICT_NORMAL `0x1000000000000000`, EVICT_FIRST `0x12F0000000000000`, EVICT_LAST `0x14F0000000000000` |
+| [cutlass-dsl-ex] | https://github.com/NVIDIA/cutlass/tree/0b55a2f691d69981583568fd9eb69687b1f0de8a/examples/python/CuTeDSL (`cute/blackwell/kernel/rmsnorm/rmsnorm.py`, `cute/blackwell/tutorial/tutorial_tma/`, `dsl_tutorials/programmatic_dependent_launch.py`, `cute/notebooks/elementwise_add.ipynb`). BSD-3-Clause | Blackwell RMSNorm example is quack-derived (128-bit, cp.async, clusters for large N); TMA tutorial's peak "2048 B/clk × 4000 MHz = 8.192 TB/s" |
+
+### Disagreements found 2026-10-07
+
+7. **Why r3 beat r2/g2 on B200**: `problem_038.md` §7 credits 256-bit width. Our per-workload data show r2 (256-bit,
+   hinted) ≈ g2 (128-bit, hinted), and r3 (256-bit, unhinted) is 2–5% faster at M/L, which points to the cache hints (see
+   `b200_sota.md` §3). This is unconfirmed until one A/B isolates it.
+8. **evict_first on stores**: `playbook_membound.md` §6 recommends it (`cache:stream`). On B200, quack (GEMM), CAKE
+   (paired search) and our portal data all point against it.
+9. **arXiv 2512.02189 latency claim**: our docs read it as B200 DRAM latency; the paper's number is TMEM latency.

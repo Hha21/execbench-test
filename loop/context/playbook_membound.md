@@ -94,10 +94,10 @@ def _qk_rms(q_ptr, k_ptr, wq_ptr, wk_ptr, qo_ptr, ko_ptr, n_rows, eps,
     rows = tile * ROWS + tl.arange(0, ROWS)
     cols = tl.arange(0, D)
     offs = rows[:, None] * D + cols[None, :]
-    x = tl.load(x_ptr + offs, eviction_policy="evict_first")                                       # LDG.E.EF.128
-    w = tl.load(w_ptr + (rows % H)[:, None] * D + cols[None, :], eviction_policy="evict_last")      # LDG.E.EL.128
+    x = tl.load(x_ptr + offs)                                       # LDG.E.128 (no hints on B200: see §6)
+    w = tl.load(w_ptr + (rows % H)[:, None] * D + cols[None, :])
     inv = tl.math.rsqrt(tl.sum(x * x, axis=1) * (1.0 / D) + eps)    # * (1/D) is exact; "/" is div.full.f32
-    tl.store(y_ptr + offs, (x * inv[:, None]) * w, eviction_policy="evict_first")                  # STG.E.EF.128
+    tl.store(y_ptr + offs, (x * inv[:, None]) * w)
 
 def run(query, key, weight_q, weight_k, eps, query_norm, key_norm):
     n_rows = query.numel() // D
@@ -260,7 +260,7 @@ for tok in range(pid // G2, n_tok, n_prog // G2):
 
 ## 5. Store path — `st:direct` / `st:bulk`
 
-- `st:direct`: `STG.128` (or `.256`) from registers with `evict_first`. Simplest. Stores are fire-and-forget, but
+- `st:direct`: `STG.128` (or `.256`) from registers, default cache policy (§6). Simplest. Stores are fire-and-forget, but
   they occupy memory-system queues.
 - `st:bulk`: stage in shared memory and issue a TMA/bulk store. Fewer instructions, and it frees registers early.
   Needs `fence.proxy.async` plus a barrier, and costs a shared buffer (double-buffer it).
@@ -268,10 +268,14 @@ for tok in range(pid // G2, n_tok, n_prog // G2):
 
 ## 6. Cache hints — `cache:stream` / `cache:default`
 
-- `cache:stream`: streamed inputs and outputs `evict_first`, reused tensors (weights, tables) `evict_last`. The Triton
-  mapping is verified (`b200_arch.md` §7).
-- Expected effect: small, because every byte is touched once and the L2 starts cold and dirty. It may help on L by
-  keeping the weights resident. **Do not** use `cache_modifier=".cg"` for loads: it becomes `LDG.E.128.STRONG.GPU`.
+- **On B200, use `cache:default` (no hints).** [portal, 7 October] The same hints (x and stores `evict_first`, weights
+  `evict_last`) appear on `g2-os-r8w4` (128-bit Triton) and `r2-ldg256-os-r16` (256-bit CUDA), and both take the same
+  time; `r3-cute-ldg256-os-r16`, with no hints, is 2–5% faster on M/L. quack measured a regression from evict_first
+  stores plus evict_last loads on sm100, and FlashInfer's B200-tuned CAKE kernels keep plain stores. Likely
+  mechanism: the harness zero-fills 2× L2 before each call, so the L2 starts full of dirty lines (`b200_sota.md` §3).
+- `cache:stream` (streamed inputs and outputs `evict_first`, reused tensors `evict_last`) is now an anti-pattern for
+  stores and weights. `evict_first` on the streamed x loads only is an optional A/B (expect ±1%). The Triton mapping
+  is in `b200_arch.md` §7. **Do not** use `cache_modifier=".cg"` for loads: it becomes `LDG.E.128.STRONG.GPU`.
   The PoC's EVICT knob was not decisive (A100/L40S). FlashGPU-Sim ignores these hints.
 
 ## 7. Reductions — `red:warp` / `red:halfwarp` / `red:cta`

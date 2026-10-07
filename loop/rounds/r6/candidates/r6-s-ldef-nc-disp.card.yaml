@@ -1,0 +1,95 @@
+id: r6-s-ldef-nc-disp
+parents:
+  - r5-ldg256-os-r16-stel
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  My estimate of what the parent's ~3.2 us fixed cost on small inputs is made of:
+  (a) CUPTI launch-to-end span of a near-empty kernel, about 1-1.5 us;
+  (b) loaded DRAM latency plus TLB misses on first touch of fresh pool addresses, about 1 us;
+  (c) store drain and grid exit, about 0.3-0.5 us;
+  (d) possibly extra DRAM write-backs: every line we allocate in an L2 full of the flush's dirty zero lines
+  may evict one of them.
+  (a)-(c) are mostly outside a kernel's control. r4-cute-ldg256-sw2-disp tests warp and CTA dispatch.
+  This candidate tests (d) only. For B*S <= 600, x loads carry L2 evict_first and weights use ld.global.nc,
+  the load policy CAKE kept after paired cold-L2 B200 tests. Allocations for input lines then recycle our
+  own clean lines instead of evicting dirty flush lines, and output stores (still evict_last) can take the
+  place of those clean input lines. Larger sizes run the parent unchanged, so the B200 result isolates the
+  effect on S.
+  Measured on A100 (128-bit fallback), against the parent: S +0.3% (noise; -2.2%, -1.1% at 25 MB, +1.5 to +1.8%
+  at 12.6 MB), M/L 0%. The near-peak marginal bandwidth on both GPUs already argues that (d) is small. So
+  this is mainly a cheap B200 check of the mechanism: an expected gain of 0 to 3% on S, B200-only if it
+  appears at all.
+  Also tried and rejected: 2-4 tiles per CTA. On A100 that was -6% at 128 tokens and +14% at 256 tokens. The
+  128-token gain is an A100 wave effect (the parent runs 1.8 waves on 108 SMs, but one wave on B200's 148).
+  It duplicates r4-cute, and the 2-tile kernel needs 48 registers on sm_100a, so 5 CTAs/SM would spill
+  256 tokens into a second wave.
+expected_effect:
+  S:
+    pct: -1.5
+    confidence: low
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  S_MAX_TOKENS: 600
+  S_load_policy: "x: L2::cache_hint 0x12F0000000000000 (evict_first); w: ld.global.nc"
+  store_policy: "L2 evict_last, fraction 1.0 (all sizes)"
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_kernel<true>
+    meta:
+      ROWS: 16
+      THREADS: 256
+      loads: "x evict_first, w nc"
+  - max_tokens: 1000000000
+    kernel: qk_rms_kernel<false>
+    meta:
+      ROWS: 16
+      THREADS: 256
+      note: "identical to parent r5-ldg256-os-r16-stel"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; the L2 is 50 MB instead of 126 MB, so the dirty-flush interaction differs"
+  A100:
+    runs: true
+    representative: false
+    note: "measured S +0.3%, M 0.0%, L -0.1% vs parent (noise); 16/16 pass"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Term (d) may be negligible on B200, since marginal bandwidth between 12.6 and 25 MB is already about 7.9 TB/s. The expected result is then about 0 on S."
+  - "On A100, evict_first loads hurt L by 4% (r5 session). That is why they apply only to B*S <= 600; the 586-token workload (57.6 MB) is the one most exposed if B200 behaves the same way."
+  - "S-band noise on the portal is about 5%, so one submission cannot resolve an effect of 1-3%."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

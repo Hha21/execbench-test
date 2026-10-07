@@ -15,6 +15,7 @@ import math
 import subprocess
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 
 import archive
@@ -32,8 +33,10 @@ This is an interactive design session. Use the tools to check and improve your d
 1. Draft. 2. compile_b200: fix compile errors; check registers, CTAs per SM, spills, and that the B200 SASS uses the
 memory instructions you intended (e.g. LDG.256 / STG.256). 3. run_tests: correctness on all 16 workloads, timing on a
 cheap GPU against the current best kernel, and the projected B200 score. 4. Revise while it pays. 5. Final answer.
-- Local timing runs on {gpu}. It cannot run B200-only paths (256-bit loads, sm_100-only instructions); those run a
-  fallback there, so judge them from compile_b200 output and reasoning, not from local speed. Timing noise is
+- Local timing runs on {gpu}. Unless that is a B200, it cannot run B200-only paths (256-bit loads, sm_100-only
+  instructions) or show B200's 126 MB L2; those run a fallback there, so judge them from compile_b200 output and
+  reasoning, not from local speed. A rented B200 runs unlocked clocks (the portal locks SM 1500 / DRAM 3996 MHz), so
+  trust its relative timings more than its absolute ones. Timing noise is
   about 1% on medium/large sizes and up to 3% on the smallest; re-test before trusting a change that small.
 - predict_score turns per-band latency changes into a B200 score, so you can see which band is worth the effort.
 - get_kernel returns any archive kernel's source, design card and measurements; read_example shows annotated
@@ -155,6 +158,61 @@ class ToolServer:
             if out.strip():
                 self.ref = json.loads(out)
         return self.ref
+
+
+class ModalB200:
+    """Same interface as ToolServer, backed by a real B200 on Modal (loop/b200_modal.py), billed per second.
+
+    Calls are serialised on one container (max_containers=1), so timings never overlap. A cap on B200 minutes per
+    round stops the GPU tools (sessions are told to finish) rather than letting spend run on.
+    """
+
+    def __init__(self, round_id, ref_solution, budget_minutes=60):
+        import modal
+        import b200_modal
+        b200_modal.load_token()
+        self.name, self.ref_solution, self.budget_s = f"{round_id}-modal", ref_solution, budget_minutes * 60
+        self._ctx = b200_modal.app.run()
+        self._ctx.__enter__()
+        self.fn, self.gpu, self.ref = b200_modal.handle, "B200 (Modal)", None
+        self.lock, self.n, self.used_s = threading.Lock(), 0, 0.0
+        print(f"tool server: Modal B200, budget {budget_minutes} min", flush=True)
+
+    def call(self, kind, sol):
+        with self.lock:
+            if self.used_s >= self.budget_s:
+                return dict(error=f"the round's B200 budget ({self.budget_s // 60:.0f} min) is used up; finish "
+                                  "with what you have")
+            self.n += 1
+            rid = f"{kind}-{self.n:03d}"
+        t0 = time.time()
+        try:
+            res = self.fn.remote(dict(id=rid, kind=kind, solution=sol))
+        except Exception as e:
+            res = dict(id=rid, kind=kind, error=f"Modal call failed: {type(e).__name__}: {e}")
+        with self.lock:      # container time for this call (+5 s overhead); queueing behind other sessions is free
+            self.used_s += float(res.get("seconds") or (time.time() - t0)) + 5
+        if res.get("gpu") and "B200" not in res["gpu"]:
+            res = dict(id=rid, kind=kind, error=f"wrong GPU {res['gpu']!r}; result discarded")
+        return res
+
+    def wait_alive(self, timeout_s):
+        """Time the reference kernel (this also starts and warms the container); returns the GPU name."""
+        sol = json.loads((archive.ROOT / self.ref_solution).read_text())
+        res = self.call("test", sol)
+        if not res.get("workloads"):
+            print(f"reference run failed: {str(res.get('error') or res.get('console_tail'))[-1500:]}", flush=True)
+            return None
+        self.ref = dict(ref=Path(self.ref_solution).stem, gpu=res.get("gpu"), workloads=res["workloads"])
+        self.gpu = res.get("gpu") or self.gpu
+        return self.gpu
+
+    def reference(self):
+        return self.ref
+
+    def stop(self):
+        print(f"Modal B200 used for about {self.used_s / 60:.1f} min (~${self.used_s / 3600 * 6.25:.2f})", flush=True)
+        self._ctx.__exit__(None, None, None)
 
 
 def make_solution(args, name):
@@ -355,7 +413,10 @@ def run_sessions(round_id, jobs, static, a, slurm, sessions_dir):
     arc = archive.load()
     best, anc = planner.best_kernel(arc), planner.anchors()
     sessions_dir.mkdir(parents=True, exist_ok=True)
-    server = ToolServer(round_id, a.tool_gpu, slurm, best["solution"])
+    if a.tool_gpu == "B200":
+        server = ModalB200(round_id, best["solution"], budget_minutes=a.b200_minutes)
+    else:
+        server = ToolServer(round_id, a.tool_gpu, slurm, best["solution"])
     try:
         # No LLM turns until a GPU is ours: a session that cannot test would just be the one-shot mode, at more cost.
         gpu = server.wait_alive(a.gpu_wait * 60)

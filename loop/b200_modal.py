@@ -1,0 +1,118 @@
+"""A real B200 for the design sessions' GPU tools, on Modal (pay per second, no idle machine).
+
+The image follows SOL-ExecBench's docker/Dockerfile (CUDA 13.1.1 + cuDNN, CUTLASS v4.4.1, the uv-locked Python
+environment, fbtriton 3.7.1, cutlass-dsl-libs-cu13 4.4.2), so candidates run on the portal's software stack.
+Each call handles one compile/test request with loop/toolserver.py --once. Containers have no network access and
+stay warm for two minutes between calls. Clocks are not locked (the portal locks SM 1500 MHz / DRAM 3996 MHz).
+
+Auth: MODAL_TOKEN_ID / MODAL_TOKEN_SECRET from the environment or the repo's .env (never printed).
+
+  .venv/bin/python loop/b200_modal.py info                 # GPU name, clocks, whether clocks can be locked
+  .venv/bin/python loop/calibrate_b200.py                  # time portal-measured kernels, compare with the portal
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import modal
+
+ROOT = Path(__file__).resolve().parents[1]
+SOLX = ROOT / "SOL-ExecBench"
+PROBLEM = SOLX / "data" / "benchmark" / "L1" / "038_flux_multi_head_rmsnorm_qk"
+GPU = "B200"                         # exactly B200 (sm_100); B300/GB300 are a different chip
+
+RUNTIME_ENV = {
+    "PATH": "/venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "CUDA_HOME": "/usr/local/cuda",
+    "CUDACXX": "/usr/local/cuda/bin/nvcc",
+    "CUTLASS_DIR": "/usr/local/cutlass",
+    "CPLUS_INCLUDE_PATH": "/usr/local/cutlass/include:/venv/lib/python3.12/site-packages/include",
+    "LD_LIBRARY_PATH": "/venv/lib/python3.12/site-packages/nvidia/cu13/lib",
+    "PYTHONPATH": "/sol-execbench/src",
+    "TRITON_CACHE_DIR": "/tmp/triton",
+}
+UV_ENV = {"UV_LINK_MODE": "copy", "UV_COMPILE_BYTECODE": "1", "UV_PYTHON_DOWNLOADS": "never",
+          "UV_PROJECT_ENVIRONMENT": "/venv", "UV_HTTP_TIMEOUT": "600", "UV_PYTHON": "/usr/bin/python3.12"}
+
+
+def load_token():
+    """Put MODAL_TOKEN_ID / MODAL_TOKEN_SECRET into the environment from .env if they are not set already."""
+    env = ROOT / ".env"
+    if env.exists():
+        for line in env.read_text().splitlines():
+            if "=" in line and not line.lstrip().startswith("#"):
+                name, value = line.split("=", 1)
+                name = name.strip().removeprefix("export ").strip().upper()
+                if name in ("MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET") and not os.environ.get(name):
+                    os.environ[name] = value.strip().strip('"').strip("'")
+    if not (os.environ.get("MODAL_TOKEN_ID") and os.environ.get("MODAL_TOKEN_SECRET")):
+        raise SystemExit("No MODAL_TOKEN_ID / MODAL_TOKEN_SECRET in the environment or in .env")
+
+
+image = (
+    modal.Image.from_registry("nvidia/cuda:13.1.1-cudnn-devel-ubuntu24.04", add_python="3.12")
+    .apt_install("curl", "git", "wget", "python3", "python3-dev", "build-essential", "libblas-dev", "liblapack-dev",
+                 "ccache", "cmake", "ninja-build")
+    .run_commands("git clone --depth 1 -b v4.4.1 https://github.com/NVIDIA/cutlass.git /usr/local/cutlass")
+    .pip_install("uv")
+    .add_local_file(SOLX / "pyproject.toml", "/sol-execbench/pyproject.toml", copy=True)
+    .add_local_file(SOLX / "uv.lock", "/sol-execbench/uv.lock", copy=True)
+    .add_local_file(SOLX / "README.md", "/sol-execbench/README.md", copy=True)
+    .run_commands("cd /sol-execbench && uv sync --frozen --no-install-project --all-groups", env=UV_ENV)
+    .add_local_dir(SOLX / "src", "/sol-execbench/src", copy=True)
+    .run_commands(
+        "cd /sol-execbench && uv sync --frozen --no-editable --all-groups"
+        " && uv pip uninstall --python /venv triton"
+        " && uv pip install --python /venv --no-deps fbtriton==3.7.1"
+        " && uv pip install --python /venv --no-deps --force-reinstall nvidia-cutlass-dsl-libs-cu13==4.4.2",
+        env=UV_ENV)
+    .env({"SOLX_IMAGE": "sol-execbench-v1.1"})
+    .add_local_dir(PROBLEM, "/problem")
+    .add_local_file(ROOT / "loop" / "toolserver.py", "/solx/loop/toolserver.py")
+    .add_local_file(ROOT / "loop" / "static_any.py", "/solx/loop/static_any.py")
+)
+
+app = modal.App("solx-b200", image=image)
+
+
+@app.function(gpu=GPU, timeout=1800, scaledown_window=120, max_containers=1, block_network=True)
+def handle(req: dict) -> dict:
+    """One compile/test request on the B200 (same format as loop/toolserver.py)."""
+    import subprocess
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / "req.json").write_text(json.dumps(req))
+    p = subprocess.run(["/venv/bin/python", "/solx/loop/toolserver.py", "--once", str(d / "req.json"),
+                        "--out", str(d / "res.json"), "--problem", "/problem"],
+                       env={**os.environ, **RUNTIME_ENV}, capture_output=True, text=True, timeout=1700)
+    if (d / "res.json").exists():
+        return json.loads((d / "res.json").read_text())
+    return dict(id=req.get("id"), kind=req.get("kind"), error=(p.stdout[-2000:] + "\n" + p.stderr[-3000:]).strip())
+
+
+@app.function(gpu=GPU, timeout=600, max_containers=1, block_network=True)
+def info() -> dict:
+    """GPU identity and clocks, and whether this container may lock clocks like the portal does."""
+    import subprocess
+    q = lambda *a: subprocess.run(["nvidia-smi", *a], capture_output=True, text=True)
+    out = dict(query=q("--query-gpu=name,compute_cap,driver_version,clocks.sm,clocks.mem,clocks.max.sm,"
+                       "clocks.max.mem,power.limit", "--format=csv").stdout)
+    lock = q("-lgc", "1500,1500")
+    out["lock_sm"] = (lock.stdout + lock.stderr).strip()[-300:]
+    if lock.returncode == 0:
+        q("-rgc")
+    env = {**os.environ, **RUNTIME_ENV}
+    out["torch"] = subprocess.run(["/venv/bin/python", "-c", "import torch, triton; print(torch.__version__, "
+                                   "triton.__version__, torch.cuda.get_device_name(0), "
+                                   "torch.cuda.get_device_capability(0))"],
+                                  env=env, capture_output=True, text=True).stdout.strip()
+    return out
+
+
+if __name__ == "__main__":
+    load_token()
+    if sys.argv[1:] == ["info"]:
+        with modal.enable_output(), app.run():
+            print(json.dumps(info.remote(), indent=1))

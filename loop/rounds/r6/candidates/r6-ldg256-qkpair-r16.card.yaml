@@ -1,0 +1,85 @@
+id: r6-ldg256-qkpair-r16
+parents:
+  - r5-ldg256-os-r16-stel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  For B*S > 600, one CTA processes the same 16 rows of Q and of K. Each half-warp issues both 256-bit
+  row loads before either reduction, so each thread has 64 B of DRAM reads in flight instead of 32 B.
+  That raises the estimate per SM from 64 KB to about 96 KB at 6 CTAs/SM (39 regs on sm_100a). It also
+  halves the CTA count, which cuts per-CTA launch and exit overhead in the 40-plus-wave one-shot grid.
+  Weights are loaded only after the reductions; they are L1/L2 hits and hold no registers across the
+  DRAM latency. Stores keep the parent's L2 evict_last policy, so the outputs left in L2 at kernel end are
+  unchanged. On A100, which already has enough reads in flight, the change is neutral
+  (S +0.1, M +0.2, L -0.1%). The expected gain is B200-only, from its larger in-flight requirement.
+  Measured and rejected in this session on A100: evict_first x loads (S +0.5, M +2.0, L +8.5%). Also
+  rejected: a 32-register variant forced to 8 CTAs/SM (no spills on sm_100a), which was 3.5% slower on A100 M.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -3
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 39
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 6
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  PAIR_MIN_TOKENS: 601
+  pair_min_blocks: 6
+  store_policy: "L2 evict_last, fraction 1.0"
+  load_policy: default
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_single
+    meta:
+      ROWS: 16
+      grid: "2*n_tiles"
+  - max_tokens: 9223372036854775807
+    kernel: qk_rms_pair
+    meta:
+      ROWS: 16
+      grid: "n_tiles"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; needs fewer bytes in flight per SM than B200"
+  A100:
+    runs: true
+    representative: false
+    note: "measured: 16/16 pass, S +0.1 / M +0.2 / L -0.1% vs parent (128-bit fallback)"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "6 CTAs/SM (39 regs) instead of 8 means 1536 resident threads; if B200 is limited by CTA turnover rather than bytes in flight, the gain may be zero."
+  - "Q and K reads and writes now interleave inside each CTA (4 concurrent address streams); DRAM page locality could get slightly worse."
+  - "Weight loads after the reduction add an L1-hit latency (about 26 ns) per CTA; small, but present on every tile."
+  - "The predicted gain is from reasoning only; A100 cannot show it."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

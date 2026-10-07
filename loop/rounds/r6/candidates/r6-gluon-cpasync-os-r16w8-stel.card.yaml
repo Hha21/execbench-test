@@ -1,0 +1,69 @@
+id: r6-gluon-cpasync-os-r16w8-stel
+parents:
+  - r5-ldg256-os-r16-stel
+operation: new_design
+language: gluon
+niche:
+  mem: cpasync
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  This is the first working kernel in the Gluon niche. It is the one-shot r5 structure (16 rows per 256-thread
+  CTA, a half-warp per row, evict_last output stores), but each thread loads x and w with 128-bit cp.async into
+  shared memory, as FlashInfer and quack do, and then reads them back into registers. Plain gl.load could not be
+  used: in this Gluon build it returns a tensor with no layout, and both gl.sum and gl.convert_layout then fail to
+  compile. Measured on A100 (all 16 workloads pass): +40 to +50% slower than r5 in every band (S +50, M +46,
+  L +40%). The time did not change with .cg copies or with stores without a hint. So the cause is the cp.async ->
+  shared -> register path, or Gluon's sm_80 lowering of it, not the cache policy. No band is expected to beat the
+  parent on B200. This kernel puts a working Gluon baseline in the archive and records the gl.load limitation.
+expected_effect:
+  S:
+    pct: 30
+    confidence: low
+  M:
+    pct: 30
+    confidence: low
+  L:
+    pct: 25
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 16384
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  num_warps: 8
+  smem_vec: 8
+  store_policy: evict_last
+  load_policy: default
+runs_on:
+  H200:
+    runs: true
+    representative: true
+  A100:
+    runs: true
+    representative: true
+    note: "measured: 16/16 pass; +40-50% vs r5 in every band; the .cg and no-hint controls gave identical times"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Measured 40-50% slower than the parent on A100; probably slower on B200 too. Not worth a portal slot unless the cp.async slowdown is understood."
+  - "gl.load / gl.convert_layout on pointer loads fail in this Gluon build (layout-less result); any Gluon follow-up must use cp.async or TMA."
+  - "The sm_100a SASS uses LDGSTS.128, not 256-bit loads, and pays a round trip through shared memory."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -241,8 +241,11 @@ def main():
     llm_args.add_argument("--dry-run", action="store_true")
     llm_args.add_argument("--interactive", action="store_true",
                           help="design sessions with tools (compile, test, score model) on a CSF3 GPU tool server")
-    llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server; several "
-                          "with the same Slurm account are queued together and the first free one is used")
+    llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server: CSF3 types "
+                          "(several with one Slurm account are queued together; the first free one is used), or B200 "
+                          "for a rented B200 on Modal (run round.py with .venv/bin/python)")
+    llm_args.add_argument("--b200-minutes", type=int, default=60, help="interactive with --tool-gpu B200: cap on "
+                          "Modal B200 minutes per round (about $6.25 an hour)")
     llm_args.add_argument("--gpu-wait", type=int, default=180, help="interactive: minutes to wait for the tool server")
     llm_args.add_argument("--turns", type=int, default=12, help="interactive: max LLM turns per session")
     llm_args.add_argument("--gpu-calls", type=int, default=8, help="interactive: max compile/test calls per session")

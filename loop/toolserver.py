@@ -7,6 +7,7 @@ At start it times the reference solution (--ref) once and writes <queue>/ref.jso
 It touches <queue>/alive on every poll, and exits when <queue>/stop appears or after --idle seconds without requests.
 
   python loop/toolserver.py --queue $SOLX/toolq/<name> --ref loop/rounds/r3/candidates/<best>.json --problem $PROBLEM038
+  python loop/toolserver.py --once req.json --out res.json --problem <dir>      (one request; loop/b200_modal.py)
 """
 
 import argparse
@@ -74,11 +75,23 @@ def handle(req, work, problem):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--queue", type=Path, required=True)
-    ap.add_argument("--ref", type=Path, required=True, help="reference solution JSON, timed once at start")
+    ap.add_argument("--queue", type=Path, help="queue directory (server mode)")
+    ap.add_argument("--ref", type=Path, help="reference solution JSON, timed once at start (server mode)")
     ap.add_argument("--problem", type=Path, required=True)
     ap.add_argument("--idle", type=int, default=2400, help="exit after this many seconds without a request")
+    ap.add_argument("--once", type=Path, help="handle this one request file and exit (used on Modal's B200)")
+    ap.add_argument("--out", type=Path, help="result file for --once")
     a = ap.parse_args()
+    if a.once:
+        req = json.loads(a.once.read_text())
+        work = a.once.parent / "work"
+        work.mkdir(exist_ok=True)
+        try:
+            res = handle(req, work, a.problem)
+        except Exception as e:
+            res = dict(id=req["id"], kind=req["kind"], error=f"{type(e).__name__}: {e}")
+        write_json(a.out, res)
+        return
     q = a.queue
     for sub in ("req", "res", "work"):
         (q / sub).mkdir(parents=True, exist_ok=True)

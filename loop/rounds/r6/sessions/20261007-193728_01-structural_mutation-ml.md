@@ -1,0 +1,348 @@
+# Design session 20261007-193728_01-structural_mutation-ml
+
+Task: {"operation": "structural_mutation", "parents": ["r5-ldg256-os-r16-stel"], "band": "M,L", "gain": 0.01576610161101355, "instructions": "Goal: cut medium and large input latency (B*S > 600) on B200. The parent reaches 6.45 TB/s (M) and 6.93 TB/s (L) effective; a further 5% would add about +0.016 to the score. Its fit is 7.5 TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. Slower on B200 than the parent in these bands already: d1-os-r8w4-nohint (ldg128/oneshot): +7%; g2-os-r16w8 (ldg128/oneshot): +9%; g2-os-r8w4 (ldg128/oneshot): +9%; g2-tma-r8s3 (tma-tensor/persistent): +26%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +24%; r2-ldg256-os-r16 (ldg256/oneshot): +9%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +5%; v028 (ldg128/persistent): +59%; v039 (ldg128/persistent): +22%; v040 (ldg128/oneshot): +143%; v050 (ldg128/oneshot): +38%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."}
+
+
+## Turn 0 (14414 tokens out, $0.369094)
+
+
+
+
+### run_tests (draft 1): probe: r5 + evict_first x loads at all sizes, to read per-workload L2-pressure effect on A100
+
+**run_tests** →
+```
+run_tests on NVIDIA A100-SXM4-80GB (75.6 s): 16/16 workloads PASSED
+latency vs reference r5-ldg256-os-r16-stel on the same GPU (µs, this vs reference):
+  2,128 18.0 vs 18.1 (-0.5%); 4,1657 407.2 vs 374.3 (+8.8%); 4,1024 251.7 vs 232.3 (+8.4%); 8,773 379.9 vs 349.8 (+8.6%); 8,128 58.4 vs 56.8 (+2.9%); 2,293 34.0 vs 33.2 (+2.2%); 16,256 251.8 vs 232.7 (+8.2%); 1,1024 59.2 vs 57.5 (+3.1%); 4,256 58.2 vs 57.1 (+1.9%); 1,128 10.6 vs 10.5 (+0.8%); 32,128 252.3 vs 232.4 (+8.6%); 4,512 122.0 vs 118.3 (+3.2%); 1,131 10.8 vs 10.6 (+1.2%); 8,256 116.6 vs 118.0 (-1.2%); 1,8192 502.4 vs 463.4 (+8.4%); 1,256 16.5 vs 16.7 (-1.2%)
+change by band (geomean): S +0.5%, M +2.0%, L +8.5%
+projected B200 score (emulator: the reference's B200 times x this GPU's relative speed): 0.5924 (current best 0.6089). Not valid for B200-only paths, which run a fallback on this GPU.
+```
+
+
+## Turn 1 (11938 tokens out, $0.3706956)
+
+
+
+
+### run_tests (draft 2): Q/K row pairing per thread for B*S>600 (64 B x in flight/thread, late weight loads), S keeps parent
+
+**run_tests** →
+```
+run_tests on NVIDIA A100-SXM4-80GB (74.4 s): 16/16 workloads PASSED
+latency vs reference r5-ldg256-os-r16-stel on the same GPU (µs, this vs reference):
+  2,128 18.1 vs 18.1 (-0.2%); 4,1657 373.7 vs 374.3 (-0.2%); 4,1024 232.3 vs 232.3 (+0.0%); 8,773 349.9 vs 349.8 (+0.0%); 8,128 57.1 vs 56.8 (+0.6%); 2,293 33.5 vs 33.2 (+0.7%); 16,256 232.5 vs 232.7 (-0.1%); 1,1024 57.6 vs 57.5 (+0.2%); 4,256 57.1 vs 57.1 (-0.1%); 1,128 10.6 vs 10.5 (+0.2%); 32,128 232.3 vs 232.4 (-0.0%); 4,512 118.1 vs 118.3 (-0.1%); 1,131 10.6 vs 10.6 (+0.0%); 8,256 118.3 vs 118.0 (+0.3%); 1,8192 461.3 vs 463.4 (-0.5%); 1,256 16.7 vs 16.7 (-0.5%)
+change by band (geomean): S +0.1%, M +0.2%, L -0.1%
+projected B200 score (emulator: the reference's B200 times x this GPU's relative speed): 0.6089 (current best 0.6089). Not valid for B200-only paths, which run a fallback on this GPU.
+```
+
+
+### compile_b200 (draft 3): sm_100a resource check of Q/K pair kernel
+
+**compile_b200** →
+```
+compile_b200 for sm_100a (19.4 s): 2 kernel(s)
+- _ZN41_GLOBAL__N__03da744e_9_kernel_cu_a02f06f811qk_rms_pairE: 39 regs/thread, 0 B shared, 0 B local (spills), CTAs/SM unknown; memory ops in SASS: LDG.256 x6, STG.256 x3
+- _ZN41_GLOBAL__N__03da744e_9_kernel_cu_a02f06f813qk_rms_singl: 31 regs/thread, 0 B shared, 0 B local (spills), CTAs/SM unknown; memory ops in SASS: LDG.256 x6, STG.256 x3
+```
+
+
+## Turn 2 (2306 tokens out, $0.1635474)
+
+
+
+
+### compile_b200 (draft 4): can the Q/K pair kernel fit 32 regs (8 CTAs/SM) without spills?
+
+**compile_b200** →
+```
+compile_b200 for sm_100a (18.8 s): 1 kernel(s)
+- _ZN41_GLOBAL__N__898c0c09_9_kernel_cu_a02f06f811qk_rms_pairE: 32 regs/thread, 0 B shared, 0 B local (spills), CTAs/SM unknown; memory ops in SASS: LDG.256 x4, STG.256 x2
+```
+
+
+## Turn 3 (4826 tokens out, $0.1337616)
+
+
+
+
+### run_tests (draft 5): final: Q/K pair kernel at 32 regs (8 CTAs/SM) for B*S>600, parent for S
+
+**run_tests** →
+```
+run_tests on NVIDIA A100-SXM4-80GB (71.3 s): 16/16 workloads PASSED
+latency vs reference r5-ldg256-os-r16-stel on the same GPU (µs, this vs reference):
+  2,128 18.1 vs 18.1 (-0.1%); 4,1657 378.2 vs 374.3 (+1.0%); 4,1024 236.1 vs 232.3 (+1.6%); 8,773 352.9 vs 349.8 (+0.9%); 8,128 59.5 vs 56.8 (+4.9%); 2,293 33.3 vs 33.2 (+0.1%); 16,256 235.3 vs 232.7 (+1.1%); 1,1024 59.6 vs 57.5 (+3.7%); 4,256 59.9 vs 57.1 (+4.8%); 1,128 10.5 vs 10.5 (-0.1%); 32,128 235.3 vs 232.4 (+1.3%); 4,512 121.0 vs 118.3 (+2.3%); 1,131 10.7 vs 10.6 (+0.8%); 8,256 120.3 vs 118.0 (+2.0%); 1,8192 466.1 vs 463.4 (+0.6%); 1,256 16.7 vs 16.7 (-0.2%)
+change by band (geomean): S +0.1%, M +3.5%, L +1.1%
+projected B200 score (emulator: the reference's B200 times x this GPU's relative speed): 0.6025 (current best 0.6089). Not valid for B200-only paths, which run a fallback on this GPU.
+```
+
+
+## Turn 4 (6778 tokens out, $0.1967632)
+
+I'm submitting **r6-ldg256-qkpair-r16**. For token counts B·S > 600, each half-warp now normalises one Q row and the matching K row together. That doubles each thread's DRAM reads in flight (64 B instead of 32 B), raising the estimate per SM from 64 KB to 96 KB, and halves the number of CTAs. Its only measured result is a tie with the parent on A100, so the gain on B200 is a prediction, not a measurement.
+
+### Rationale
+- **Cache-hint probe (rejected).** I first tested my L2 idea: marking input loads `evict_first` so used inputs leave L2 before the harness's dirty flush lines. On A100 it was clearly worse: S +0.5%, M +2.0%, L +8.5%. I dropped it.
+- **The change I kept.** The parent keeps only about 64 KB of reads in flight per SM, below what B200 seems to need (about 96–128 KB under load). The new kernel issues both rows' 256-bit loads first, then does both reductions. The weights are loaded only after the reductions; they are L1/L2 hits, so they don't hold registers while the DRAM reads are outstanding.
+- **Resources on sm_100a.** 39 registers, no spills, 4 × LDG.256 and 2 × STG.256 in the new kernel, so 6 CTAs fit per SM. Stores keep the parent's `evict_last` hint. Inputs of 600 tokens or fewer run the parent kernel unchanged.
+- **A100 result.** All 16 workloads pass, and timing is neutral: S +0.1%, M +0.2%, L −0.1%. That is expected, because A100 already has enough reads in flight.
+- **Variant I didn't submit.** Forcing 32 registers (8 CTAs/SM, 128 KB in flight) compiles without spills on sm_100a, but was 3.5% slower than the parent on A100 M. I submit the 39-register version that I actually tested.
+
+```json solution-spec
+{"languages": ["cuda_cpp"], "target_hardware": ["B200", "LOCAL"], "entry_point": "kernel.cu::run", "dependencies": ["torch"], "destination_passing_style": true, "compile_options": {"cuda_cflags": ["-O3", "--use_fast_math", "-std=c++17"]}}
+```
+
+```cuda file=kernel.cu
+// r6-ldg256-qkpair-r16: per-head RMSNorm of Q and K (fp32), one fused one-shot launch.
+// Parent r5-ldg256-os-r16-stel (16 rows per 256-thread CTA, half-warp per 128-float row, 256-bit ld/st,
+// output stores with an L2 evict_last policy, default-policy loads).
+// Change: for B*S > 600 each half-warp handles row r of Q AND row r of K (same head) in one CTA, so each
+// thread has 2 x 32 B of DRAM loads in flight (64 B/thread) and the grid has half as many CTAs.
+// Weights are loaded after the reductions (L1/L2 hits), so they hold no registers across the DRAM latency.
+// The S band (B*S <= 600) runs the parent kernel unchanged.
+// All maths fp32; rsqrtf -> rsqrt.approx.f32; 1/128 is an exact multiply.
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cstdint>
+
+namespace {
+constexpr int D = 128;
+constexpr int H = 48;
+constexpr int ROWS = 16;
+constexpr int THREADS = 256;
+constexpr int GROUPS = H / ROWS;
+constexpr int64_t PAIR_MIN_TOKENS = 601;
+
+__device__ __forceinline__ uint64_t pol_evict_last() {
+    uint64_t p;
+    asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(p));
+    return p;
+}
+
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 1000)
+__device__ __forceinline__ void ld8(const float* p, float (&v)[8]) {
+    asm volatile("ld.global.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                 : "=f"(v[0]), "=f"(v[1]), "=f"(v[2]), "=f"(v[3]),
+                   "=f"(v[4]), "=f"(v[5]), "=f"(v[6]), "=f"(v[7]) : "l"(p));
+}
+__device__ __forceinline__ void st8_h(float* p, const float (&v)[8], uint64_t pol) {
+    asm volatile("st.global.L2::cache_hint.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8}, %9;"
+                 :: "l"(p), "f"(v[0]), "f"(v[1]), "f"(v[2]), "f"(v[3]),
+                    "f"(v[4]), "f"(v[5]), "f"(v[6]), "f"(v[7]), "l"(pol) : "memory");
+}
+#else
+__device__ __forceinline__ void ld4(const float* p, float* v) {
+    asm volatile("ld.global.v4.f32 {%0,%1,%2,%3}, [%4];"
+                 : "=f"(v[0]), "=f"(v[1]), "=f"(v[2]), "=f"(v[3]) : "l"(p));
+}
+__device__ __forceinline__ void st4_h(float* p, const float* v, uint64_t pol) {
+    asm volatile("st.global.L2::cache_hint.v4.f32 [%0], {%1,%2,%3,%4}, %5;"
+                 :: "l"(p), "f"(v[0]), "f"(v[1]), "f"(v[2]), "f"(v[3]), "l"(pol) : "memory");
+}
+__device__ __forceinline__ void ld8(const float* p, float (&v)[8]) { ld4(p, v); ld4(p + 4, v + 4); }
+__device__ __forceinline__ void st8_h(float* p, const float (&v)[8], uint64_t pol) {
+    st4_h(p, v, pol); st4_h(p + 4, v + 4, pol);
+}
+#endif
+
+__device__ __forceinline__ float half_warp_sum(float s) {
+    s += __shfl_xor_sync(0xffffffffu, s, 8);
+    s += __shfl_xor_sync(0xffffffffu, s, 4);
+    s += __shfl_xor_sync(0xffffffffu, s, 2);
+    s += __shfl_xor_sync(0xffffffffu, s, 1);
+    return s;
+}
+
+// Parent kernel (S band): one row per half-warp, Q tiles then K tiles.
+__global__ void __launch_bounds__(THREADS, 8)
+qk_rms_single(const float* __restrict__ q, const float* __restrict__ k,
+              const float* __restrict__ wq, const float* __restrict__ wk,
+              float* __restrict__ qo, float* __restrict__ ko, int n_tiles, float eps) {
+    const int bid = blockIdx.x;
+    const bool is_k = bid >= n_tiles;
+    const int tile = is_k ? bid - n_tiles : bid;
+    const float* __restrict__ x = is_k ? k : q;
+    const float* __restrict__ w = is_k ? wk : wq;
+    float* __restrict__ y = is_k ? ko : qo;
+    const int r = threadIdx.x >> 4;
+    const int c = (threadIdx.x & 15) * 8;
+    const size_t row = (size_t)tile * ROWS + r;
+    const int head = (tile % GROUPS) * ROWS + r;
+    float xv[8], wv[8], yv[8];
+    ld8(x + row * D + c, xv);
+    ld8(w + (size_t)head * D + c, wv);
+    const uint64_t pol_out = pol_evict_last();
+    float s = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) s = fmaf(xv[i], xv[i], s);
+    const float inv = rsqrtf(half_warp_sum(s) * (1.0f / (float)D) + eps);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) yv[i] = (xv[i] * inv) * wv[i];
+    st8_h(y + row * D + c, yv, pol_out);
+}
+
+// M/L bands: each half-warp does row r of Q and row r of K (same head). 39 regs on sm_100a -> 6 CTAs/SM.
+__global__ void __launch_bounds__(THREADS, 6)
+qk_rms_pair(const float* __restrict__ q, const float* __restrict__ k,
+            const float* __restrict__ wq, const float* __restrict__ wk,
+            float* __restrict__ qo, float* __restrict__ ko, float eps) {
+    const int tile = blockIdx.x;
+    const int r = threadIdx.x >> 4;
+    const int c = (threadIdx.x & 15) * 8;
+    const size_t off = ((size_t)tile * ROWS + r) * D + c;
+    const int hoff = ((tile % GROUPS) * ROWS + r) * D + c;
+    float xq[8], xk[8], w[8], y[8];
+    ld8(q + off, xq);                 // both DRAM loads in flight together
+    ld8(k + off, xk);
+    const uint64_t pol_out = pol_evict_last();
+    float sq = 0.0f, sk = 0.0f;
+#pragma unroll
+    for (int i = 0; i < 8; ++i) { sq = fmaf(xq[i], xq[i], sq); sk = fmaf(xk[i], xk[i], sk); }
+    sq += __shfl_xor_sync(0xffffffffu, sq, 8); sk += __shfl_xor_sync(0xffffffffu, sk, 8);
+    sq += __shfl_xor_sync(0xffffffffu, sq, 4); sk += __shfl_xor_sync(0xffffffffu, sk, 4);
+    sq += __shfl_xor_sync(0xffffffffu, sq, 2); sk += __shfl_xor_sync(0xffffffffu, sk, 2);
+    sq += __shfl_xor_sync(0xffffffffu, sq, 1); sk += __shfl_xor_sync(0xffffffffu, sk, 1);
+    const float iq = rsqrtf(sq * (1.0f / (float)D) + eps);
+    const float ik = rsqrtf(sk * (1.0f / (float)D) + eps);
+    ld8(wq + hoff, w);                // L1/L2 hit
+#pragma unroll
+    for (int i = 0; i < 8; ++i) y[i] = (xq[i] * iq) * w[i];
+    st8_h(qo + off, y, pol_out);
+    ld8(wk + hoff, w);
+#pragma unroll
+    for (int i = 0; i < 8; ++i) y[i] = (xk[i] * ik) * w[i];
+    st8_h(ko + off, y, pol_out);
+}
+
+void check_tensor(const torch::Tensor& t, const char* name) {
+    TORCH_CHECK(t.is_cuda() && t.scalar_type() == torch::kFloat32 && t.is_contiguous(), name,
+                " must be a contiguous fp32 CUDA tensor");
+    TORCH_CHECK((reinterpret_cast<uintptr_t>(t.data_ptr()) & 31) == 0, name, " must be 32-byte aligned");
+}
+}  // namespace
+
+void run(torch::Tensor query, torch::Tensor key, torch::Tensor weight_q, torch::Tensor weight_k,
+         double eps, torch::Tensor query_norm, torch::Tensor key_norm) {
+    check_tensor(query, "query"); check_tensor(key, "key");
+    check_tensor(weight_q, "weight_q"); check_tensor(weight_k, "weight_k");
+    check_tensor(query_norm, "query_norm"); check_tensor(key_norm, "key_norm");
+    TORCH_CHECK(weight_q.numel() == H * D && weight_k.numel() == H * D, "weights must be [48,128]");
+    TORCH_CHECK(query.numel() % ((int64_t)H * D) == 0 && key.numel() == query.numel() &&
+                query_norm.numel() == query.numel() && key_norm.numel() == query.numel(), "shape mismatch");
+    const int64_t n_rows = query.numel() / D;
+    if (n_rows == 0) return;
+    const int64_t n_tiles = n_rows / ROWS;          // exact: n_rows is a multiple of 48
+    const int64_t tokens = n_rows / H;
+    TORCH_CHECK(2 * n_tiles <= (int64_t)0x7fffffff, "grid too large");
+    const c10::cuda::CUDAGuard guard(query.device());
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    if (tokens >= PAIR_MIN_TOKENS) {
+        qk_rms_pair<<<dim3((unsigned)n_tiles), THREADS, 0, stream>>>(
+            query.data_ptr<float>(), key.data_ptr<float>(), weight_q.data_ptr<float>(), weight_k.data_ptr<float>(),
+            query_norm.data_ptr<float>(), key_norm.data_ptr<float>(), (float)eps);
+    } else {
+        qk_rms_single<<<dim3((unsigned)(2 * n_tiles)), THREADS, 0, stream>>>(
+            query.data_ptr<float>(), key.data_ptr<float>(), weight_q.data_ptr<float>(), weight_k.data_ptr<float>(),
+            query_norm.data_ptr<float>(), key_norm.data_ptr<float>(), (int)n_tiles, (float)eps);
+    }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("run", &run, "Fused per-head RMSNorm of Q and K (fp32, 256-bit, Q/K row pairs, EL stores)");
+}
+```
+
+```yaml design-card
+id: r6-ldg256-qkpair-r16
+parents:
+  - r5-ldg256-os-r16-stel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  For B*S > 600, one CTA processes the same 16 rows of Q and of K. Each half-warp issues both 256-bit
+  row loads before either reduction, so each thread has 64 B of DRAM reads in flight instead of 32 B.
+  That raises the estimate per SM from 64 KB to about 96 KB at 6 CTAs/SM (39 regs on sm_100a). It also
+  halves the CTA count, which cuts per-CTA launch and exit overhead in the 40-plus-wave one-shot grid.
+  Weights are loaded only after the reductions; they are L1/L2 hits and hold no registers across the
+  DRAM latency. Stores keep the parent's L2 evict_last policy, so the outputs left in L2 at kernel end are
+  unchanged. On A100, which already has enough reads in flight, the change is neutral
+  (S +0.1, M +0.2, L -0.1%). The expected gain is B200-only, from its larger in-flight requirement.
+  Measured and rejected in this session on A100: evict_first x loads (S +0.5, M +2.0, L +8.5%). Also
+  rejected: a 32-register variant forced to 8 CTAs/SM (no spills on sm_100a), which was 3.5% slower on A100 M.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -3
+    confidence: low
+  L:
+    pct: -3
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 39
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 6
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  PAIR_MIN_TOKENS: 601
+  pair_min_blocks: 6
+  store_policy: "L2 evict_last, fraction 1.0"
+  load_policy: default
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_single
+    meta:
+      ROWS: 16
+      grid: "2*n_tiles"
+  - max_tokens: 9223372036854775807
+    kernel: qk_rms_pair
+    meta:
+      ROWS: 16
+      grid: "n_tiles"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; needs fewer bytes in flight per SM than B200"
+  A100:
+    runs: true
+    representative: false
+    note: "measured: 16/16 pass, S +0.1 / M +0.2 / L -0.1% vs parent (128-bit fallback)"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "6 CTAs/SM (39 regs) instead of 8 means 1536 resident threads; if B200 is limited by CTA turnover rather than bytes in flight, the gain may be zero."
+  - "Q and K reads and writes now interleave inside each CTA (4 concurrent address streams); DRAM page locality could get slightly worse."
+  - "Weight loads after the reduction add an L1-hit latency (about 26 ns) per CTA; small, but present on every tile."
+  - "The predicted gain is from reasoning only; A100 cannot show it."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+```
+
+
+---
+session total: 5 turns, 5 GPU calls, $1.23

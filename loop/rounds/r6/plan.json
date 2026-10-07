@@ -1,0 +1,42 @@
+{
+ "best": "r5-ldg256-os-r16-stel",
+ "best_score": 0.608914,
+ "gains": {
+  "base": 0.6089205668910214,
+  "fixed": 3.1565514705076545,
+  "bw": 7.546309348139998,
+  "S": 0.020369583461286256,
+  "ML": 0.01576610161101355,
+  "tbs_M": 6.448470951220221,
+  "tbs_L": 6.933189204655241
+ },
+ "tasks": [
+  {
+   "operation": "specialisation",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ],
+   "band": "S",
+   "gain": 0.020369583461286256,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.2 us fixed + bytes / 7.5 TB/s on small and medium sizes; reaching 2.0 us fixed would add about +0.020 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is recoverable; see b200_sota.md section 4 for what they do. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: d1-os-r8w4-nohint (ldg128/oneshot): +4%; g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +3%; g2-tma-r8s3 (tma-tensor/persistent): +34%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +19%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +10%; r2-ldg256-os-r16 (ldg256/oneshot): +5%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +3%; v028 (ldg128/persistent): +42%; v039 (ldg128/persistent): +19%; v040 (ldg128/oneshot): +77%; v050 (ldg128/oneshot): +134%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."
+  },
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ],
+   "band": "M,L",
+   "gain": 0.01576610161101355,
+   "instructions": "Goal: cut medium and large input latency (B*S > 600) on B200. The parent reaches 6.45 TB/s (M) and 6.93 TB/s (L) effective; a further 5% would add about +0.016 to the score. Its fit is 7.5 TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. Slower on B200 than the parent in these bands already: d1-os-r8w4-nohint (ldg128/oneshot): +7%; g2-os-r16w8 (ldg128/oneshot): +9%; g2-os-r8w4 (ldg128/oneshot): +9%; g2-tma-r8s3 (tma-tensor/persistent): +26%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +20%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +24%; r2-ldg256-os-r16 (ldg256/oneshot): +9%; r3-cute-ldg256-os-r16 (ldg256/oneshot): +5%; v028 (ldg128/persistent): +59%; v039 (ldg128/persistent): +22%; v040 (ldg128/oneshot): +143%; v050 (ldg128/oneshot): +38%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton); r4-cuda-ldg256-token-r2 (ldg256/oneshot, cuda_cpp); r4-cute-ldg256-sw2-disp (ldg256/persistent, cute_dsl); r4-ldg256-wstat-pf2 (ldg256/persistent-wstat, cuda_cpp)."
+  },
+  {
+   "operation": "new_design",
+   "parents": [
+    "r5-ldg256-os-r16-stel"
+   ],
+   "band": "all",
+   "niche": "lang:gluon",
+   "instructions": "Explore the empty niche lang:gluon. Write the design in Gluon (triton.experimental.gluon) for explicit layout and memory control. It must be correct for every shape; aim to beat the parent somewhere and say where in the card."
+  }
+ ]
+}

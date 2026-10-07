@@ -11,3 +11,5 @@ g2-tma-r8s3,0.030405,0.509579,8,1.044,61461,038_flux_multi_head_rmsnorm_qk,B200,
 g2-tmaws-hb8s4,0.028171,0.536804,10,1.127,61463,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/61463_g2-tmaws-hb8s4.html
 r3-cute-ldg256-os-r16,0.024592,0.588180,16,1.291,62013,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62013_r3-cute-ldg256-os-r16.html
 r2-ldg256-os-r16,0.025362,0.575609,16,1.252,62016,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62016_r2-ldg256-os-r16.html
+d1-os-r8w4-nohint,0.024947,0.582207,16,1.273,62030,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62030_d1-os-r8w4-nohint.html
+r5-ldg256-os-r16-stel,0.023357,0.608914,16,1.359,62031,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62031_r5-ldg256-os-r16-stel.html

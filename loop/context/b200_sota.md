@@ -86,7 +86,7 @@ documented the same effect: a zero-fill flush leaves dirty lines whose write-bac
 kernel" [LITERATURE: ascend-l2]. NVIDIA exposes no way to flush dirty L2 lines [LITERATURE: nv-forum-l2]. Because
 S-band times do not move with hints, the dirty L2 is not visibly on the critical path at ≤ 25 MB.
 
-**Rule for #38: default policy on stores, no evict_last on weights. evict_first on x loads only is optional (CAKE's
+**Update (portal, 7 October): `evict_last` on output stores scored 0.609 vs 0.588 without hints (`problem_038.md` §7); it supersedes the store rule below.** **Rule for #38: default policy on stores, no evict_last on weights. evict_first on x loads only is optional (CAKE's
 choice; expect ±1%).** Never touch memory we do not own (e.g. `discard.global.L2` on harness buffers): that is
 manipulating the environment.
 

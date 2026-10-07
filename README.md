@@ -13,10 +13,11 @@ portal.
 | Scoring baseline (hidden, NVIDIA) | - | 31.8 µs | 0.500 |
 | `v039` | best of 72 knob variants (proof of concept) | 28.6 µs | 0.531 |
 | `g2-os-r8w4` / `g2-os-r16w8` | generation 2, one-shot Triton kernels | 25.3 µs | 0.577 |
-| `r3-cute-ldg256-os-r16` | loop round r3, CuTe DSL with 256-bit loads (13th place) | **24.6 µs** | **0.588** |
+| `r3-cute-ldg256-os-r16` | loop round r3, CuTe DSL with 256-bit loads | 24.6 µs | 0.588 |
+| `r5-ldg256-os-r16-stel` | round r5, first interactive session: stores kept in L2 (5th place) | **23.4 µs** | **0.609** |
 | Leaderboard #1 (public) | - | 22.2 µs | 0.628 |
 
-The best kernel beats the hidden baseline on all 16 input sizes. The score ceiling is about 0.74 (8 TB/s everywhere)
+The best kernel (0.609, 5th place) beats the hidden baseline on all 16 input sizes. The score ceiling is about 0.74 (8 TB/s everywhere)
 and about 0.68 with realistic fixed costs. The remaining gap is large-input bandwidth (6.8 TB/s, target about 7.2) and
 small-input fixed cost (about 3.1 µs, target 1–2 µs). Details: [`loop/context/problem_038.md`](loop/context/problem_038.md).
 
@@ -109,7 +110,8 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
 - **B200 compiles differently.** `v028` used 149 registers on sm_100a against 128 on sm_90a, so its persistent grid
   oversubscribed the SMs and it gained nothing from B200's bandwidth. Every candidate is now compiled for sm_100a
   before submission, and persistent grids size themselves from the compiled kernel.
-- **Cache hints hurt on B200.** The 256-bit CUDA kernel with evict hints scored the same as the 128-bit Triton kernel
+- **Keeping outputs in L2 is the biggest lever so far.** Marking the stores `evict_last` gained +0.021 (0.588 → 0.609): output still in the 126 MB L2 when the kernel ends is written back after the timer stops.
+- **evict_first hints hurt on B200.** The 256-bit CUDA kernel with evict hints scored the same as the 128-bit Triton kernel
   with the same hints (0.576 vs 0.577); the 256-bit CuTe kernel without hints scored 0.588. Public B200 kernels agree.
   The harness fills the L2 with dirty lines before every call, which is the likely reason.
 - **H200 is the best cheap guide, within limits.** It ranks HBM-friendly variants like B200 does, but small inputs run

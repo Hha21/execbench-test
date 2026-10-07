@@ -25,8 +25,11 @@ def load():
 
 
 def save(arc):
+    """Write the archive, keeping records another process added since this copy was loaded (records are never
+    deleted, so a long-running round must not drop kernels registered while it ran)."""
     PATH.parent.mkdir(parents=True, exist_ok=True)
-    PATH.write_text(json.dumps(arc, indent=1, sort_keys=True))
+    disk = json.loads(PATH.read_text()) if PATH.exists() else {}
+    PATH.write_text(json.dumps({**disk, **arc}, indent=1, sort_keys=True))
 
 
 def parse_card(text):

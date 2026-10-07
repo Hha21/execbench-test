@@ -152,7 +152,7 @@ def make_plan(a):
     print(f"best on B200: {p['best']} (score {p['best_score']:.4f}); fit {g['fixed']:.1f} us fixed + {g['bw']:.1f} TB/s; "
           f"M {g['tbs_M']:.2f} TB/s, L {g['tbs_L']:.2f} TB/s")
     print(f"estimated score gain: small-input fixed cost -> {planner.FIXED_TARGET_US} us: {g['S']:+.3f}; "
-          f"medium/large -> {planner.BW_TARGET_TBS} TB/s: {g['ML']:+.3f}")
+          f"medium/large a further 5%: {g['ML']:+.3f}")
     for i, t in enumerate(p["tasks"]):
         print(f"  task {i}: {t['operation']} parents={t['parents']} band={t.get('band')} niche={t.get('niche', '-')}")
     return p

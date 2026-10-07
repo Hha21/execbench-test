@@ -268,14 +268,13 @@ for tok in range(pid // G2, n_tok, n_prog // G2):
 
 ## 6. Cache hints — `cache:stream` / `cache:default`
 
-- **On B200, use `cache:default` (no hints).** [portal, 7 October] The same hints (x and stores `evict_first`, weights
-  `evict_last`) appear on `g2-os-r8w4` (128-bit Triton) and `r2-ldg256-os-r16` (256-bit CUDA), and both take the same
-  time; `r3-cute-ldg256-os-r16`, with no hints, is 2–5% faster on M/L. quack measured a regression from evict_first
-  stores plus evict_last loads on sm100, and FlashInfer's B200-tuned CAKE kernels keep plain stores. Likely
-  mechanism: the harness zero-fills 2× L2 before each call, so the L2 starts full of dirty lines (`b200_sota.md` §3).
-- `cache:stream` (streamed inputs and outputs `evict_first`, reused tensors `evict_last`) is now an anti-pattern for
-  stores and weights. `evict_first` on the streamed x loads only is an optional A/B (expect ±1%). The Triton mapping
-  is in `b200_arch.md` §7. **Do not** use `cache_modifier=".cg"` for loads: it becomes `LDG.E.128.STRONG.GPU`.
+- **On B200: default policy on loads, `evict_last` on output stores** (`cache:stl2`). [portal, 7 October]
+  `r5-ldg256-os-r16-stel` (stores `st.global.L2::cache_hint` + `createpolicy.fractional.L2::evict_last`) scored 0.609
+  against 0.588 for the same structure with no hints: outputs left in L2 at kernel end are written back after the
+  timed window, so M sizes gain 7–9%. `evict_first` on stores costs 0–3% (r2, g2 vs d1). Weights need no hint.
+- `evict_first` on the streamed x loads: hurt L by 4% on A100 when combined with evict_last stores (r5 session);
+  untested on B200. The Triton mapping of hints is in `b200_arch.md` §7 (`tl.store(..., eviction_policy="evict_last")`
+  should give `STG.E.EL`; check with compile_b200). **Do not** use `cache_modifier=".cg"` for loads: it becomes `LDG.E.128.STRONG.GPU`.
   The PoC's EVICT knob was not decisive (A100/L40S). FlashGPU-Sim ignores these hints.
 
 ## 7. Reductions — `red:warp` / `red:halfwarp` / `red:cta`

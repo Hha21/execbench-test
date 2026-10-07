@@ -1,4 +1,50 @@
 {
+ "d1-os-r8w4-nohint": {
+  "b200": {
+   "geomean_us": 24.947,
+   "score": 0.582207,
+   "submission": "62030",
+   "timings": {
+    "1,1024": 18.599999999999998,
+    "1,128": 4.8999999999999995,
+    "1,131": 4.8999999999999995,
+    "1,256": 6.8999999999999995,
+    "1,8192": 119.6,
+    "16,256": 61.6,
+    "2,128": 6.8,
+    "2,293": 11.799999999999999,
+    "32,128": 61.699999999999996,
+    "4,1024": 61.699999999999996,
+    "4,1657": 97.5,
+    "4,256": 18.5,
+    "4,512": 32.5,
+    "8,128": 18.599999999999998,
+    "8,256": 32.7,
+    "8,773": 91.0
+   }
+  },
+  "card": "id: d1-os-r8w4-nohint\nparents:\n  - g2-os-r8w4\noperation: knob_variant\nlanguage: triton\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: warp\n  cache: default\n  spec: all\nhypothesis: >-\n  Diagnostic. g2-os-r8w4 (128-bit loads, x and stores evict_first, weights evict_last) scores 0.577; the unhinted\n  256-bit CuTe kernel scores 0.588; the hinted 256-bit CUDA kernel 0.576. If the hints cost 2-5% on medium/large\n  inputs, this unhinted 128-bit version should score about 0.588, and load width does not matter.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: -3\n    confidence: low\n  L:\n    pct: -4\n    confidence: low\nruns_on:\n  A100:\n    representative: false\n  H200:\n    representative: false\n",
+  "id": "d1-os-r8w4-nohint",
+  "language": "triton",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "all",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "knob_variant",
+  "parents": [
+   "g2-os-r8w4"
+  ],
+  "round": "d1",
+  "solution": "loop/rounds/d1/candidates/d1-os-r8w4-nohint.json",
+  "status": "passed",
+  "timings": {}
+ },
  "g2-os-r16w4": {
   "card": "id: \"g2-os-r16w4\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Half the threads per tile: 4 x LDG.128 per thread issued back to back, fewer threads to launch.\"\nexpected_effect:\n  S: {pct: -8, confidence: \"low\"}\n  M: {pct: 3, confidence: \"low\"}\n  L: {pct: 5, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 4, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 16, num_warps: 4, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"fewer resident warps to hide latency\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-os-r16w4",
@@ -1457,6 +1503,29 @@
   "timings": {}
  },
  "r5-ldg256-os-r16-stel": {
+  "b200": {
+   "geomean_us": 23.357,
+   "score": 0.608914,
+   "submission": "62031",
+   "timings": {
+    "1,1024": 16.400000000000002,
+    "1,128": 4.8,
+    "1,131": 4.8999999999999995,
+    "1,256": 6.5,
+    "1,8192": 115.9,
+    "16,256": 58.3,
+    "2,128": 6.4,
+    "2,293": 10.9,
+    "32,128": 58.3,
+    "4,1024": 58.3,
+    "4,1657": 93.8,
+    "4,256": 16.299999999999997,
+    "4,512": 29.7,
+    "8,128": 16.400000000000002,
+    "8,256": 29.9,
+    "8,773": 87.7
+   }
+  },
   "card": "id: r5-ldg256-os-r16-stel\nparents:\n  - r3-cute-ldg256-os-r16\n  - r2-ldg256-os-r16\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: all\nhypothesis: >-\n  The kernel keeps the parent's one-shot ldg256 structure. The only change is that output stores carry an L2\n  evict_last policy, while loads keep the default policy. Outputs stay in L2 longer, and the used-once input lines\n  and the harness's flush lines are evicted first. That should cut DRAM write traffic and read/write mixing inside\n  the timed window, and leave more output dirty in L2 when the kernel ends. Evidence on B200: the r2 kernel has the\n  same structure with evict_first stores and loads, and it is 4-5% slower than the default-policy parent on M and L.\n  Evidence on A100 (128-bit fallback, same policies), against the CuTe parent: S -6.4%, M -3.6%, L -3.8%. Control\n  run with evict_normal stores: +0.8 / +2.4 / +1.1%, so the gain comes from the hint, not from the language.\n  evict_first loads plus evict_last stores gave L +4.3%, so it was rejected.\nexpected_effect:\n  S:\n    pct: -3\n    confidence: low\n  M:\n    pct: -4\n    confidence: low\n  L:\n    pct: -4\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  store_policy: \"L2 evict_last, fraction 1.0\"\n  load_policy: default\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback with the same cache policies; the L2 is a different size\"\n  A100:\n    runs: true\n    representative: false\n    note: \"128-bit fallback with the same policies; measured S -6.4 / M -3.6 / L -3.8% vs the parent, and the evict_normal control at about +1%\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The L2 replacement behaviour on B200 (126 MB, two partitions) may differ from A100 (40 MB); the gain could shrink or vanish.\"\n  - \"Evidence comes from A100 only. On B200 the effect of the evict_last store hint alone has not been measured; only the evict_first stores and loads of r2 have been.\"\n  - \"The CUDA C++ build differs from the CuTe parent. The parent's B200 lead over the r2 CUDA kernel is attributed to cache policy, not to codegen.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r5-ldg256-os-r16-stel",
   "language": "cuda_cpp",

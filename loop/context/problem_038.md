@@ -190,6 +190,18 @@ passed, with 0.15% run-to-run noise.
   hints, and it is no faster than the 128-bit, hinted `g2-os-r8w4`. Small sizes are the same for all three. The
   untested combination is 128-bit loads without hints, which would separate width from hints (`b200_sota.md` §3).
   [portal; INFERRED]
+- **Stores marked L2 `evict_last` win big (7 October, portal #62031):** `r5-ldg256-os-r16-stel` (CUDA C++, same
+  structure as r3: 16 rows per 256-thread CTA, half-warp per row, `ld.global.v8.f32` with default policy, outputs
+  `st.global.L2::cache_hint.v8.f32` with a `createpolicy … evict_last` policy) scores **0.609 at 23.4 µs**, 16/16,
+  5th on the public board. Against r3: smallest two sizes 0 to +2%, 25–58 MB −5 to −7%, M −7 to −9%, L −2 to −4%.
+  Fit 3.2 µs + **7.55 TB/s**, above the physical read+write rate: the last ~126 MB of output is still in L2 when the
+  kernel ends, so its DRAM write-back falls outside the timed window. M (50–100 MB of output) gains most. It came from
+  the first interactive design session, which measured the effect on A100 with a control (normal stores) first.
+  [portal; INFERRED for the mechanism]
+- **Width vs hints, separated (portal #62030, `d1-os-r8w4-nohint`, the g2 Triton kernel with no hints, 0.582).**
+  Relative to hinted `g2-os-r8w4` (0.577), S/M/L: no hints S +0.7, M −0.7, L −3.3%; plus 256-bit (r3)
+  S −0.1, M −3.1, L −4.5%; plus evict_last stores (r5) S −3.6, M −11.2, L −7.7%. So evict_first on stores costs a
+  little, 256-bit width gains a little on M/L, and evict_last on stores is the big lever. [portal]
 - **Five B200 submissions with per-workload results (6 October, `poc/results/b200_portal_workloads.csv`):**
   - v039 (fused, persistent, ROWS=16, 8 warps, 8 programs per SM, 32 registers) is fastest on **every** workload,
     so dispatching between the five gains nothing. Score 0.531, geomean 28.56 µs, faster than Tb on 9/16.

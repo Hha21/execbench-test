@@ -29,6 +29,10 @@ EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order un
     ("grid", "capped4", "Small/medium specialist after FlashInfer's CAKE B200 kernels (b200_sota.md section 4): a persistent "
                         "grid capped at 4 CTAs per SM, each thread keeping 2-4 rows' 256-bit loads in flight and issuing "
                         "the next row's loads before the current row's reduction; parent's kernel for large sizes."),
+    ("tile", "fat", "Cut the CTA count 4-16x: an empty grid of 49,152 CTAs already spans 26 us on B200 "
+                    "(problem_038.md section 7). Give each thread several rows (loads for all of them issued first, then "
+                    "the reductions), or larger CTAs, keeping registers low enough for full occupancy. Measure the "
+                    "CTA-count effect with probe_b200 before writing the full kernel."),
     ("st", "l2order", "Order the work so that the outputs written last (the ones still in L2 when the kernel ends) are "
                       "as large a share as possible, e.g. reverse or interleave the tile order; keep the parent's "
                       "evict_last stores."),
@@ -171,7 +175,9 @@ def plan(arc, max_tasks=3, last_round=None):
             tasks.append(t)
     tried = {(k, str(v)) for r in arc.values() for k, v in (r.get("niche") or {}).items()} | \
             {("lang", str(r.get("language", "")).replace("cuda_cpp", "cuda").replace("cute_dsl", "cutedsl"))
-             for r in arc.values()}
+             for r in arc.values()} | \
+            {tuple(str(r["task"]["niche"]).split(":", 1)) for r in arc.values()     # the niche a task asked for
+             if ":" in str((r.get("task") or {}).get("niche", ""))}
     for axis, tag, text in EXPLORE_NICHES:
         if (axis, tag) not in tried and len(tasks) < max_tasks:
             tasks.append(dict(operation="new_design", parents=[best["id"]], band="all", niche=f"{axis}:{tag}",

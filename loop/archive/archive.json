@@ -51,6 +51,24 @@
     "8,128": 60.8155,
     "8,256": 122.47850000000001,
     "8,773": 377.59549999999996
+   },
+   "H200": {
+    "1,1024": 26.848,
+    "1,128": 4.848,
+    "1,131": 4.896,
+    "1,256": 7.728000000000001,
+    "1,8192": 201.68,
+    "16,256": 102.1915,
+    "2,128": 7.4085,
+    "2,293": 16.464,
+    "32,128": 102.32,
+    "4,1024": 102.32,
+    "4,1657": 164.448,
+    "4,256": 26.831500000000002,
+    "4,512": 51.872,
+    "8,128": 26.832,
+    "8,256": 52.16,
+    "8,773": 153.088
    }
   }
  },
@@ -129,6 +147,24 @@
     "8,128": 59.215,
     "8,256": 121.1985,
     "8,773": 373.1475
+   },
+   "H200": {
+    "1,1024": 26.912,
+    "1,128": 4.768,
+    "1,131": 4.720000000000001,
+    "1,256": 8.064,
+    "1,8192": 204.64,
+    "16,256": 103.77600000000001,
+    "2,128": 7.9525,
+    "2,293": 16.256,
+    "32,128": 103.87150000000001,
+    "4,1024": 103.904,
+    "4,1657": 167.20000000000002,
+    "4,256": 26.624,
+    "4,512": 52.047999999999995,
+    "8,128": 26.9275,
+    "8,256": 52.831999999999994,
+    "8,773": 155.472
    }
   }
  },
@@ -184,6 +220,24 @@
     "8,128": 60.783,
     "8,256": 122.3185,
     "8,773": 376.892
+   },
+   "H200": {
+    "1,1024": 26.976,
+    "1,128": 4.880000000000001,
+    "1,131": 4.9445,
+    "1,256": 7.6160000000000005,
+    "1,8192": 203.152,
+    "16,256": 103.05600000000001,
+    "2,128": 7.5040000000000004,
+    "2,293": 16.496,
+    "32,128": 102.9595,
+    "4,1024": 102.976,
+    "4,1657": 164.944,
+    "4,256": 26.8485,
+    "4,512": 52.272,
+    "8,128": 26.9605,
+    "8,256": 52.33599999999999,
+    "8,773": 154.07999999999998
    }
   }
  },
@@ -262,6 +316,24 @@
     "8,128": 59.327,
     "8,256": 121.7745,
     "8,773": 374.172
+   },
+   "H200": {
+    "1,1024": 26.368,
+    "1,128": 4.672,
+    "1,131": 4.672,
+    "1,256": 7.872000000000001,
+    "1,8192": 200.064,
+    "16,256": 100.96,
+    "2,128": 7.84,
+    "2,293": 15.968,
+    "32,128": 101.008,
+    "4,1024": 101.2485,
+    "4,1657": 163.584,
+    "4,256": 26.24,
+    "4,512": 51.248000000000005,
+    "8,128": 26.304000000000002,
+    "8,256": 51.29599999999999,
+    "8,773": 152.1435
    }
   }
  },
@@ -322,6 +394,24 @@
     "8,128": 108.239,
     "8,256": 204.06199999999998,
     "8,773": 597.226
+   },
+   "H200": {
+    "1,1024": 29.088,
+    "1,128": 6.464,
+    "1,131": 6.303999999999999,
+    "1,256": 9.552,
+    "1,8192": 214.19150000000002,
+    "16,256": 107.28,
+    "2,128": 9.392000000000001,
+    "2,293": 18.368000000000002,
+    "32,128": 106.52799999999999,
+    "4,1024": 107.8085,
+    "4,1657": 172.0475,
+    "4,256": 29.136000000000003,
+    "4,512": 55.376,
+    "8,128": 29.343999999999998,
+    "8,256": 55.7595,
+    "8,773": 161.16799999999998
    }
   }
  },
@@ -405,6 +495,24 @@
     "8,128": 74.336,
     "8,256": 138.5905,
     "8,773": 412.87600000000003
+   },
+   "H200": {
+    "1,1024": 28.496000000000002,
+    "1,128": 5.7444999999999995,
+    "1,131": 5.792000000000001,
+    "1,256": 8.895999999999999,
+    "1,8192": 210.416,
+    "16,256": 104.64000000000001,
+    "2,128": 8.767999999999999,
+    "2,293": 17.744000000000003,
+    "32,128": 105.13600000000001,
+    "4,1024": 105.616,
+    "4,1657": 169.4555,
+    "4,256": 28.816000000000003,
+    "4,512": 53.8405,
+    "8,128": 28.752,
+    "8,256": 54.064,
+    "8,773": 158.687
    }
   }
  },
@@ -464,6 +572,24 @@
     "8,128": 67.871,
     "8,256": 129.439,
     "8,773": 403.58
+   },
+   "H200": {
+    "1,1024": 27.9195,
+    "1,128": 5.5040000000000004,
+    "1,131": 5.44,
+    "1,256": 8.512,
+    "1,8192": 208.2885,
+    "16,256": 104.208,
+    "2,128": 8.512,
+    "2,293": 17.343999999999998,
+    "32,128": 104.28750000000001,
+    "4,1024": 104.208,
+    "4,1657": 167.5995,
+    "4,256": 28.048,
+    "4,512": 53.199999999999996,
+    "8,128": 28.080000000000002,
+    "8,256": 53.15200000000001,
+    "8,773": 156.5765
    }
   }
  },
@@ -546,6 +672,24 @@
     "8,128": 66.73499999999999,
     "8,256": 129.135,
     "8,773": 405.388
+   },
+   "H200": {
+    "1,1024": 28.176,
+    "1,128": 5.248,
+    "1,131": 5.216,
+    "1,256": 8.192,
+    "1,8192": 213.584,
+    "16,256": 107.344,
+    "2,128": 8.16,
+    "2,293": 17.087999999999997,
+    "32,128": 107.3595,
+    "4,1024": 107.072,
+    "4,1657": 172.97600000000003,
+    "4,256": 28.2245,
+    "4,512": 54.32,
+    "8,128": 28.176,
+    "8,256": 54.3845,
+    "8,773": 161.312
    }
   }
  },
@@ -601,6 +745,24 @@
     "8,128": 64.4795,
     "8,256": 127.40650000000001,
     "8,773": 394.156
+   },
+   "H200": {
+    "1,1024": 27.872,
+    "1,128": 4.928,
+    "1,131": 4.816,
+    "1,256": 7.9685,
+    "1,8192": 217.67999999999998,
+    "16,256": 110.416,
+    "2,128": 7.887999999999999,
+    "2,293": 16.607999999999997,
+    "32,128": 110.44850000000001,
+    "4,1024": 110.512,
+    "4,1657": 178.92799999999997,
+    "4,256": 27.984,
+    "4,512": 54.576,
+    "8,128": 28.032,
+    "8,256": 54.704,
+    "8,773": 164.784
    }
   }
  },
@@ -682,6 +844,24 @@
     "8,128": 63.32749999999999,
     "8,256": 124.6545,
     "8,773": 377.65999999999997
+   },
+   "H200": {
+    "1,1024": 27.248,
+    "1,128": 4.992,
+    "1,131": 4.896,
+    "1,256": 7.744,
+    "1,8192": 210.03199999999998,
+    "16,256": 105.2155,
+    "2,128": 7.712,
+    "2,293": 16.288,
+    "32,128": 104.976,
+    "4,1024": 104.784,
+    "4,1657": 169.903,
+    "4,256": 27.072,
+    "4,512": 52.736,
+    "8,128": 27.168000000000003,
+    "8,256": 53.519999999999996,
+    "8,773": 158.64000000000001
    }
   }
  },
@@ -738,11 +918,30 @@
     "8,128": 66.0795,
     "8,256": 130.255,
     "8,773": 394.34999999999997
+   },
+   "H200": {
+    "1,1024": 27.776,
+    "1,128": 5.792000000000001,
+    "1,131": 5.6325,
+    "1,256": 8.2075,
+    "1,8192": 216.032,
+    "16,256": 109.872,
+    "2,128": 7.8084999999999996,
+    "2,293": 16.608,
+    "32,128": 109.92,
+    "4,1024": 109.85600000000001,
+    "4,1657": 174.255,
+    "4,256": 28.048,
+    "4,512": 54.976499999999994,
+    "8,128": 27.776,
+    "8,256": 54.656,
+    "8,773": 163.27949999999998
    }
   }
  },
  "r2-ldg256-os-r16": {
   "card": "id: r2-ldg256-os-r16\nparents:\n  - g2-os-r16w8\noperation: port\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: all\nhypothesis: >-\n  This keeps g2-os-r16w8's one-shot fused grid unchanged: 16 rows per 256-thread CTA, 8 CTAs per SM and 64 KB of\n  loads in flight per SM. Each half-warp lane moves 32 B per ld/st.global.v8.f32, which halves load/store\n  instructions and LSU requests per byte. At B200's 36 B/clk/SM under the 1.5 GHz lock, issue overhead is the likely\n  cap on the parent's 6.4 TB/s (L) and 5.7 TB/s (M). H200, A100 and L40S cannot see this: they run the float4\n  fallback.\nexpected_effect:\n  S:\n    pct: -3\n    confidence: low\n  M:\n    pct: -5\n    confidence: low\n  L:\n    pct: -6\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  min_blocks_per_sm: 8\n  QK_USE_L2_HINT: 1\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"sm_90 compiles the float4 fallback (__ldcs/__stcs); use for correctness only, timing does not represent the 256-bit path\"\n  A100:\n    runs: true\n    representative: false\n    note: \"float4 fallback; correctness check only\"\n  L40S:\n    runs: true\n    representative: false\n    note: \"float4 fallback; correctness smoke test only\"\nrisks:\n  - \"ptxas may reject .L2::cache_hint combined with .v8.f32; the compile-verified forms (L1::no_allocate.v8 / st.global.v8) are available by setting QK_USE_L2_HINT=0\"\n  - \"__launch_bounds__(256,8) caps the kernel at 32 regs; if ptxas needs more it will spill (check LOCAL in the sm_100a compile)\"\n  - \"per-SM bytes in flight are unchanged from the parent (64 KB), so if B200 is latency/occupancy-bound rather than issue-bound the gain may be ~0\"\n  - \"the alignment TORCH_CHECK requires 32-B aligned buffers; the harness gives 256-B aligned buffers, but any other caller with misaligned views would error rather than run\"\n  - \"uneven wave on the smallest workloads (768 CTAs over 148 SMs, 5-6 each), the same as the parent\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "failure_log": " (function \noperator())\n\n[1/2] /opt/apps/libs/nvidia-cuda/toolkit/12.8.1/bin/nvcc \n--generate-dependencies-with-compile --dependency-output kernel.cuda.o.d \n-DTORCH_EXTENSION_NAME=benchmark_kernel -DTORCH_API_INCLUDE_EXTENSION_H \n-I/tmp/slurm.22250500/sol_execbench_9ia2ud1t -I/usr/local/cutlass/include \n-I/usr/local/cutlass/tools/util/include -isystem \n/scratch/t95317ha/solx/venv/lib/python3.12/site-packages/torch/include -isystem \n/scratch/t95317ha/solx/venv/lib/python3.12/site-packages/torch/include/torch/csr\nc/api/include -isystem /opt/apps/libs/nvidia-cuda/toolkit/12.8.1/include \n-isystem \n/net/scratch/t95317ha/solx/cache/uv-python/cpython-3.12.15-linux-x86_64-gnu/incl\nude/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ \n-D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ \n--expt-relaxed-constexpr --compiler-options '-fPIC' \n-gencode=arch=compute_100a,code=sm_100a -gencode=arch=compute_80,code=sm_80 -O3 \n--use_fast_math -std=c++17 -c \n/tmp/slurm.22250500/sol_execbench_9ia2ud1t/kernel.cu -o kernel.cuda.o \nFAILED:  kernel.cuda.o \n/opt/apps/libs/nvidia-cuda/toolkit/12.8.1/bin/nvcc \n--generate-dependencies-with-compile --dependency-output kernel.cuda.o.d \n-DTORCH_EXTENSION_NAME=benchmark_kernel -DTORCH_API_INCLUDE_EXTENSION_H \n-I/tmp/slurm.22250500/sol_execbench_9ia2ud1t -I/usr/local/cutlass/include \n-I/usr/local/cutlass/tools/util/include -isystem \n/scratch/t95317ha/solx/venv/lib/python3.12/site-packages/torch/include -isystem \n/scratch/t95317ha/solx/venv/lib/python3.12/site-packages/torch/include/torch/csr\nc/api/include -isystem /opt/apps/libs/nvidia-cuda/toolkit/12.8.1/include \n-isystem \n/net/scratch/t95317ha/solx/cache/uv-python/cpython-3.12.15-linux-x86_64-gnu/incl\nude/python3.12 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ \n-D__CUDA_NO_BFLOAT16_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ \n--expt-relaxed-constexpr --compiler-options '-fPIC' \n-gencode=arch=compute_100a,code=sm_100a -gencode=arch=compute_80,code=sm_80 -O3 \n--use_fast_math -std=c++17 -c \n/tmp/slurm.22250500/sol_execbench_9ia2ud1t/kernel.cu -o kernel.cuda.o \nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 88; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 88; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 91; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 91; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 136; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207933_00000000-7_kernel.compute_100a.ptx, \nline 136; error   : Vector type too large, exceeds 128 bit limit\nptxas fatal   : Ptx assembly aborted due to errors\nninja: build stopped: subcommand failed.\n\n",
   "id": "r2-ldg256-os-r16",
   "language": "cuda_cpp",
   "niche": {
@@ -761,11 +960,13 @@
   ],
   "round": "r2",
   "solution": "loop/rounds/r2/candidates/r2-ldg256-os-r16.json",
-  "status": "proposed",
+  "static_error": "ptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tm",
+  "status": "failed: build or run error on A100",
   "timings": {}
  },
  "r2-ldg256-tokblk": {
   "card": "id: r2-ldg256-tokblk\nparents:\n  - g2-os-r16w8\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows64\n  red: halfwarp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  On B200 the parent's one-shot tile has only about 64 KB of loads in flight per SM, and it drains at every CTA\n  turnover. Holding T tokens of one head per half-warp works differently: all T 256-bit loads are issued before the\n  reduction, weights are reused from registers, and each byte costs half the load/store instructions. This should\n  give about 128 KB in flight per SM on L and lift sustained bandwidth from 6.4 toward 7+ TB/s. H200 and A100 cannot\n  show the 256-bit or bytes-in-flight effect.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: low\n  M:\n    pct: -5\n    confidence: low\n  L:\n    pct: -8\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 56\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 256\n  T_S: 1\n  T_M: 2\n  T_L: 4\n  MINB_S: 8\n  MINB_M: 6\n  MINB_L: 4\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_tok\n    meta:\n      T: 1\n      minBlocks: 8\n  - max_tokens: 2100\n    kernel: qk_rms_tok\n    meta:\n      T: 2\n      minBlocks: 6\n  - max_tokens: 4611686018427387904\n    kernel: qk_rms_tok\n    meta:\n      T: 4\n      minBlocks: 4\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"arch guard compiles 2x128-bit accesses on sm_90; correctness and token-blocking signal only\"\n  A100:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; checks correctness and the masked T=2/4 paths (odd token counts)\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"__launch_bounds__(256,8) caps T=1 at 32 regs; if ptxas spills, raise to minBlocks 6 (check LOCAL in the sm_100a compile)\"\n  - \"T=4 rows are 24 KB apart per half-warp (4 separate 8 KB chunks per CTA); DRAM page locality may be worse than the parent's contiguous 8 KB tile\"\n  - \"no L2 evict_first hints on the 256-bit accesses (only the verified PTX forms are used); the parent's hints may have mattered slightly\"\n  - \"M band at T=2 with 6 CTAs/SM: 1024 tokens give 3072 CTAs (about 3.5 waves), so a partial last wave\"\n  - \"S path untested against the Triton parent on B200; CUDA one-shot fixed cost could differ by \u00b15%\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "failure_log": "250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 232; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 232; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 299; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 299; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 351; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 351; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 425; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 425; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 444; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 444; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 463; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 463; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 482; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 482; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 549; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 549; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 601; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 601; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 653; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 653; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 705; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_00207982_00000000-7_kernel.compute_100a.ptx, \nline 705; error   : Vector type too large, exceeds 128 bit limit\nptxas fatal   : Ptx assembly aborted due to errors\nninja: build stopped: subcommand failed.\n\n",
   "id": "r2-ldg256-tokblk",
   "language": "cuda_cpp",
   "niche": {
@@ -784,7 +985,8 @@
   ],
   "round": "r2",
   "solution": "loop/rounds/r2/candidates/r2-ldg256-tokblk.json",
-  "status": "proposed",
+  "static_error": "xceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Vector type too large, exceeds 128 bit limit\nptx",
+  "status": "failed: build or run error on A100",
   "timings": {}
  },
  "r3-cute-ldg256-os-r16": {
@@ -807,7 +1009,8 @@
   ],
   "round": "r3",
   "solution": "loop/rounds/r3/candidates/r3-cute-ldg256-os-r16.json",
-  "status": "proposed",
+  "static_error": "no sm_100 cubin produced: ",
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Explore the empty niche lang:cutedsl. Write the design in CuTe DSL (Python), which compiles for sm_100a; use it to reach a memory path Triton cannot express. It must be correct for every shape; aim to beat the parent somewhere and say where in the card.",
@@ -817,7 +1020,26 @@
     "g2-os-r8w4"
    ]
   },
-  "timings": {}
+  "timings": {
+   "A100": {
+    "1,1024": 61.2635,
+    "1,128": 10.975999999999999,
+    "1,131": 11.1675,
+    "1,256": 18.367500000000003,
+    "1,8192": 482.98850000000004,
+    "16,256": 240.23850000000002,
+    "2,128": 19.024,
+    "2,293": 37.19949999999999,
+    "32,128": 240.127,
+    "4,1024": 240.622,
+    "4,1657": 390.84549999999996,
+    "4,256": 60.8475,
+    "4,512": 117.05550000000001,
+    "8,128": 60.735499999999995,
+    "8,256": 117.43900000000001,
+    "8,773": 364.7015
+   }
+  }
  },
  "r3-os-l2pf-r8w4": {
   "card": "id: r3-os-l2pf-r8w4\nparents:\n  - g2-os-r8w4\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: warp\n  cache: stream\n  spec: L\nhypothesis: >-\n  The one-shot parent's in-flight reads are tied to resident CTAs. CTA turnover and each CTA's own cold-DRAM wait\n  therefore cost bandwidth in steady state and in the M-band tail. One cp.async.bulk.prefetch.L2 per CTA, two\n  resident waves ahead, keeps about 10 MB of reads queued at DRAM regardless of residency. Demand loads become L2\n  hits. Dynamic CTA scheduling is kept, unlike the persistent designs that all lost on B200. H200 cannot show the\n  B200-specific size of this effect (36 B/clk/SM at 1.5 GHz, higher loaded latency).\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: -6\n    confidence: low\n  L:\n    pct: -4\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  ROWS: 8\n  num_warps: 4\n  PF_WAVES: 2\n  PF_BYTES: 4096\nruns_on:\n  H200:\n    runs: true\n    representative: true\n    note: \"has cp.async.bulk.prefetch.L2; closest proxy for the prefetch effect\"\n  A100:\n    runs: true\n    representative: false\n    note: \"prefetch compiled out below sm_90; measures only the plain CUDA port\"\n  L40S:\n    runs: true\n    representative: false\n    note: \"prefetch compiled out below sm_90; correctness smoke test\"\nrisks:\n  - \"L2 bulk prefetches may be throttled or dropped under load, giving no gain (the cost is only 1 instruction per CTA)\"\n  - \"If DRAM efficiency (read/write mix, write-backs of the flush's dirty L2 lines) is the true limit at about 82%, more queued reads cannot help\"\n  - \"Prefetched lines (about 10 MB in flight) could be evicted before use; then only extra request overhead, no extra DRAM bytes, since misses merge\"\n  - \"Assumes CTAs are dispatched in roughly increasing blockIdx order; if not, part of the prefetch lead is lost\"\n  - \"The CUDA C++ port may differ from the Triton parent's codegen (registers, scheduling); compare the A100 timing against the parent to isolate the port effect\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -839,7 +1061,21 @@
   ],
   "round": "r3",
   "solution": "loop/rounds/r3/candidates/r3-os-l2pf-r8w4.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__f249dfae_9_kernel_cu_a02f06f816qk_rms_pf_kernelEPKfS1_S1_S1_PfS2_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 4,
+     "STG": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M,L",
    "gain": 0.04118183134430464,
@@ -849,7 +1085,26 @@
     "g2-os-r8w4"
    ]
   },
-  "timings": {}
+  "timings": {
+   "A100": {
+    "1,1024": 59.424,
+    "1,128": 9.504,
+    "1,131": 9.536,
+    "1,256": 17.36,
+    "1,8192": 494.42900000000003,
+    "16,256": 249.357,
+    "2,128": 17.568,
+    "2,293": 35.392,
+    "32,128": 248.846,
+    "4,1024": 249.7585,
+    "4,1657": 400.28549999999996,
+    "4,256": 59.52,
+    "4,512": 122.70400000000001,
+    "8,128": 59.583,
+    "8,256": 122.89500000000001,
+    "8,773": 373.88500000000005
+   }
+  }
  },
  "r3-tokblk-s-disp": {
   "card": "id: r3-tokblk-s-disp\nparents:\n  - g2-os-r8w4\noperation: specialisation\nlanguage: triton\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows32\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  On B200 the parent's S-band fixed cost of about 3 us is estimated to consist of:\n  (1) launch plus CTA/warp ramp, about 0.5-1 us, for about 10 CTAs and 41 warps per SM, plus a partial\n      second wave at B*S=256 (3,072 CTAs against 2,368 slots);\n  (2) cold DRAM latency, including die crossing, about 0.8-1 us;\n  (3) write-backs of the dirty L2 lines left by the flush, about 0.5-1 us, which look fixed at small sizes;\n  (4) every CTA re-requesting its weight tile, which doubles L1/L2 requests and convoys on the first DRAM miss\n      of the 384 weight lines;\n  (5) store drain and teardown, about 0.5 us.\n  The specialist attacks (1) and (4). It launches 384-396 CTAs (about 2.6 per SM, 4x fewer warps), every CTA is\n  resident in one wave, each thread issues 8 independent 16-B x loads up front, and the weight tile is loaded once\n  per program for 2-4 tokens. H200 cannot show the B200 ramp/latency balance at 1.5 GHz.\nexpected_effect:\n  S:\n    pct: -12\n    confidence: low\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 64\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 3\n  bytes_in_flight_per_sm: 43000\n  launches_per_call: 1\nknobs:\n  NT_le160: 2\n  NT_le320: 4\n  HB: 16\n  num_warps_le160: 4\n  num_warps_le320: 8\n  parent_ROWS: 8\n  parent_num_warps: 4\n  parent_EVICT: true\ndispatch:\n  - max_tokens: 160\n    kernel: _qk_tokblk\n    meta: \"NT=2, HB=16, num_warps=4 (B*S 128, 131; masked only for 131)\"\n  - max_tokens: 320\n    kernel: _qk_tokblk\n    meta: \"NT=4, HB=16, num_warps=8 (B*S 256)\"\n  - max_tokens: all\n    kernel: _qk_oneshot\n    meta: \"parent g2-os-r8w4: ROWS=8, num_warps=4, EVICT=true (B*S 586 and larger, unchanged)\"\nruns_on:\n  H200:\n    runs: true\n    representative: true\n    note: \"closest latency structure; per-SM warp/ramp effects at 1.5 GHz are not reproduced\"\n  A100:\n    runs: true\n    representative: false\n    note: \"plain loads run, but the 4x lower bytes-in-flight need hides the effect; correctness check\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"About 11 warps per SM may hide the reduction/store phase worse than 41 warps; it could be slower if CTA ramp was not the cost\"\n  - \"Triton may insert a layout conversion (shared memory plus barrier) for the w[None,:,:] broadcast; check that metadata.shared == 0 in the sm_100a compile\"\n  - \"Registers may exceed about 72 if ptxas does not fold the constant offsets; still far below the occupancy limit for this grid\"\n  - \"Uneven CTAs per SM (2 vs 3) only matters if a per-SM issue limit binds before DRAM\"\n  - \"B*S=586 stays on the parent (its 195 KB per SM cannot be held in registers in one wave), so the gain is limited to four workloads\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -871,7 +1126,57 @@
   ],
   "round": "r3",
   "solution": "loop/rounds/r3/candidates/r3-tokblk-s-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_qk_tokblk",
+    "local": 0,
+    "num_warps": 4,
+    "ops": {
+     "LDG": 12,
+     "STG": 8
+    },
+    "regs": 64,
+    "resident_per_sm": 8,
+    "smem": 0
+   },
+   {
+    "kernel": "_qk_oneshot",
+    "local": 0,
+    "num_warps": 4,
+    "ops": {
+     "LDG": 4,
+     "STG": 2
+    },
+    "regs": 32,
+    "resident_per_sm": 16,
+    "smem": 0
+   },
+   {
+    "kernel": "_qk_tokblk",
+    "local": 0,
+    "num_warps": 8,
+    "ops": {
+     "LDG": 10,
+     "STG": 8
+    },
+    "regs": 61,
+    "resident_per_sm": 4,
+    "smem": 0
+   },
+   {
+    "kernel": "_qk_tokblk",
+    "local": 0,
+    "num_warps": 4,
+    "ops": {
+     "LDG": 12,
+     "STG": 8
+    },
+    "regs": 64,
+    "resident_per_sm": 8,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "gain": 0.026012319498256997,
@@ -881,7 +1186,26 @@
     "g2-os-r8w4"
    ]
   },
-  "timings": {}
+  "timings": {
+   "A100": {
+    "1,1024": 59.135,
+    "1,128": 9.568,
+    "1,131": 10.975999999999999,
+    "1,256": 16.784,
+    "1,8192": 493.485,
+    "16,256": 248.862,
+    "2,128": 17.024,
+    "2,293": 35.168,
+    "32,128": 249.11749999999998,
+    "4,1024": 248.829,
+    "4,1657": 399.997,
+    "4,256": 59.1515,
+    "4,512": 121.903,
+    "8,128": 59.359500000000004,
+    "8,256": 121.3275,
+    "8,773": 372.589
+   }
+  }
  },
  "v028": {
   "b200": {

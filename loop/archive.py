@@ -21,7 +21,7 @@ GPUS = ("H200", "A100", "L40S")
 
 
 def load():
-    return json.loads(PATH.read_text()) if PATH.exists() else {}
+    return refresh(json.loads(PATH.read_text())) if PATH.exists() else {}
 
 
 def save(arc):
@@ -30,7 +30,19 @@ def save(arc):
 
 
 def parse_card(text):
-    """Tiny YAML reader for design cards: top-level scalars, lists and one level of mapping (block or flow)."""
+    """Design card -> dict. PyYAML when available (cards nest, e.g. runs_on.H200.representative); else a tiny reader."""
+    try:
+        import yaml
+        card = yaml.safe_load(text)
+        if isinstance(card, dict):
+            return card
+    except Exception:
+        pass
+    return _parse_card_simple(text)
+
+
+def _parse_card_simple(text):
+    """Tiny YAML reader: top-level scalars, lists and one level of mapping (block or flow)."""
     card, key = {}, None
     for raw in text.splitlines():
         if not raw.strip() or raw.lstrip().startswith("#"):
@@ -107,6 +119,43 @@ def ingest_portal(arc):
         if vid in arc:
             arc[vid]["b200"] = dict(score=float(r["sol_score"]), geomean_us=float(r["latency_ms"]) * 1e3,
                                     submission=r.get("submission_id"), timings=per.get(vid, {}))
+
+
+def refresh(arc):
+    """Rebuild every record's measurements from the result files on disk (idempotent).
+
+    Timings, statuses, failure logs, sm_100a statistics and portal results are derived data, so they are re-read on
+    every load. Concurrent writers (e.g. a background proposal round) can then never lose them by saving an older copy.
+    """
+    timing_dirs = [ROOT / "loop" / "gen2" / "results" / "timing"] + \
+                  sorted((ROOT / "loop" / "rounds").glob("*/results/timing"))
+    for tdir in timing_dirs:
+        for gdir in sorted(p for p in tdir.glob("*") if p.is_dir()):
+            for tr in gdir.glob("*.jsonl"):
+                cid = tr.stem
+                if "_rep" in cid or cid not in arc:
+                    continue
+                times, statuses = read_traces(tr)
+                arc[cid].setdefault("timings", {})[gdir.name] = times
+                arc[cid]["status"] = "passed" if statuses == {"PASSED"} else f"failed: {sorted(statuses)}"
+                log = gdir / f"{cid}.log"
+                if log.exists() and statuses != {"PASSED"}:
+                    arc[cid]["failure_log"] = log.read_text()[-3000:]
+            for log in gdir.glob("*.log"):            # build failures leave a log but no (or an empty) trace
+                cid = log.stem
+                trace = gdir / f"{cid}.jsonl"
+                if cid in arc and (not trace.exists() or not trace.read_text().strip()):
+                    arc[cid]["status"] = f"failed: build or run error on {gdir.name}"
+                    arc[cid]["failure_log"] = log.read_text()[-3000:]
+    for sf in sorted((ROOT / "loop" / "rounds").glob("*/results/static_*.jsonl")):
+        for line in open(sf):
+            s = json.loads(line)
+            if s["id"] in arc and s.get("kernels"):
+                arc[s["id"]]["static_sm100"] = [{k: v for k, v in kk.items() if k != "target"} for kk in s["kernels"]]
+            elif s["id"] in arc and s.get("error") and not arc[s["id"]].get("static_sm100"):
+                arc[s["id"]]["static_error"] = s["error"][:500]
+    ingest_portal(arc)
+    return arc
 
 
 def fmt(bands):

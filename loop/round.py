@@ -184,22 +184,7 @@ def cmd_collect(a):
     d = rdir(a.round)
     (d / "results").mkdir(parents=True, exist_ok=True)
     subprocess.run(["rsync", "-a", f"{REMOTE}:{RSOLX}/loop/rounds/{a.round}/results/", f"{d}/results/"], check=True)
-    arc = get_archive()
-    for gdir in sorted((d / "results" / "timing").glob("*")) if (d / "results" / "timing").exists() else []:
-        for tr in gdir.glob("*.jsonl"):
-            cid = tr.stem
-            if cid in arc:
-                times, statuses = archive.read_traces(tr)
-                arc[cid].setdefault("timings", {})[gdir.name] = times
-                arc[cid]["status"] = "passed" if statuses == {"PASSED"} else f"failed: {sorted(statuses)}"
-                log = gdir / f"{cid}.log"
-                if log.exists() and statuses != {"PASSED"}:
-                    arc[cid]["failure_log"] = log.read_text()[-3000:]
-    for sf in sorted((d / "results").glob("static_*.jsonl")):
-        for line in open(sf):
-            s = json.loads(line)
-            if s["id"] in arc and s.get("kernels"):
-                arc[s["id"]]["static_sm100"] = [{k: v for k, v in kk.items() if k != "target"} for kk in s["kernels"]]
+    arc = get_archive()            # archive.load() re-reads every result file, including the ones just pulled
     archive.save(arc)
     print(archive.table({k: v for k, v in arc.items() if v.get("round") == a.round or v.get("b200")}))
 
@@ -215,6 +200,8 @@ def cmd_shortlist(a):
              f"speed relative to the reference, per workload, on its most representative cheap GPU, onto the reference's "
              f"B200 per-workload times.", "",
              "| file | basis | change vs reference S/M/L | predicted B200 score |", "|---|---|---|---|"]
+    for w in s.get("awaiting", []):
+        lines.append(f"| (not copied) `{w['id']}` | waiting for {w['gpu']} timings | - | run collect again when they land |")
     for p in s["picks"]:
         shutil.copy(ROOT / arc[p["id"]]["solution"], out / f"{p['id']}.json")
         pred = f"{p['predicted_score']:.4f}" if p["predicted_score"] else "unknown (exploration)"

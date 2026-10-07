@@ -170,24 +170,31 @@ def plan(arc, max_tasks=3, last_round=None):
 
 
 def representative_gpu(rec):
+    """(gpu with timings, gpu the card names but without timings yet), H200 preferred."""
     card = archive.parse_card(rec.get("card", ""))
     runs = card.get("runs_on") or {}
-    for gpu in ("H200", "A100"):
-        txt = str(runs.get(gpu, "")).replace(" ", "").lower()
-        if "representative:true" in txt and rec.get("timings", {}).get(gpu):
-            return gpu
-    return None
+    def says_representative(v):
+        if isinstance(v, dict):
+            return str(v.get("representative")).lower() == "true"
+        return "representative:true" in str(v).replace(" ", "").replace("'", "").replace('"', "").lower()
+
+    named = [g for g in ("H200", "A100") if says_representative(runs.get(g, ""))]
+    have = [g for g in named if rec.get("timings", {}).get(g)]
+    return (have[0] if have else None), (named[0] if named and not have else None)
 
 
 def shortlist(arc, round_id, k_predicted=3, k_explore=2):
     anc = anchors()
     best = best_kernel(arc)
     bt = b200_times(best)
-    ranked, explore = [], []
+    ranked, explore, awaiting = [], [], []
     for r in arc.values():
         if r.get("round") != round_id or r.get("status") != "passed" or r.get("b200"):
             continue
-        gpu = representative_gpu(r)
+        gpu, waiting = representative_gpu(r)
+        if waiting:
+            awaiting.append(dict(id=r["id"], gpu=waiting))
+            continue
         ref = (best.get("timings") or {}).get(gpu or "", {})
         if gpu and ref:
             ct = r["timings"][gpu]
@@ -202,7 +209,7 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
             explore.append(dict(id=r["id"], gpu=None, predicted_score=None,
                                 rel="no representative cheap GPU (B200-only features)"))
     ranked.sort(key=lambda x: -x["predicted_score"])
-    return dict(best=best["id"], best_score=best["b200"]["score"],
+    return dict(best=best["id"], best_score=best["b200"]["score"], awaiting=awaiting,
                 picks=ranked[:k_predicted] + explore[:k_explore], ranked=ranked, explore=explore)
 
 

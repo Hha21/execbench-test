@@ -2296,7 +2296,48 @@
   ],
   "round": "r8",
   "solution": "loop/rounds/r8/candidates/r8-fat512-l-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__504356e6_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELb1EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 5,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 29,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__504356e6_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 5,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 29,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__504356e6_9_kernel_cu_ba37c84a13qk_rms_kernelILi512ELb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 5,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 29,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Explore the empty niche tile:fat. Cut the CTA count 4-16x: an empty grid of 49,152 CTAs already spans 26 us on B200 (problem_038.md section 7). Give each thread several rows (loads for all of them issued first, then the reductions), or larger CTAs, keeping registers low enough for full occupancy. Measure the CTA-count effect with probe_b200 before writing the full kernel. It must be correct for every shape; aim to beat the parent somewhere and say where in the card.",
@@ -2306,7 +2347,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.69,
+    "1,128": 4.19,
+    "1,131": 4.1,
+    "1,256": 5.6,
+    "1,8192": 114.97,
+    "16,256": 57.91,
+    "2,128": 5.47,
+    "2,293": 8.67,
+    "32,128": 57.91,
+    "4,1024": 58.2,
+    "4,1657": 92.76,
+    "4,256": 14.56,
+    "4,512": 28.53,
+    "8,128": 14.56,
+    "8,256": 28.34,
+    "8,773": 86.53
+   }
+  }
  },
  "r8-ldg256-l2mode-disp": {
   "card": "id: r8-ldg256-l2mode-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows32\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Probes on the rented B200 (harness CUPTI timing, cold L2) show the parent is at the ceiling for medium and\n  large inputs. A 256-bit copy with evict_last stores and no maths times the same as the parent\n  (14.2/28.6/57.8/115.8 us at 1024/2048/4096/8192 tokens). The harness zero-flush leaves about 120 MB of dirty\n  L2 lines; a 400 MB read-only kernel takes 80.9 us after a zero flush against 64.6 us after a clean flush.\n  Any dirty output left in L2 at kernel end displaced a dirty flush line earlier, so in-window DRAM traffic\n  cannot drop below reads + writes. That explains why these L2-policy variants were all within +-1%:\n  evict_last only on the last 64/96/112 MB of output, evict_first or normal stores for the early output,\n  evict_last weights, Q/K tile interleave, and 128- or 1024-thread CTAs. Two small effects repeated (3x each)\n  and are dispatched here: evict_first x loads at 1024 tokens (-1.3%), and 512-thread CTAs with 32 rows for\n  more than 1536 tokens (-0.3 to -0.9%). Small inputs keep r6's path. Full run_tests vs the parent on the\n  rented B200: S -0.1%, M -1.2%, L -1.2%, 16/16 pass, projected portal score 0.6131 (parent 0.6099).\n  The gain is B200-specific and close to noise.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -0.8\n    confidence: low\n  L:\n    pct: -1.0\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 512\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  S_MAX_TOKENS: 600\n  EF_MAX_TOKENS: 1536\n  L_THREADS: 512\n  L_ROWS: 32\n  store_policy: \"L2 evict_last constant 0x14F0000000000000 (all sizes)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<256,1,true>\n    meta:\n      ROWS: 16\n      loads: \"x evict_first, w nc\"\n  - max_tokens: 1536\n    kernel: qk_rms_kernel<256,1,false>\n    meta:\n      ROWS: 16\n      loads: \"x evict_first, w default\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<512,0,false>\n    meta:\n      ROWS: 32\n      loads: \"default\"\n      note: \"falls back to the 256-thread kernel if n_rows % 32 != 0\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Gains of about 1% are at the edge of portal noise (about 5%); the portal may show no change.\"\n  - \"Medium and large sizes appear bound by reads+writes at about 7.05 TB/s; further structural changes to this kernel are unlikely to help.\"\n  - \"compile_b200 was not run on the final files; regs_per_thread is the parent's value, not a measured one.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -2328,7 +2388,61 @@
   ],
   "round": "r8",
   "solution": "loop/rounds/r8/candidates/r8-ldg256-l2mode-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__a26b26d0_9_kernel_cu_ba37c84a13qk_rms_kernelILi512ELi0ELb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 4
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__a26b26d0_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELi0ELb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 4
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__a26b26d0_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELi1ELb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 4
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__a26b26d0_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELi1ELb1EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 4
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M,L",
    "gain": 0.01577762095760471,
@@ -2338,7 +2452,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.59,
+    "1,128": 4.16,
+    "1,131": 4.06,
+    "1,256": 5.54,
+    "1,8192": 114.81,
+    "16,256": 56.81,
+    "2,128": 5.44,
+    "2,293": 8.64,
+    "32,128": 57.95,
+    "4,1024": 58.11,
+    "4,1657": 92.76,
+    "4,256": 14.19,
+    "4,512": 28.55,
+    "8,128": 14.21,
+    "8,256": 28.28,
+    "8,773": 86.38
+   }
+  }
  },
  "r8-s-pf256-disp": {
   "card": "id: r8-s-pf256-disp\nparents:\n  - r6-s-ldef-nc-disp\n  - r7-ldg256-l2pf-mdisp\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  What the small-input fixed cost is made of. Measured on the rented B200 with harness CUPTI timing,\n  cold L2 after the zero flush:\n  (1) The CUPTI span of an empty kernel is 1.45-1.65 us at any grid size (1 to 1536 CTAs).\n  (2) The first DRAM access costs about 0.6 us over that; each further dependent load costs about 0.45 us,\n  with no extra cost for new 4 KB, 2 MB or 8 MB pages, so TLB misses do not matter.\n  (3) Reading 6.3 MB (Q+K at 128 tokens, no stores) costs 2.4 us over an empty kernel, about 2.6 TB/s.\n  Our reading: every read allocation evicts one of the zero flush's dirty L2 lines, so the read phase\n  carries about the same volume of write-backs. Stores alone cost 0.9 us; weight loads about 1%.\n  The parent (4.1 us at 128 tokens) already sits at launch span + first latency + dirty-doubled DRAM\n  traffic. No kernel-side lever moved it: 64- to 1024-thread CTAs, 1-4 rows per thread, a balanced\n  148xk interleaved mapping, discard of input lines, L2::256B prefetch size, L1::no_allocate, and\n  dropping the weight loads all came within +-1% or were worse. The one repeatable gain is r7's L2 bulk\n  prefetch one resident wave ahead: -2% at 256 tokens (1.3 waves), +1.7% at 586 tokens, a no-op at 128.\n  So it applies only up to 300 tokens. 301-600 tokens run the parent's S path and >600 the parent's\n  large path, both unchanged. Full test on the rented B200 against the parent: 16/16 pass;\n  S -1.9% (256-token sizes -0.9 to -4.8%); M -0.8% and L -0.2%, which is noise (same code);\n  projected portal score 0.6118.\nexpected_effect:\n  S:\n    pct: -1\n    confidence: low\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  PF_MAX_TOKENS: 300\n  S_MAX_TOKENS: 600\n  PF_DISTANCE: \"num_SMs x 8 CTAs (one resident wave), 8 KB per prefetch\"\ndispatch:\n  - max_tokens: 300\n    kernel: qk_rms_kernel<2>\n    meta:\n      loads: \"x evict_first, w nc, L2 bulk prefetch one wave ahead\"\n  - max_tokens: 600\n    kernel: qk_rms_kernel<1>\n    meta:\n      loads: \"x evict_first, w nc (parent r6 S path)\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<0>\n    meta:\n      loads: \"default (parent r6 large path = r5)\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; the L2 is 50 MB, so prefetch and dirty-flush effects differ\"\n  A100:\n    runs: true\n    representative: false\n    note: \"no bulk prefetch on sm_80 (compiled out); correctness only\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The expected gain (about 2% on two 256-token workloads, under 1% on the portal after shrinkage) is below the portal's 5% noise; one submission cannot resolve it.\"\n  - \"The fixed-cost decomposition comes from a rented B200 at unlocked clocks. At the portal's 1.5 GHz SM lock the per-SM issue costs are a little larger.\"\n  - \"If the dirty-flush write-back reading is right, the S band is already close to its floor (launch span + first DRAM latency + doubled read-phase traffic). Further S effort should then go elsewhere.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -2361,7 +2494,48 @@
   ],
   "round": "r8",
   "solution": "loop/rounds/r8/candidates/r8-s-pf256-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__17badcc3_9_kernel_cu_ba37c84a13qk_rms_kernelILi0EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 4,
+     "LDG.CONSTANT.256": 2,
+     "STG.256": 3
+    },
+    "regs": 28,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__17badcc3_9_kernel_cu_ba37c84a13qk_rms_kernelILi1EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 4,
+     "LDG.CONSTANT.256": 2,
+     "STG.256": 3
+    },
+    "regs": 28,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__17badcc3_9_kernel_cu_ba37c84a13qk_rms_kernelILi2EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 4,
+     "LDG.CONSTANT.256": 2,
+     "STG.256": 3
+    },
+    "regs": 28,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "gain": 0.020107629326528542,
@@ -2369,6 +2543,59 @@
    "operation": "specialisation",
    "parents": [
     "r6-s-ldef-nc-disp"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,1024": 14.58,
+    "1,128": 4.1,
+    "1,131": 4.03,
+    "1,256": 5.44,
+    "1,8192": 115.87,
+    "16,256": 57.92,
+    "2,128": 5.31,
+    "2,293": 8.61,
+    "32,128": 58.01,
+    "4,1024": 58.11,
+    "4,1657": 93.4,
+    "4,256": 14.4,
+    "4,512": 28.36,
+    "8,128": 14.43,
+    "8,256": 28.23,
+    "8,773": 86.99
+   }
+  }
+ },
+ "r9-xo-spf-l2mode-disp": {
+  "card": "id: r9-xo-spf-l2mode-disp\nparents:\n  - r8-s-pf256-disp\n  - r8-ldg256-l2mode-disp\noperation: crossover\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Each parent wins in a different band, so routing each band to its better parent's unchanged code\n  should get both gains. Axis provenance: S band (B*S <= 600), i.e. the L2 bulk prefetch path for\n  <= 300 tokens and the EF-x/nc-w path for 301-600 tokens, both with createpolicy evict_last\n  stores, come from r8-s-pf256-disp. The M band EF-x path for 601-1536 tokens and the 512-thread,\n  32-row default-load path for > 1536 tokens, both with EL-constant stores, come from\n  r8-ldg256-l2mode-disp. Measured with one run_tests on the rented B200, against r6-s-ldef-nc-disp:\n  16/16 pass; S -1.6% (parent r8-s-pf256 had -1.9%), M -0.7% (parent l2mode -1.2%), L -0.5%\n  (parent l2mode -1.2%). Each band matches its parent within run-to-run noise. Projected portal\n  score 0.6121 (current best 0.6099). The gains are B200-specific (256-bit accesses, L2 policy on a\n  126 MB L2).\nexpected_effect:\n  S:\n    pct: -1\n    confidence: low\n  M:\n    pct: -0.7\n    confidence: low\n  L:\n    pct: -0.7\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 512\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  PF_MAX_TOKENS: 300\n  S_MAX_TOKENS: 600\n  EF_MAX_TOKENS: 1536\n  S_ROWS: 16\n  L_ROWS: 32\n  L_THREADS: 512\n  PF_DISTANCE: \"num_SMs x 8 CTAs (one resident wave), 8 KB per prefetch\"\ndispatch:\n  - max_tokens: 300\n    kernel: qk_rms_s_kernel<2>\n    meta:\n      from: r8-s-pf256-disp\n      loads: \"x evict_first, w nc, L2 bulk prefetch one wave ahead\"\n  - max_tokens: 600\n    kernel: qk_rms_s_kernel<1>\n    meta:\n      from: r8-s-pf256-disp\n      loads: \"x evict_first, w nc\"\n  - max_tokens: 1536\n    kernel: qk_rms_ml_kernel<256,1,false>\n    meta:\n      from: r8-ldg256-l2mode-disp\n      loads: \"x evict_first, w default\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_ml_kernel<512,0,false>\n    meta:\n      from: r8-ldg256-l2mode-disp\n      loads: \"default\"\n      note: \"256-thread default-load fallback if n_rows % 32 != 0\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n    note: \"no bulk prefetch on sm_80; correctness only\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Per-band gains of 0.5-1.6% are below the portal's ~5% noise; one submission may show no change.\"\n  - \"Measured on unlocked clocks on the rented B200; the portal locks SM 1500 / DRAM 3996 MHz.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r9-xo-spf-l2mode-disp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "crossover",
+  "parents": [
+   "r8-s-pf256-disp",
+   "r8-ldg256-l2mode-disp"
+  ],
+  "round": "r9",
+  "solution": "loop/rounds/r9/candidates/r9-xo-spf-l2mode-disp.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Combine the two parents into one dispatcher: r8-s-pf256-disp's small-input path (B*S <= 600) and r8-ldg256-l2mode-disp's medium/large paths (its EF-load mid band and 512-thread CTAs above), each exactly as in its parent. Both already keep the r6 parent's code elsewhere. Use the two-file CUDA layout (kernel.cu without PyTorch headers + binding.cpp). Confirm with one run_tests that each band matches its better parent on the B200; list in the card which band came from which parent.",
+   "niche": "any empty niche",
+   "operation": "crossover",
+   "parents": [
+    "r8-s-pf256-disp",
+    "r8-ldg256-l2mode-disp"
    ]
   },
   "timings": {}

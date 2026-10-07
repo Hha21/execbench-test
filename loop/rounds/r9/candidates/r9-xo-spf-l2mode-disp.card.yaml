@@ -1,0 +1,96 @@
+id: r9-xo-spf-l2mode-disp
+parents:
+  - r8-s-pf256-disp
+  - r8-ldg256-l2mode-disp
+operation: crossover
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Each parent wins in a different band, so routing each band to its better parent's unchanged code
+  should get both gains. Axis provenance: S band (B*S <= 600), i.e. the L2 bulk prefetch path for
+  <= 300 tokens and the EF-x/nc-w path for 301-600 tokens, both with createpolicy evict_last
+  stores, come from r8-s-pf256-disp. The M band EF-x path for 601-1536 tokens and the 512-thread,
+  32-row default-load path for > 1536 tokens, both with EL-constant stores, come from
+  r8-ldg256-l2mode-disp. Measured with one run_tests on the rented B200, against r6-s-ldef-nc-disp:
+  16/16 pass; S -1.6% (parent r8-s-pf256 had -1.9%), M -0.7% (parent l2mode -1.2%), L -0.5%
+  (parent l2mode -1.2%). Each band matches its parent within run-to-run noise. Projected portal
+  score 0.6121 (current best 0.6099). The gains are B200-specific (256-bit accesses, L2 policy on a
+  126 MB L2).
+expected_effect:
+  S:
+    pct: -1
+    confidence: low
+  M:
+    pct: -0.7
+    confidence: low
+  L:
+    pct: -0.7
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 512
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  PF_MAX_TOKENS: 300
+  S_MAX_TOKENS: 600
+  EF_MAX_TOKENS: 1536
+  S_ROWS: 16
+  L_ROWS: 32
+  L_THREADS: 512
+  PF_DISTANCE: "num_SMs x 8 CTAs (one resident wave), 8 KB per prefetch"
+dispatch:
+  - max_tokens: 300
+    kernel: qk_rms_s_kernel<2>
+    meta:
+      from: r8-s-pf256-disp
+      loads: "x evict_first, w nc, L2 bulk prefetch one wave ahead"
+  - max_tokens: 600
+    kernel: qk_rms_s_kernel<1>
+    meta:
+      from: r8-s-pf256-disp
+      loads: "x evict_first, w nc"
+  - max_tokens: 1536
+    kernel: qk_rms_ml_kernel<256,1,false>
+    meta:
+      from: r8-ldg256-l2mode-disp
+      loads: "x evict_first, w default"
+  - max_tokens: 1000000000
+    kernel: qk_rms_ml_kernel<512,0,false>
+    meta:
+      from: r8-ldg256-l2mode-disp
+      loads: "default"
+      note: "256-thread default-load fallback if n_rows % 32 != 0"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback, 50 MB L2"
+  A100:
+    runs: true
+    representative: false
+    note: "no bulk prefetch on sm_80; correctness only"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Per-band gains of 0.5-1.6% are below the portal's ~5% noise; one submission may show no change."
+  - "Measured on unlocked clocks on the rented B200; the portal locks SM 1500 / DRAM 3996 MHz."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

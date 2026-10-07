@@ -21,10 +21,9 @@ S_MAX, M_MAX = 600, 2100            # band edges in B*S tokens (S = 12.6-57.6 MB
 FIXED_TARGET_US = 1.5               # what a strong small-input kernel might reach (problem card)
 BW_TARGET_TBS = 7.2                 # what a strong medium/large kernel might reach (~90% of 8 TB/s)
 EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order until one is missing from the archive
+    # Dropped: launch:pdl (one-kernel designs gain nothing) and red:halfwarp (the r3 CuTe winner already does it).
     ("lang", "cutedsl", "Write the design in CuTe DSL (Python), which compiles for sm_100a; use it to reach a memory "
                         "path Triton cannot express."),
-    ("launch", "pdl", "Use programmatic dependent launch only if a split design needs two kernels; otherwise keep one."),
-    ("red", "halfwarp", "Map one 128-float row to a half-warp (16 lanes x 8 floats) and reduce with 4 shuffles."),
     ("tile", "token", "Process one token's 48 heads per program (tile:token) so the weight tile is constant."),
     ("lang", "gluon", "Write the design in Gluon (triton.experimental.gluon) for explicit layout and memory control."),
 ]

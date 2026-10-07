@@ -180,6 +180,13 @@ passed, with 0.15% run-to-run noise.
   is cheap, and TMA rings add about 1–1.5 µs fixed cost. Fit on S/M sizes, `t = fixed + bytes/BW`:
   one-shot **3.2 µs + 6.7 TB/s**, v039 3.7 + 5.9, TMA 4.5 + 5.8, TMA+wstat 3.9 + 6.2. **Remaining gap to the leader:**
   L/M from 6.4 to about 7 TB/s, and S fixed cost from 3.2 µs toward 1–2 µs.
+- **256-bit loads work (7 October, portal #62013):** `r3-cute-ldg256-os-r16`, a CuTe DSL port of the one-shot design
+  (16 rows per 256-thread CTA, half-warp per row, `CopyUniversalOp` with `num_bits_per_copy=256` for loads and stores,
+  default cache policy, one dynamic-shape compile), scores **0.588 at 24.6 µs** and beats the baseline on **16/16**.
+  Against `g2-os-r8w4`: S unchanged (−2.5% to +3%), M −1.5% to −4.3%, L −3.7% to −4.9%; the 805 MB workload reaches
+  **6.84 TB/s** (was 6.50). Fit: 3.1 µs fixed + 6.9 TB/s. Its design card predicted S 0 / M −3 / L −5%. The CuTe DSL
+  in NVIDIA's image (4.4.2) runs on the portal. Fewer, wider memory instructions help the bandwidth-bound sizes and
+  do nothing for small-input fixed cost. [portal]
 - **Five B200 submissions with per-workload results (6 October, `poc/results/b200_portal_workloads.csv`):**
   - v039 (fused, persistent, ROWS=16, 8 warps, 8 programs per SM, 32 registers) is fastest on **every** workload,
     so dispatching between the five gains nothing. Score 0.531, geomean 28.56 µs, faster than Tb on 9/16.

@@ -1,4 +1,4 @@
-"""Compile any Triton candidate for sm_100a (B200) on a non-B200 GPU node and read its resource use.
+"""Compile any Triton, CuTe DSL or CUDA C++ candidate for sm_100a (B200) on a non-B200 GPU node and read its resource use.
 
 For each candidate, a fresh subprocess runs the solution's run() once per distinct input size with Triton's
 current target patched to sm_100 and a private TRITON_CACHE_DIR, so every compiler pass targets B200 (the
@@ -58,12 +58,18 @@ def tools():
     return Path(triton.__file__).parent / "backends" / "nvidia" / "bin"
 
 
+def op_key(name):
+    """SASS opcode -> base name plus access width when given, e.g. LDG.E.ENL2.256.CONSTANT -> LDG.256."""
+    w = re.search(r"\.(64|128|256)(?=\.|$)", name)
+    return name.split(".")[0] + (f".{w[1]}" if w else "")
+
+
 def inspect_cubin(path, meta):
     """One record per kernel function in the cubin (Triton cubins hold one; CUDA C++ ones may hold several)."""
     t = tools()
     res = subprocess.run([t / "cuobjdump", "-res-usage", str(path)], capture_output=True, text=True).stdout
     sass = subprocess.run([t / "cuobjdump", "-sass", str(path)], capture_output=True, text=True).stdout
-    ops = collections.Counter(mm[1].split(".")[0] for mm in
+    ops = collections.Counter(op_key(mm[1]) for mm in
                               re.finditer(r"/\*[0-9a-f]{4,}\*/\s+(?:@!?U?P\w+\s+)?([A-Z0-9_.]+)", sass))
     ops = {k: v for k, v in ops.items() if k.startswith(("LDG", "STG", "UTMA", "LDGSTS", "UBLKCP"))}
     out = []
@@ -126,8 +132,12 @@ def main():
                               "error": rec.get("error", "")[:200]}), flush=True)
             continue
         file, func = sol["spec"]["entry_point"].split("::")
-        cache = work / "triton_cache"
-        env = {**{k: v for k, v in os.environ.items() if k != "TRITON_OVERRIDE_ARCH"}, "TRITON_CACHE_DIR": str(cache)}
+        cache, dump = work / "triton_cache", work / "cute_dump"
+        env = {**{k: v for k, v in os.environ.items() if k != "TRITON_OVERRIDE_ARCH"}, "TRITON_CACHE_DIR": str(cache),
+               # CuTe DSL: compile for B200 and keep each cubin (and PTX, for the block size) in a private directory.
+               "CUTE_DSL_ARCH": "sm_100a", "CUTE_DSL_KEEP_CUBIN": "1", "CUTE_DSL_KEEP_PTX": "1",
+               "CUTE_DSL_DUMP_DIR": str(dump), "CUTE_DSL_NO_CACHE": "1", "CUTE_DSL_CACHE_DIR": str(work / "cute_cache")}
+        dump.mkdir()
         p = subprocess.run([sys.executable, "-c", RUNNER, str(work / file), func, sz], env=env, cwd=work,
                            capture_output=True, text=True, timeout=900)
         kernels = []
@@ -135,6 +145,10 @@ def main():
             meta_path = cubin.with_suffix(".json")
             meta = json.loads(meta_path.read_text()) if meta_path.exists() else {}
             kernels.extend(inspect_cubin(cubin, meta))
+        for cubin in dump.rglob("*.cubin"):
+            ptx = cubin.with_suffix(".ptx")
+            ntid = re.search(r"\.(?:reqntid|maxntid)\s+(\d+)", ptx.read_text()) if ptx.exists() else None
+            kernels.extend(inspect_cubin(cubin, {"num_warps": int(ntid[1]) // 32} if ntid else {}))
         rec = dict(id=sol_path.stem, kernels=kernels)
         if not kernels:
             rec["error"] = "no sm_100 cubin produced: " + (p.stderr[-1500:] or p.stdout[-500:])

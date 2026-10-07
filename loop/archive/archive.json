@@ -961,8 +961,41 @@
   "round": "r2",
   "solution": "loop/rounds/r2/candidates/r2-ldg256-os-r16.json",
   "static_error": "ptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tm",
-  "status": "failed: build or run error on A100",
-  "timings": {}
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__26ef558e_9_kernel_cu_a02f06f820qk_rms_ldg256_kernelEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 2,
+     "STG": 1
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 62.336000000000006,
+    "1,128": 10.9275,
+    "1,131": 11.136,
+    "1,256": 18.320000000000004,
+    "1,8192": 519.035,
+    "16,256": 261.72499999999997,
+    "2,128": 19.0885,
+    "2,293": 37.615,
+    "32,128": 260.9415,
+    "4,1024": 262.157,
+    "4,1657": 421.5175,
+    "4,256": 62.479,
+    "4,512": 127.83900000000001,
+    "8,128": 62.288,
+    "8,256": 126.87900000000002,
+    "8,773": 393.41949999999997
+   }
+  }
  },
  "r2-ldg256-tokblk": {
   "card": "id: r2-ldg256-tokblk\nparents:\n  - g2-os-r16w8\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows64\n  red: halfwarp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  On B200 the parent's one-shot tile has only about 64 KB of loads in flight per SM, and it drains at every CTA\n  turnover. Holding T tokens of one head per half-warp works differently: all T 256-bit loads are issued before the\n  reduction, weights are reused from registers, and each byte costs half the load/store instructions. This should\n  give about 128 KB in flight per SM on L and lift sustained bandwidth from 6.4 toward 7+ TB/s. H200 and A100 cannot\n  show the 256-bit or bytes-in-flight effect.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: low\n  M:\n    pct: -5\n    confidence: low\n  L:\n    pct: -8\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 56\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 256\n  T_S: 1\n  T_M: 2\n  T_L: 4\n  MINB_S: 8\n  MINB_M: 6\n  MINB_L: 4\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_tok\n    meta:\n      T: 1\n      minBlocks: 8\n  - max_tokens: 2100\n    kernel: qk_rms_tok\n    meta:\n      T: 2\n      minBlocks: 6\n  - max_tokens: 4611686018427387904\n    kernel: qk_rms_tok\n    meta:\n      T: 4\n      minBlocks: 4\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"arch guard compiles 2x128-bit accesses on sm_90; correctness and token-blocking signal only\"\n  A100:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; checks correctness and the masked T=2/4 paths (odd token counts)\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"__launch_bounds__(256,8) caps T=1 at 32 regs; if ptxas spills, raise to minBlocks 6 (check LOCAL in the sm_100a compile)\"\n  - \"T=4 rows are 24 KB apart per half-warp (4 separate 8 KB chunks per CTA); DRAM page locality may be worse than the parent's contiguous 8 KB tile\"\n  - \"no L2 evict_first hints on the 256-bit accesses (only the verified PTX forms are used); the parent's hints may have mattered slightly\"\n  - \"M band at T=2 with 6 CTAs/SM: 1024 tokens give 3072 CTAs (about 3.5 waves), so a partial last wave\"\n  - \"S path untested against the Triton parent on B200; CUDA one-shot fixed cost could differ by \u00b15%\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -986,10 +1019,90 @@
   "round": "r2",
   "solution": "loop/rounds/r2/candidates/r2-ldg256-tokblk.json",
   "static_error": "xceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Vector type too large, exceeds 128 bit limit\nptx",
-  "status": "failed: build or run error on A100",
-  "timings": {}
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi4ELi4EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 13,
+     "STG": 7
+    },
+    "regs": 63,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi2ELi6EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 13,
+     "STG": 7
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__fe57f644_9_kernel_cu_a02f06f810qk_rms_tokILi1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 13,
+     "STG": 7
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
+  "timings": {
+   "A100": {
+    "1,1024": 85.15100000000001,
+    "1,128": 10.928,
+    "1,131": 11.2155,
+    "1,256": 18.383999999999997,
+    "1,8192": 641.113,
+    "16,256": 330.7165,
+    "2,128": 19.072,
+    "2,293": 37.087,
+    "32,128": 330.38,
+    "4,1024": 331.2605,
+    "4,1657": 551.035,
+    "4,256": 84.175,
+    "4,512": 161.1985,
+    "8,128": 84.687,
+    "8,256": 156.862,
+    "8,773": 488.01150000000007
+   }
+  }
  },
  "r3-cute-ldg256-os-r16": {
+  "b200": {
+   "geomean_us": 24.592,
+   "score": 0.58818,
+   "submission": "62013",
+   "timings": {
+    "1,1024": 17.9,
+    "1,128": 4.8,
+    "1,131": 4.8,
+    "1,256": 7.0,
+    "1,8192": 117.8,
+    "16,256": 61.0,
+    "2,128": 6.8999999999999995,
+    "2,293": 11.5,
+    "32,128": 61.0,
+    "4,1024": 60.900000000000006,
+    "4,1657": 96.3,
+    "4,256": 18.0,
+    "4,512": 32.4,
+    "8,128": 17.9,
+    "8,256": 32.300000000000004,
+    "8,773": 90.1
+   }
+  },
   "card": "id: r3-cute-ldg256-os-r16\nparents:\n  - g2-os-r8w4\noperation: new_design\nlanguage: cute_dsl\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: default\n  spec: all\nhypothesis: >-\n  The design is the parent's one-shot fused structure, but each thread moves 256-bit vectors through a CuTe DSL\n  CopyUniversalOp with num_bits_per_copy=256, which Triton cannot emit. That halves the LDG/STG count per byte and\n  doubles the bytes per outstanding instruction, which matters at 36 B/clk/SM at the 1.5 GHz lock. The parent sits\n  at 6.4 TB/s on the L band, and this should move it toward about 7 TB/s. A single dynamic-shape compile serves all\n  16 workloads.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: low\n  M:\n    pct: -3\n    confidence: low\n  L:\n    pct: -5\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  VEC: 8\n  THREADS: 256\n  ROWS: 16\n  TPR: 16\n  fallback: \"VEC=4, ROWS=8, TPR=32 if the 256-bit atom fails to compile\"\ndispatch: []\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"sm_90 has no 256-bit LDG; the atom either fails (falls back to 128-bit) or splits; correctness and S-band signal only\"\n  A100:\n    runs: true\n    representative: false\n    note: \"correctness smoke test; the vector width may differ from the B200 path\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"CuTe DSL 4.4.2 API details are unverified on CSF3 and may need a repair round: mark_compact_shape_dynamic stride_order, make_fragment_like naming, cute.math.rsqrt(fastmath), TensorSSA.reduce signature, a jit helper called inside a dynamic if.\"\n  - \"CopyUniversalOp with 256 bits may lower to 2 x LDG.128. That is still correct, but it brings no gain over the parent. Check the sm_100a SASS for LDG.E.ENL2.256.\"\n  - \"Without evict_first hints the L2 policy may differ slightly from the parent.\"\n  - \"The first-call compile is about 20 s, or about 40 s if the fallback triggers. It happens once, in round 0, well inside 300 s.\"\n  - \"If the CuTe DSL compiler leaves a background thread alive, the harness thread-count check would flag it. Verify on CSF3 with threading.active_count() before and after the first call.\"\n  - \"Each call builds DLPack wrappers and a CUstream on the CPU. This is host-only work and is not timed.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r3-cute-ldg256-os-r16",
   "language": "cute_dsl",

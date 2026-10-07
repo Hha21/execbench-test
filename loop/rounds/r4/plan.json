@@ -1,0 +1,42 @@
+{
+ "best": "r3-cute-ldg256-os-r16",
+ "best_score": 0.58818,
+ "gains": {
+  "base": 0.5874907510883063,
+  "fixed": 3.113021555061014,
+  "bw": 6.868883834353518,
+  "S": 0.02811561504789495,
+  "ML": 0.030051887471214567,
+  "tbs_M": 5.9040310174650665,
+  "tbs_L": 6.736977654252112
+ },
+ "tasks": [
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "M,L",
+   "gain": 0.030051887471214567,
+   "instructions": "Goal: raise sustained bandwidth on medium and large inputs (B*S > 600) on B200. The parent reaches 5.90 TB/s (M) and 6.74 TB/s (L); 7.2 TB/s would add about +0.030 to the score. Propose the single change most likely to get there, correct for every shape, one launch. Slower on B200 than the parent in these bands already: g2-os-r16w8 (ldg128/oneshot): +4%; g2-os-r8w4 (ldg128/oneshot): +4%; g2-tma-r8s3 (tma-tensor/persistent): +20%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +14%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +18%; v028 (ldg128/persistent): +51%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +132%; v050 (ldg128/oneshot): +31%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-os-r16 (ldg256/oneshot, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton)."
+  },
+  {
+   "operation": "specialisation",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "S",
+   "gain": 0.02811561504789495,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.1 us fixed + bytes / 6.9 TB/s on small and medium sizes; reaching 1.5 us fixed would add about +0.028 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: g2-tma-r8s3 (tma-tensor/persistent): +30%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +16%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +7%; v028 (ldg128/persistent): +39%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +71%; v050 (ldg128/oneshot): +129%. Ideas already proposed but not yet measured on B200 (do not repeat them): r1-bulk1d-ring-r16s16 (bulk1d/persistent, cuda_cpp); r2-ldg256-os-r16 (ldg256/oneshot, cuda_cpp); r2-ldg256-tokblk (ldg256/oneshot, cuda_cpp); r3-os-l2pf-r8w4 (ldg128/oneshot, cuda_cpp); r3-tokblk-s-disp (ldg128/oneshot, triton)."
+  },
+  {
+   "operation": "new_design",
+   "parents": [
+    "r3-cute-ldg256-os-r16"
+   ],
+   "band": "all",
+   "niche": "tile:token",
+   "instructions": "Explore the empty niche tile:token. Process one token's 48 heads per program (tile:token) so the weight tile is constant. It must be correct for every shape; aim to beat the parent somewhere and say where in the card."
+  }
+ ]
+}

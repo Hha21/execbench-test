@@ -12,12 +12,13 @@ portal.
 |---|---|---|---|
 | Scoring baseline (hidden, NVIDIA) | - | 31.8 µs | 0.500 |
 | `v039` | best of 72 knob variants (proof of concept) | 28.6 µs | 0.531 |
-| `g2-os-r8w4` / `g2-os-r16w8` | generation 2, one-shot Triton kernels | **25.3 µs** | **0.577** |
+| `g2-os-r8w4` / `g2-os-r16w8` | generation 2, one-shot Triton kernels | 25.3 µs | 0.577 |
+| `r3-cute-ldg256-os-r16` | loop round r3, CuTe DSL with 256-bit loads (13th place) | **24.6 µs** | **0.588** |
 | Leaderboard #1 (public) | - | 22.2 µs | 0.628 |
 
-The best kernels beat the hidden baseline on 15 of 16 input sizes. The score ceiling is about 0.74 (8 TB/s everywhere)
-and about 0.68 with realistic fixed costs. The remaining gap is large-input bandwidth (6.4 TB/s, target about 7) and
-small-input fixed cost (about 3.2 µs, target 1–2 µs). Details: [`loop/context/problem_038.md`](loop/context/problem_038.md).
+The best kernel beats the hidden baseline on all 16 input sizes. The score ceiling is about 0.74 (8 TB/s everywhere)
+and about 0.68 with realistic fixed costs. The remaining gap is large-input bandwidth (6.8 TB/s, target about 7.2) and
+small-input fixed cost (about 3.1 µs, target 1–2 µs). Details: [`loop/context/problem_038.md`](loop/context/problem_038.md).
 
 ## How the loop works
 
@@ -84,7 +85,7 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
 | `loop/round.py` | the loop driver (plan, propose, test, collect, shortlist, table) |
 | `loop/planner.py` | task planning and portal shortlisting from B200 per-workload data |
 | `loop/llm.py`, `prompts.py`, `reply.py` | OpenRouter client, prompt assembly, reply parsing and lint |
-| `loop/static_any.py` | compile any Triton or CUDA C++ candidate for sm_100a on a non-B200 node and read its resources |
+| `loop/static_any.py` | compile any Triton, CuTe DSL or CUDA C++ candidate for sm_100a on a non-B200 node and read its resources and load widths |
 | `loop/archive.py`, `loop/archive/` | the archive and its summary table |
 | `loop/rounds/<r>/` | each round: prompts, replies, candidates, results, portal shortlist |
 | `loop/gen2/` | generation 2: four hand-written Triton families with runtime-sized persistent grids |
@@ -100,7 +101,8 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
   oversubscribed the SMs and it gained nothing from B200's bandwidth. Every candidate is now compiled for sm_100a
   before submission, and persistent grids size themselves from the compiled kernel.
 - **H200 is the best cheap guide, within limits.** It ranks HBM-friendly variants like B200 does, but small inputs run
-  no faster on B200 than on H200, and B200-only features (256-bit loads) cannot be tested on any cheap GPU.
+  no faster on B200 than on H200, and B200-only features (256-bit loads) cannot be timed on any cheap GPU. The first
+  256-bit kernel was sent as an exploration slot on its design card's reasoning alone and became the best (+0.011).
 - **Portal arithmetic** (verified): latency is the geometric mean over workloads, the score is the arithmetic mean
   of per-workload scores, and your own submission pages show the hidden baseline per workload.
 
@@ -110,4 +112,6 @@ The OpenRouter key is read from `.env` (git-ignored) and never printed.
   `gpu-sk01` for A100/L40S; `~/h200-scratch` is not mounted on A100/L40S nodes.
 - The `fbtriton==3.7.1` wheel used by NVIDIA's image misplaces `launch.h`; locally it is fixed with a symlink
   (`poc/README.md`). Triton solutions do run on the portal.
+- CUDA C++ candidates are built and tested inside NVIDIA's CUDA 13.1 container (Apptainer; `loop/jobs/pull_cuda13.sbatch`
+  pulls it once). CSF3's newest module, CUDA 12.8, cannot assemble Blackwell's 256-bit loads.
 - The portal has no official upload API, so submission stays manual.

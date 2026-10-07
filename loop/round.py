@@ -184,21 +184,40 @@ def b200_test(round_id):
     d = rdir(round_id)
     out = d / "results" / "timing" / "B200r"
     todo = [p for p in sorted((d / "candidates").glob("*.json")) if not (out / f"{p.stem}.jsonl").exists()]
-    statics = []
+    import designer
+    measured = {}                                     # code hash -> {test, compile} from this round's sessions
+    for f in (d / "sessions").glob("*.b200.json"):
+        for key, v in json.loads(f.read_text()).items():
+            measured.setdefault(key, {}).update(v)
+    statics, reused, ran = [], 0, []
     t0 = time.time()
-    with b200_modal.app.run():
-        for sol_path in todo:
-            sol = json.loads(sol_path.read_text())
-            res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol))
-            b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
-            wl = res.get("workloads") or []
-            comp = b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile", solution=sol))
-            statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [], error=comp.get("error") or ""))
-            print(f"B200r {sol_path.stem}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed", flush=True)
+    for sol_path in todo:
+        sol = json.loads(sol_path.read_text())
+        m = measured.get(designer.code_key(sol), {})
+        test_ok = m.get("test") and all(w["status"] == "PASSED" for w in m["test"].get("workloads") or [{}])
+        if test_ok and m.get("compile"):
+            b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", m["test"])
+            statics.append(dict(id=sol_path.stem, kernels=m["compile"].get("kernels") or [],
+                                error=m["compile"].get("error") or ""))
+            reused += 1
+            print(f"B200r {sol_path.stem}: reused the session's B200 measurement (same code)", flush=True)
+        else:
+            ran.append((sol_path, sol, m))
+    if ran:
+        with b200_modal.app.run():
+            for sol_path, sol, m in ran:
+                res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol))
+                b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
+                wl = res.get("workloads") or []
+                comp = m.get("compile") or b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile",
+                                                                         solution=sol))
+                statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [], error=comp.get("error") or ""))
+                print(f"B200r {sol_path.stem}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed", flush=True)
     if statics:
         with open(d / "results" / "static_B200r.jsonl", "a") as f:
             f.write("".join(json.dumps(x) + "\n" for x in statics))
-    print(f"rented B200: {len(todo)} candidate(s) in {(time.time() - t0) / 60:.1f} min", flush=True)
+    print(f"rented B200: {len(ran)} candidate(s) tested in {(time.time() - t0) / 60:.1f} min, {reused} reused from "
+          "the sessions", flush=True)
 
 
 def cmd_test(a):
@@ -278,11 +297,11 @@ def main():
     llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server: CSF3 types "
                           "(several with one Slurm account are queued together; the first free one is used), or B200 "
                           "for a rented B200 on Modal (run round.py with .venv/bin/python)")
-    llm_args.add_argument("--b200-minutes", type=int, default=60, help="interactive with --tool-gpu B200: cap on "
+    llm_args.add_argument("--b200-minutes", type=int, default=20, help="interactive with --tool-gpu B200: cap on "
                           "Modal B200 minutes per round (about $6.25 an hour)")
     llm_args.add_argument("--gpu-wait", type=int, default=180, help="interactive: minutes to wait for the tool server")
     llm_args.add_argument("--turns", type=int, default=12, help="interactive: max LLM turns per session")
-    llm_args.add_argument("--gpu-calls", type=int, default=8, help="interactive: max compile/test calls per session")
+    llm_args.add_argument("--gpu-calls", type=int, default=6, help="interactive: max compile/test calls per session")
     llm_args.add_argument("--turn-effort", default="medium", help="interactive: reasoning effort after the first turn")
     llm_args.add_argument("--session-budget", type=float, default=5.0, help="interactive: USD per session before "
                           "the model is told to finish")

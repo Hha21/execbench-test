@@ -3,7 +3,7 @@
 The image follows SOL-ExecBench's docker/Dockerfile (CUDA 13.1.1 + cuDNN, CUTLASS v4.4.1, the uv-locked Python
 environment, fbtriton 3.7.1, cutlass-dsl-libs-cu13 4.4.2), so candidates run on the portal's software stack.
 Each call handles one compile/test request with loop/toolserver.py --once. Containers have no network access and
-stay warm for two minutes between calls. Clocks are not locked (the portal locks SM 1500 MHz / DRAM 3996 MHz).
+stay warm for 30 seconds between calls. Clocks are not locked (the portal locks SM 1500 MHz / DRAM 3996 MHz).
 
 Auth: the profile saved by `modal setup` (~/.modal.toml), or MODAL_TOKEN_ID / MODAL_TOKEN_SECRET from the
 environment or the repo's .env (never printed).
@@ -98,7 +98,9 @@ image = (
 app = modal.App("solx-b200", image=image)
 
 
-@app.function(gpu=GPU, timeout=1800, scaledown_window=120, max_containers=1, block_network=True)
+# scaledown_window: keep a finished container warm this long for the next call. LLM turns usually take longer than
+# this, so a short window bills less idle time than it loses to cold starts.
+@app.function(gpu=GPU, timeout=1800, scaledown_window=30, max_containers=1, block_network=True)
 def handle(req: dict) -> dict:
     """One compile/test request on the B200 (same format as loop/toolserver.py)."""
     import subprocess

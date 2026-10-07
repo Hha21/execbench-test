@@ -214,6 +214,20 @@ class ModalB200:
         self._ctx.__exit__(None, None, None)
 
 
+def code_key(sol):
+    """Hash of a solution's code with comment-only and blank lines dropped, so a cleaned-up copy of a tested draft
+    matches it. Anything else that changed means a new measurement."""
+    import hashlib
+    h = hashlib.sha256(json.dumps({k: v for k, v in sol["spec"].items() if k != "description"}, sort_keys=True).encode())
+    for src in sorted(sol["sources"], key=lambda x: x["path"]):
+        h.update(src["path"].encode())
+        for line in src["content"].splitlines():
+            t = line.strip()
+            if t and not t.startswith(("//", "#", "/*", "*")):
+                h.update(line.rstrip().encode())
+    return h.hexdigest()[:16]
+
+
 def make_solution(args, name):
     """Tool arguments -> (solution JSON, problems)."""
     spec = dict(args.get("solution_spec") or {})
@@ -328,6 +342,7 @@ class Session:
         self.totals = dict(prompt_tokens=0, completion_tokens=0, cached_tokens=0, reasoning_tokens=0, cost_usd=0.0,
                            seconds=0.0)
         self.log_json, self.log_md = d / f"{name}.jsonl", d / f"{name}.md"
+        self.measured, self.measured_path = {}, d / f"{name}.b200.json"
         self.md = [f"# Design session {name}\n\nTask: {json.dumps(task)}\n"]
 
     def note(self, text):
@@ -362,9 +377,14 @@ class Session:
             return "not sent to the GPU, fix these first:\n- " + "\n- ".join(problems)
         self.gpu_calls += 1
         self.note(f"\n### {fn} (draft {self.drafts}): {args.get('note', '')}\n")
-        if fn == "compile_b200":
-            return fmt_compile(self.server.call("compile", sol))
-        return fmt_test(self.server.call("test", sol), self.server.reference(), self.best, self.anc, self.k)
+        kind = "compile" if fn == "compile_b200" else "test"
+        res = self.server.call(kind, sol)
+        if "B200" in str(res.get("gpu")):           # kept so the round's final B200 test can reuse it
+            self.measured.setdefault(code_key(sol), {})[kind] = res
+            self.measured_path.write_text(json.dumps(self.measured))
+        if kind == "compile":
+            return fmt_compile(res)
+        return fmt_test(res, self.server.reference(), self.best, self.anc, self.k)
 
     def turn(self, n, tool_choice=None):
         effort = self.a.effort if n == 0 else self.a.turn_effort

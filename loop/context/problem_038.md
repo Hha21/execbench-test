@@ -172,6 +172,14 @@ passed, with 0.15% run-to-run noise.
   registers, so only 6 of its 8 persistent programs per SM fit, giving a second wave (see playbook, anti-patterns).
   Lesson: H200 timings cannot see sm_100a register growth; check the sm_100a compile before trusting them.
   [portal; VERIFIED-CSF3 for the register counts; INFERRED for the cause]
+- **Generation 2 on B200 (7 October; portal #61457–#61463):** dropping v039's persistent loop was the win.
+  `g2-os-r16w8` and `g2-os-r8w4` (one-shot, one launch, evict hints, 32 regs) score **0.577 at 25.3 µs**, beat the
+  baseline on 15/16 workloads, and are fastest at every size: S 3.40 TB/s, M 5.69, L **6.40** (baseline 6.14).
+  A dispatcher over all measured kernels gains nothing (0.577). Weight-stationary (+cp.async) 0.537, TMA +
+  weight-stationary 0.537, TMA 0.510: on B200 these were slower at every size; loading weights from L1/L2 each tile
+  is cheap, and TMA rings add about 1–1.5 µs fixed cost. Fit on S/M sizes, `t = fixed + bytes/BW`:
+  one-shot **3.2 µs + 6.7 TB/s**, v039 3.7 + 5.9, TMA 4.5 + 5.8, TMA+wstat 3.9 + 6.2. **Remaining gap to the leader:**
+  L/M from 6.4 to about 7 TB/s, and S fixed cost from 3.2 µs toward 1–2 µs.
 - **Five B200 submissions with per-workload results (6 October, `poc/results/b200_portal_workloads.csv`):**
   - v039 (fused, persistent, ROWS=16, 8 warps, 8 programs per SM, 32 registers) is fastest on **every** workload,
     so dispatching between the five gains nothing. Score 0.531, geomean 28.56 µs, faster than Tb on 9/16.

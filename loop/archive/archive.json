@@ -55,6 +55,29 @@
   }
  },
  "g2-os-r16w8": {
+  "b200": {
+   "geomean_us": 25.255,
+   "score": 0.576663,
+   "submission": "61457",
+   "timings": {
+    "1,1024": 18.599999999999998,
+    "1,128": 4.8,
+    "1,131": 4.8999999999999995,
+    "1,256": 6.8999999999999995,
+    "1,8192": 124.0,
+    "16,256": 63.9,
+    "2,128": 6.8,
+    "2,293": 11.799999999999999,
+    "32,128": 63.9,
+    "4,1024": 63.9,
+    "4,1657": 99.8,
+    "4,256": 18.599999999999998,
+    "4,512": 32.800000000000004,
+    "8,128": 18.599999999999998,
+    "8,256": 32.800000000000004,
+    "8,773": 94.10000000000001
+   }
+  },
   "card": "id: \"g2-os-r16w8\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"v039's tile without the persistent loop: small inputs already run one tile per program, so dropping the loop, the idle extra programs and the per-program setup should cut fixed cost.\"\nexpected_effect:\n  S: {pct: -10, confidence: \"low\"}\n  M: {pct: 3, confidence: \"low\"}\n  L: {pct: 5, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 16, num_warps: 8, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 16, num_warps: 8, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"more CTAs to schedule on large inputs\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-os-r16w8",
   "language": "triton",
@@ -165,6 +188,29 @@
   }
  },
  "g2-os-r8w4": {
+  "b200": {
+   "geomean_us": 25.27,
+   "score": 0.576828,
+   "submission": "61458",
+   "timings": {
+    "1,1024": 18.700000000000003,
+    "1,128": 4.8,
+    "1,131": 4.8999999999999995,
+    "1,256": 6.8,
+    "1,8192": 123.89999999999999,
+    "16,256": 63.9,
+    "2,128": 6.8,
+    "2,293": 11.799999999999999,
+    "32,128": 64.0,
+    "4,1024": 63.9,
+    "4,1657": 100.7,
+    "4,256": 18.599999999999998,
+    "4,512": 32.9,
+    "8,128": 18.700000000000003,
+    "8,256": 33.0,
+    "8,773": 93.60000000000001
+   }
+  },
   "card": "id: \"g2-os-r8w4\"\nparents:\n  - \"v039\"\noperation: \"specialisation\"\nlanguage: \"triton\"\nniche: {mem: \"ldg128\", st: \"direct\", grid: \"oneshot\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"stream\", spec: \"S\"}\nhypothesis: \"Playbook 3a recipe: 8-row tiles give 1,536 CTAs on the smallest input, about 10 per SM in one wave.\"\nexpected_effect:\n  S: {pct: -8, confidence: \"low\"}\n  M: {pct: 5, confidence: \"low\"}\n  L: {pct: 8, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 8, num_warps: 4, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"oneshot\", ROWS: 8, num_warps: 4, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"CTA launch rate on B200 is unknown; v040 showed tiny CTAs hurt\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-os-r8w4",
   "language": "triton",
@@ -280,6 +326,29 @@
   }
  },
  "g2-tma-r8s3": {
+  "b200": {
+   "geomean_us": 30.405,
+   "score": 0.509579,
+   "submission": "61461",
+   "timings": {
+    "1,1024": 22.2,
+    "1,128": 6.3,
+    "1,131": 6.6,
+    "1,256": 8.9,
+    "1,8192": 140.9,
+    "16,256": 73.0,
+    "2,128": 8.9,
+    "2,293": 14.4,
+    "32,128": 72.9,
+    "4,1024": 72.9,
+    "4,1657": 115.1,
+    "4,256": 22.3,
+    "4,512": 39.0,
+    "8,128": 22.2,
+    "8,256": 38.9,
+    "8,773": 107.2
+   }
+  },
   "card": "id: \"g2-tma-r8s3\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"Playbook 3d: TMA moves tiles with few instructions and a 3-deep ring keeps bytes in flight.\"\nexpected_effect:\n  S: {pct: 10, confidence: \"low\"}\n  M: {pct: -3, confidence: \"low\"}\n  L: {pct: -8, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma\", ROWS: 8, num_warps: 4, STAGES: 3, PROGS_PER_SM: 4}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"weights go through cp.async and grow shared memory\"\n  - \"host descriptor path not yet run on a GPU\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-tma-r8s3",
   "language": "triton",
@@ -399,6 +468,29 @@
   }
  },
  "g2-tmaws-hb8s4": {
+  "b200": {
+   "geomean_us": 28.171000000000003,
+   "score": 0.536804,
+   "submission": "61463",
+   "timings": {
+    "1,1024": 20.7,
+    "1,128": 5.8,
+    "1,131": 5.8,
+    "1,256": 7.8,
+    "1,8192": 135.4,
+    "16,256": 68.8,
+    "2,128": 7.9,
+    "2,293": 12.9,
+    "32,128": 69.1,
+    "4,1024": 69.1,
+    "4,1657": 110.2,
+    "4,256": 20.5,
+    "4,512": 36.1,
+    "8,128": 20.7,
+    "8,256": 36.4,
+    "8,773": 104.0
+   }
+  },
   "card": "id: \"g2-tmaws-hb8s4\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"tma-tensor\", st: \"bulk\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows8\", red: \"warp\", cache: \"default\", spec: \"L\"}\nhypothesis: \"Smaller weight-stationary TMA tiles with a 4-deep ring and more programs per SM.\"\nexpected_effect:\n  S: {pct: 8, confidence: \"low\"}\n  M: {pct: -5, confidence: \"low\"}\n  L: {pct: -10, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"tma_wstat\", HB: 8, num_warps: 4, STAGES: 4, PROGS_PER_SM: 8}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: false, note: \"TMA compiles to a non-TMA fallback on sm_80; correctness only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"more programs, more descriptor traffic\"\nmeasure_first:\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-tmaws-hb8s4",
   "language": "triton",
@@ -513,6 +605,29 @@
   }
  },
  "g2-ws-hb16w8s3": {
+  "b200": {
+   "geomean_us": 27.980999999999998,
+   "score": 0.536856,
+   "submission": "61459",
+   "timings": {
+    "1,1024": 20.400000000000002,
+    "1,128": 5.2,
+    "1,131": 5.3,
+    "1,256": 7.1000000000000005,
+    "1,8192": 142.8,
+    "16,256": 72.5,
+    "2,128": 7.1000000000000005,
+    "2,293": 12.3,
+    "32,128": 72.1,
+    "4,1024": 72.2,
+    "4,1657": 116.0,
+    "4,256": 20.5,
+    "4,512": 38.1,
+    "8,128": 20.400000000000002,
+    "8,256": 37.5,
+    "8,773": 108.39999999999999
+   }
+  },
   "card": "id: \"g2-ws-hb16w8s3\"\nparents:\n  - \"v039\"\noperation: \"structural_mutation\"\nlanguage: \"triton\"\nniche: {mem: \"cpasync\", st: \"direct\", grid: \"persistent-wstat\", launch: \"fused\", tile: \"rows16\", red: \"warp\", cache: \"stream\", spec: \"L\"}\nhypothesis: \"Weight-stationary plus a 3-stage cp.async pipeline keeps the next tiles in flight while one is reduced.\"\nexpected_effect:\n  S: {pct: 3, confidence: \"low\"}\n  M: {pct: -6, confidence: \"low\"}\n  L: {pct: -10, confidence: \"low\"}\nresources_sm100a: \"filled by static_sm100.py\"\nknobs: {HB: 16, num_warps: 8, STAGES: 3, PROGS_PER_SM: 8, EVICT: true}\ndispatch:\n  - {max_tokens: \"all\", kernel: \"wstat\", HB: 16, num_warps: 8, STAGES: 3, PROGS_PER_SM: 8, EVICT: true}\nruns_on:\n  H200: {runs: true, representative: true}\n  A100: {runs: true, representative: true}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"shared-memory ring lowers resident programs\"\nmeasure_first:\n  - \"A100\"\n  - \"H200\"\ncompliance: {single_stream: true, no_cross_call_state: true, fp32_math: true, no_threads_or_fork: true, no_precompiled_binaries: true}\n",
   "id": "g2-ws-hb16w8s3",
   "language": "triton",

@@ -26,6 +26,12 @@ EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order un
                         "path Triton cannot express."),
     ("tile", "token", "Process one token's 48 heads per program (tile:token) so the weight tile is constant."),
     ("lang", "gluon", "Write the design in Gluon (triton.experimental.gluon) for explicit layout and memory control."),
+    ("grid", "capped4", "Small/medium specialist after FlashInfer's CAKE B200 kernels (b200_sota.md section 4): a persistent "
+                        "grid capped at 4 CTAs per SM, each thread keeping 2-4 rows' 256-bit loads in flight and issuing "
+                        "the next row's loads before the current row's reduction; parent's kernel for large sizes."),
+    ("st", "l2order", "Order the work so that the outputs written last (the ones still in L2 when the kernel ends) are "
+                      "as large a share as possible, e.g. reverse or interleave the tile order; keep the parent's "
+                      "evict_last stores."),
 ]
 
 

@@ -1,0 +1,27 @@
+{
+ "name": "r6-gluon-cpasync-os-r16w8-stel",
+ "definition": "038_flux_multi_head_rmsnorm_qk",
+ "author": "solx-loop",
+ "description": "This is the first working kernel in the Gluon niche. It is the one-shot r5 structure (16 rows per 256-thread CTA, a half-warp per row, evict_last output stores), but each thread loads x and w with 128-bit cp.async into shared memory, as FlashInfer and quack do, and then reads them back into registers. Plain gl.load could not be used: in this Gluon build it returns a tensor with no layout, and both gl.sum and gl.convert_layout then fail to compile. Measured on A100 (all 16 workloads pass): +40 to",
+ "spec": {
+  "languages": [
+   "triton"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "kernel.py::run",
+  "dependencies": [
+   "torch",
+   "triton"
+  ],
+  "destination_passing_style": true
+ },
+ "sources": [
+  {
+   "path": "kernel.py",
+   "content": "# r6-gluon-cpasync-os-r16w8-stel: per-head RMSNorm of Q and K (fp32) in Gluon, one fused one-shot launch.\n# 16 rows per 256-thread CTA; each thread owns 8 contiguous floats of one row (a half-warp per row).\n# Loads go global -> shared through 128-bit cp.async (LDGSTS.128): in this Gluon build gl.load returns a\n# tensor without a layout, so the explicit async-copy path is used instead. Output stores carry L2 evict_last.\n# All maths fp32; gl.rsqrt -> rsqrt.approx; 1/128 is an exact multiply.\nimport torch\nfrom triton.experimental import gluon\nfrom triton.experimental.gluon import language as gl\nfrom triton.experimental.gluon.language.nvidia.ampere import async_copy as cp\n\nD = 128\nH = 48\n\n\n@gluon.jit\ndef _tile(x_ptr, w_ptr, y_ptr, tile, eps, ROWS: gl.constexpr, D: gl.constexpr, H: gl.constexpr,\n          layout: gl.constexpr, slayout: gl.constexpr):\n    GROUPS: gl.constexpr = H // ROWS\n    rows = gl.arange(0, ROWS, layout=gl.SliceLayout(1, layout))\n    cols = gl.arange(0, D, layout=gl.SliceLayout(0, layout))\n    c2 = gl.expand_dims(cols, 0)\n    offs = gl.expand_dims(tile * ROWS + rows, 1) * D + c2\n    woffs = gl.expand_dims((tile % GROUPS) * ROWS + rows, 1) * D + c2\n    xs = gl.allocate_shared_memory(gl.float32, [ROWS, D], slayout)\n    ws = gl.allocate_shared_memory(gl.float32, [ROWS, D], slayout)\n    cp.async_copy_global_to_shared(xs, x_ptr + offs)\n    cp.async_copy_global_to_shared(ws, w_ptr + woffs)\n    cp.commit_group()\n    cp.wait_group(0)\n    # each thread reads back exactly the bytes it copied (same layout), so no CTA barrier is needed\n    x = xs.load(layout)\n    w = ws.load(layout)\n    s = gl.sum(x * x, axis=1)\n    inv = gl.rsqrt(s * (1.0 / D) + eps)\n    y = (x * gl.expand_dims(inv, 1)) * w\n    gl.store(y_ptr + offs, y, eviction_policy=\"evict_last\")\n\n\n@gluon.jit\ndef _qk_rms(q_ptr, k_ptr, wq_ptr, wk_ptr, qo_ptr, ko_ptr, n_tiles, eps,\n            ROWS: gl.constexpr, D: gl.constexpr, H: gl.constexpr, layout: gl.constexpr,\n            slayout: gl.constexpr):\n    pid = gl.program_id(0)\n    if pid < n_tiles:\n        _tile(q_ptr, wq_ptr, qo_ptr, pid, eps, ROWS, D, H, layout, slayout)\n    else:\n        _tile(k_ptr, wk_ptr, ko_ptr, pid - n_tiles, eps, ROWS, D, H, layout, slayout)\n\n\n_ROWS = 16\n_WARPS = 8\n_LAYOUT = gl.BlockedLayout(size_per_thread=[1, 8], threads_per_warp=[2, 16],\n                           warps_per_cta=[_WARPS, 1], order=[1, 0])\n_SLAYOUT = gl.SwizzledSharedLayout(vec=8, per_phase=1, max_phase=1, order=[1, 0])\n\n\ndef run(query, key, weight_q, weight_k, eps, query_norm, key_norm):\n    n_rows = query.numel() // D\n    n_tiles = n_rows // _ROWS\n    if n_tiles == 0:\n        return\n    _qk_rms[(2 * n_tiles,)](query, key, weight_q, weight_k, query_norm, key_norm,\n                            n_tiles, float(eps), ROWS=_ROWS, D=D, H=H, layout=_LAYOUT,\n                            slayout=_SLAYOUT, num_warps=_WARPS)\n"
+  }
+ ]
+}

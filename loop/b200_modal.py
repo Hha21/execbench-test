@@ -25,14 +25,23 @@ PROBLEM = SOLX / "data" / "benchmark" / "L1" / "038_flux_multi_head_rmsnorm_qk"
 GPU = "B200"                         # exactly B200 (sm_100); B300/GB300 are a different chip
 
 RUNTIME_ENV = {
-    "PATH": "/venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    # Host C++ compiles (e.g. a solution's binding.cpp) go through ccache, kept on a Modal volume, so an unchanged
+    # PyTorch binding rebuilds in about a second. nvcc keeps the real g++ as its host compiler (ccache cannot
+    # preprocess torch-extension nvcc commands).
+    "PATH": "/usr/lib/ccache:/venv/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "NVCC_PREPEND_FLAGS": "-ccbin=/usr/bin/g++",
+    "CCACHE_DIR": "/cache/ccache",
+    "CCACHE_MAXSIZE": "5G",
+    "CCACHE_BASEDIR": "/tmp",
+    "CCACHE_NOHASHDIR": "1",
+    "CCACHE_SLOPPINESS": "include_file_mtime,include_file_ctime,time_macros",
     "CUDA_HOME": "/usr/local/cuda",
     "CUDACXX": "/usr/local/cuda/bin/nvcc",
     "CUTLASS_DIR": "/usr/local/cutlass",
     "CPLUS_INCLUDE_PATH": "/usr/local/cutlass/include:/venv/lib/python3.12/site-packages/include",
     "LD_LIBRARY_PATH": "/venv/lib/python3.12/site-packages/nvidia/cu13/lib",
     "PYTHONPATH": "/sol-execbench/src",
-    "TRITON_CACHE_DIR": "/tmp/triton",
+    "TRITON_CACHE_DIR": "/cache/triton",
 }
 UV_ENV = {"UV_LINK_MODE": "copy", "UV_COMPILE_BYTECODE": "1", "UV_PYTHON_DOWNLOADS": "never",
           "UV_PROJECT_ENVIRONMENT": "/venv", "UV_HTTP_TIMEOUT": "600", "UV_PYTHON": "/usr/bin/python3.12"}
@@ -89,27 +98,48 @@ image = (
         env=UV_ENV)
     # fbtriton 3.7.1 ships triton/runtime/launch.h but looks for it under backends/nvidia (same fix as on CSF3).
     .run_commands("ln -sf ../../runtime/launch.h /venv/lib/python3.12/site-packages/triton/backends/nvidia/launch.h")
+    # Skip timing samples whose CUPTI window is empty (timestamp skew on Modal); see loop/patch_harness_timing.py.
+    .add_local_file(ROOT / "loop" / "patch_harness_timing.py", "/solx/patch_harness_timing.py", copy=True)
+    .run_commands("python3 /solx/patch_harness_timing.py /sol-execbench/src/sol_execbench/core/bench/timing.py "
+                  "/venv/lib/python3.12/site-packages/sol_execbench/core/bench/timing.py")
     .env({"SOLX_IMAGE": "sol-execbench-v1.1"})
     .add_local_dir(PROBLEM, "/problem")
     .add_local_file(ROOT / "loop" / "toolserver.py", "/solx/loop/toolserver.py")
     .add_local_file(ROOT / "loop" / "static_any.py", "/solx/loop/static_any.py")
+    .add_local_file(ROOT / "loop" / "b200probe.py", "/solx/loop/b200probe.py")
 )
 
 app = modal.App("solx-b200", image=image)
+cache = modal.Volume.from_name("solx-b200-cache", create_if_missing=True)
 
 
 # scaledown_window: keep a finished container warm this long for the next call. LLM turns usually take longer than
 # this, so a short window bills less idle time than it loses to cold starts.
-@app.function(gpu=GPU, timeout=1800, scaledown_window=30, max_containers=1, block_network=True)
+@app.function(gpu=GPU, cpu=8.0, memory=32768, timeout=1800, scaledown_window=30, max_containers=1, block_network=True,
+              volumes={"/cache": cache})
 def handle(req: dict) -> dict:
-    """One compile/test request on the B200 (same format as loop/toolserver.py)."""
+    """One request on the B200: compile / test (as loop/toolserver.py), or probe (run a short Python script)."""
     import subprocess
     import tempfile
+    import time
     d = Path(tempfile.mkdtemp())
+    if req.get("kind") == "probe":
+        (d / "probe.py").write_text(req["script"])
+        env = {**os.environ, **RUNTIME_ENV, "PYTHONPATH": "/sol-execbench/src:/solx/loop"}
+        t0 = time.time()
+        try:
+            p = subprocess.run(["/venv/bin/python", "probe.py"], cwd=d, env=env, capture_output=True, text=True,
+                               timeout=int(req.get("timeout", 120)))
+            out, err, rc = p.stdout, p.stderr, p.returncode
+        except subprocess.TimeoutExpired as e:
+            out, err, rc = (e.stdout or b"").decode(errors="replace"), "timed out", -1
+        return dict(id=req.get("id"), kind="probe", gpu="NVIDIA B200", returncode=rc, seconds=round(time.time() - t0, 1),
+                    stdout=out[-6000:], stderr=err[-3000:])
     (d / "req.json").write_text(json.dumps(req))
     p = subprocess.run(["/venv/bin/python", "/solx/loop/toolserver.py", "--once", str(d / "req.json"),
                         "--out", str(d / "res.json"), "--problem", "/problem"],
                        env={**os.environ, **RUNTIME_ENV}, capture_output=True, text=True, timeout=1700)
+    cache.commit()                                  # keep new Triton cache entries for the next container
     if (d / "res.json").exists():
         return json.loads((d / "res.json").read_text())
     return dict(id=req.get("id"), kind=req.get("kind"), error=(p.stdout[-2000:] + "\n" + p.stderr[-3000:]).strip())

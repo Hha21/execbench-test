@@ -190,6 +190,18 @@ passed, with 0.15% run-to-run noise.
   hints, and it is no faster than the 128-bit, hinted `g2-os-r8w4`. Small sizes are the same for all three. The
   untested combination is 128-bit loads without hints, which would separate width from hints (`b200_sota.md` §3).
   [portal; INFERRED]
+- **Where the fixed cost goes (rented B200, harness timing, 7 October; unlocked clocks, so the portal is a little
+  slower).** Plain float4 kernels, grid of 256-thread CTAs over the same bytes as #38:
+
+  | traffic (CTAs) | empty kernel, same grid | read Q,K only | write Qn,Kn only | copy (read + write) | r5 (best kernel) |
+  |---|---|---|---|---|---|
+  | 12.6 MB (768) | 1.57 µs | 3.71 | 2.24 | 4.42 | 4.2 |
+  | 101 MB (6,144) | 4.22 µs | 11.9 | 7.9 | 18.4 | 14.6 |
+  | 805 MB (49,152) | 26.3 µs | 71.9 | 54.6 | 119.8 | 116.2 |
+
+  Launching and retiring CTAs is not free: an empty grid of 49,152 CTAs spans 26 µs (about 0.5 ns per CTA), 768 CTAs
+  1.6 µs. At the smallest size r5 already matches a plain copy. Fewer, fatter CTAs (several rows per thread) are an
+  untested way to cut both the CTA overhead and the S fixed cost. [probe on the rented B200]
 - **Stores marked L2 `evict_last` win big (7 October, portal #62031):** `r5-ldg256-os-r16-stel` (CUDA C++, same
   structure as r3: 16 rows per 256-thread CTA, half-warp per row, `ld.global.v8.f32` with default policy, outputs
   `st.global.L2::cache_hint.v8.f32` with a `createpolicy … evict_last` policy) scores **0.609 at 23.4 µs**, 16/16,

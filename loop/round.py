@@ -301,6 +301,8 @@ def main():
                           "Modal B200 minutes per round (about $6.25 an hour)")
     llm_args.add_argument("--gpu-wait", type=int, default=180, help="interactive: minutes to wait for the tool server")
     llm_args.add_argument("--turns", type=int, default=12, help="interactive: max LLM turns per session")
+    llm_args.add_argument("--probes", type=int, default=10, help="interactive with --tool-gpu B200: max probe_b200 "
+                          "experiments per session")
     llm_args.add_argument("--gpu-calls", type=int, default=6, help="interactive: max compile/test calls per session")
     llm_args.add_argument("--turn-effort", default="medium", help="interactive: reasoning effort after the first turn")
     llm_args.add_argument("--session-budget", type=float, default=5.0, help="interactive: USD per session before "

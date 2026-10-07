@@ -72,6 +72,13 @@ Spec rules: `languages` is one of the harness names; Python and C++ languages ca
 `"compile_options": {"cuda_cflags": ["-O3", "--use_fast_math", "-std=c++17"]}`. Do not set `-arch`/`-gencode`; the
 packager injects sm_100a, plus the local arch when `LOCAL` is in `target_hardware`.
 
+**CUDA C++ layout: two files.** Put the device code and a small `extern "C"` launcher in `kernel.cu` **with no
+PyTorch headers** (`#include <cuda_runtime.h>` only), and the PyTorch glue (`torch/extension.h`, argument checks,
+`CUDAGuard`, the current stream, `PYBIND11_MODULE`) in `binding.cpp`, which declares and calls the launcher; the entry
+point is `binding.cpp::run`. The harness compiles and links every `.cu`/`.cpp` file, on the portal as on our B200.
+Measured on the B200 test bench: a one-file build (nvcc parsing the PyTorch headers) takes 54–67 s; the two-file
+build takes 18 s, and 9 s when `binding.cpp` is unchanged (it is cached). Same kernel, same timings.
+
 ### Design card schema (YAML)
 
 ```yaml

@@ -39,6 +39,13 @@ cheap GPU against the current best kernel, and the projected B200 score. 4. Revi
   trust its relative timings more than its absolute ones. Timing noise is
   about 1% on medium/large sizes and up to 3% on the smallest; re-test before trusting a change that small.
 - predict_score turns per-band latency changes into a B200 score, so you can see which band is worth the effort.
+- probe_b200 (rented B200 only) runs a short Python experiment in seconds: use it to check a property (what a
+  construct compiles to, how a cache hint or launch shape behaves, a latency) before spending a full test on it. A
+  fast loop for CUDA ideas: iterate on the extern "C" kernel with b200probe.cuda_kernel + harness_time on the real
+  shapes (seconds each), then run_tests the finished solution once.
+- CUDA C++ solutions use two files (generation protocol section 3): kernel.cu without PyTorch headers plus
+  binding.cpp. A full B200 test then takes about 10-20 s instead of about a minute. Triton and CuTe DSL tests take
+  about 10 s.
 - get_kernel returns any archive kernel's source, design card and measurements; read_example shows annotated
   excerpts of the best public B200 norm kernels (see b200_sota.md).
 - Budget: {gpu_calls} GPU calls (compile_b200 + run_tests) and {turns} turns. GPU calls queue on one shared GPU; a test
@@ -67,6 +74,18 @@ TOOLS = [
         "Run NVIDIA's harness on the session GPU: correctness on all 16 workloads (with errors and logs on failure) "
         "and latency per workload, compared with the current best kernel timed on the same GPU, plus the projected "
         "B200 score. 1-4 minutes."}},
+    {"type": "function", "function": {"name": "probe_b200", "description":
+        "Run a short Python experiment on the B200 in seconds, to check a property before writing a full kernel: "
+        "a micro-benchmark, which instructions a construct compiles to, how a cache hint behaves, a latency, an "
+        "occupancy. Module b200probe is importable: cuda_kernel(src, name) compiles extern \"C\" CUDA with NVRTC in "
+        "about a second and returns a launcher k(grid, block, *args); harness_time(fn, inputs, outputs) times like "
+        "NVIDIA's harness (CUPTI, cold L2, shifted pointers) and returns µs; sass(src) / resources(src) show SASS and "
+        "registers; flush_l2(). torch, triton and cutlass (CuTe DSL) are also available. Print what you need; output "
+        "is cut to 6000 characters; 120 s limit. Probes do not count as GPU test calls but use the B200 budget.",
+        "parameters": {"type": "object", "properties": {
+            "script": {"type": "string", "description": "complete Python script"},
+            "note": {"type": "string", "description": "one line: what this probe checks"}},
+            "required": ["script"]}}},
     {"type": "function", "function": {"name": "predict_score", "description":
         "Predict the B200 score from latency changes relative to the current best kernel's B200 times, using the "
         "real scoring formula and the hidden baseline per workload. Give pct_change per band (negative = faster), "
@@ -177,7 +196,7 @@ class ModalB200:
         self.lock, self.n, self.used_s = threading.Lock(), 0, 0.0
         print(f"tool server: Modal B200, budget {budget_minutes} min", flush=True)
 
-    def call(self, kind, sol):
+    def call(self, kind, sol, **extra):
         with self.lock:
             if self.used_s >= self.budget_s:
                 return dict(error=f"the round's B200 budget ({self.budget_s // 60:.0f} min) is used up; finish "
@@ -186,7 +205,7 @@ class ModalB200:
             rid = f"{kind}-{self.n:03d}"
         t0 = time.time()
         try:
-            res = self.fn.remote(dict(id=rid, kind=kind, solution=sol))
+            res = self.fn.remote(dict(id=rid, kind=kind, solution=sol, **extra))
         except Exception as e:
             res = dict(id=rid, kind=kind, error=f"Modal call failed: {type(e).__name__}: {e}")
         with self.lock:      # container time for this call (+5 s overhead); queueing behind other sessions is free
@@ -337,7 +356,7 @@ class Session:
         self.name, self.task, self.server, self.best, self.anc, self.arc, self.a = name, task, server, best, anc, arc, a
         self.messages = [llm.system_message(static),
                          {"role": "user", "content": [{"type": "text", "text": dyn, "cache_control": CACHE}]}]
-        self.gpu_calls, self.drafts = 0, 0
+        self.gpu_calls, self.drafts, self.probes = 0, 0, 0
         self.k = planner.rented_exponents(arc, best)
         self.totals = dict(prompt_tokens=0, completion_tokens=0, cached_tokens=0, reasoning_tokens=0, cost_usd=0.0,
                            seconds=0.0)
@@ -367,6 +386,18 @@ class Session:
             if name in files:
                 return files[name].read_text()
             return "examples: " + ", ".join(f"{n} ({len(f.read_text().splitlines())} lines)" for n, f in files.items())
+        if fn == "probe_b200":
+            if not isinstance(self.server, ModalB200):
+                return "probe_b200 needs the rented B200 (--tool-gpu B200); not available in this session"
+            if self.probes >= self.a.probes:
+                return "probe budget used up for this session"
+            self.probes += 1
+            self.note(f"\n### probe_b200 ({self.probes}): {args.get('note', '')}\n")
+            res = self.server.call("probe", None, script=str(args.get("script") or ""))
+            if res.get("error"):
+                return f"probe failed to run: {res['error']}"
+            return (f"probe on {res.get('gpu')} ({res.get('seconds')} s), exit code {res.get('returncode')}\n"
+                    f"stdout:\n{res.get('stdout') or ''}\n" + (f"stderr:\n{res['stderr']}" if res.get("stderr") else ""))
         if fn not in ("compile_b200", "run_tests"):
             return f"unknown tool {fn}"
         if self.gpu_calls >= self.a.gpu_calls:

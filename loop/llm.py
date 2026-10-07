@@ -33,13 +33,16 @@ def api_key():
     raise SystemExit("No OPENROUTER_API_KEY in the environment or in .env")
 
 
-def chat(static_text, dynamic_text, model=DEFAULT_MODEL, max_tokens=32000, effort="high", timeout=1800, tag=""):
+def chat(static_text, dynamic_text, model=DEFAULT_MODEL, max_tokens=64000, effort="high", timeout=2400, tag=""):
     """One completion. Returns (text, info) where info has model, finish reason, tokens and cost."""
     body = {
         "model": model,
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "system", "content": [{"type": "text", "text": static_text, "cache_control": {"type": "ephemeral"}}]},
+            # 1-hour cache: reasoning-heavy calls can run longer than the default 5-minute TTL, so sequential calls
+            # in a round would otherwise miss the cache (seen in round r2).
+            {"role": "system", "content": [{"type": "text", "text": static_text,
+                                            "cache_control": {"type": "ephemeral", "ttl": "1h"}}]},
             {"role": "user", "content": dynamic_text},
         ],
         "reasoning": {"effort": effort},

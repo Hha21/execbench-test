@@ -1,0 +1,42 @@
+{
+ "best": "g2-os-r8w4",
+ "best_score": 0.576828,
+ "gains": {
+  "base": 0.5765635527512366,
+  "fixed": 3.0775153245440077,
+  "bw": 6.677353397320356,
+  "S": 0.026012319498256997,
+  "ML": 0.04118183134430464,
+  "tbs_M": 5.746093679712334,
+  "tbs_L": 6.43846750029619
+ },
+ "tasks": [
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "g2-os-r8w4"
+   ],
+   "band": "M,L",
+   "gain": 0.04118183134430464,
+   "instructions": "Goal: raise sustained bandwidth on medium and large inputs (B*S > 600) on B200. The parent reaches 5.75 TB/s (M) and 6.44 TB/s (L); 7.2 TB/s would add about +0.041 to the score. Propose the single change most likely to get there, correct for every shape, one launch. Slower on B200 than the parent in these bands already: g2-tma-r8s3 (tma-tensor/persistent): +16%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +10%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +14%; v028 (ldg128/persistent): +45%; v039 (ldg128/persistent): +12%; v040 (ldg128/oneshot): +123%; v050 (ldg128/oneshot): +26%."
+  },
+  {
+   "operation": "specialisation",
+   "parents": [
+    "g2-os-r8w4"
+   ],
+   "band": "S",
+   "gain": 0.026012319498256997,
+   "instructions": "Goal: cut the fixed cost on small inputs (B*S <= 600). On B200 the parent fits 3.1 us fixed + bytes / 6.7 TB/s on small and medium sizes; reaching 1.5 us fixed would add about +0.026 to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. Slower on B200 than the parent in this band already: g2-tma-r8s3 (tma-tensor/persistent): +30%; g2-tmaws-hb8s4 (tma-tensor/persistent-wstat): +16%; g2-ws-hb16w8s3 (cpasync/persistent-wstat): +6%; v028 (ldg128/persistent): +38%; v039 (ldg128/persistent): +16%; v040 (ldg128/oneshot): +70%; v050 (ldg128/oneshot): +128%."
+  },
+  {
+   "operation": "new_design",
+   "parents": [
+    "g2-os-r8w4"
+   ],
+   "band": "all",
+   "niche": "lang:cutedsl",
+   "instructions": "Explore the empty niche lang:cutedsl. Write the design in CuTe DSL (Python), which compiles for sm_100a; use it to reach a memory path Triton cannot express. It must be correct for every shape; aim to beat the parent somewhere and say where in the card."
+  }
+ ]
+}

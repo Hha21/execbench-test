@@ -741,6 +741,52 @@
    }
   }
  },
+ "r2-ldg256-os-r16": {
+  "card": "id: r2-ldg256-os-r16\nparents:\n  - g2-os-r16w8\noperation: port\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: all\nhypothesis: >-\n  This keeps g2-os-r16w8's one-shot fused grid unchanged: 16 rows per 256-thread CTA, 8 CTAs per SM and 64 KB of\n  loads in flight per SM. Each half-warp lane moves 32 B per ld/st.global.v8.f32, which halves load/store\n  instructions and LSU requests per byte. At B200's 36 B/clk/SM under the 1.5 GHz lock, issue overhead is the likely\n  cap on the parent's 6.4 TB/s (L) and 5.7 TB/s (M). H200, A100 and L40S cannot see this: they run the float4\n  fallback.\nexpected_effect:\n  S:\n    pct: -3\n    confidence: low\n  M:\n    pct: -5\n    confidence: low\n  L:\n    pct: -6\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  min_blocks_per_sm: 8\n  QK_USE_L2_HINT: 1\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"sm_90 compiles the float4 fallback (__ldcs/__stcs); use for correctness only, timing does not represent the 256-bit path\"\n  A100:\n    runs: true\n    representative: false\n    note: \"float4 fallback; correctness check only\"\n  L40S:\n    runs: true\n    representative: false\n    note: \"float4 fallback; correctness smoke test only\"\nrisks:\n  - \"ptxas may reject .L2::cache_hint combined with .v8.f32; the compile-verified forms (L1::no_allocate.v8 / st.global.v8) are available by setting QK_USE_L2_HINT=0\"\n  - \"__launch_bounds__(256,8) caps the kernel at 32 regs; if ptxas needs more it will spill (check LOCAL in the sm_100a compile)\"\n  - \"per-SM bytes in flight are unchanged from the parent (64 KB), so if B200 is latency/occupancy-bound rather than issue-bound the gain may be ~0\"\n  - \"the alignment TORCH_CHECK requires 32-B aligned buffers; the harness gives 256-B aligned buffers, but any other caller with misaligned views would error rather than run\"\n  - \"uneven wave on the smallest workloads (768 CTAs over 148 SMs, 5-6 each), the same as the parent\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-ldg256-os-r16",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "all",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "port",
+  "parents": [
+   "g2-os-r16w8"
+  ],
+  "round": "r2",
+  "solution": "loop/rounds/r2/candidates/r2-ldg256-os-r16.json",
+  "status": "proposed",
+  "timings": {}
+ },
+ "r2-ldg256-tokblk": {
+  "card": "id: r2-ldg256-tokblk\nparents:\n  - g2-os-r16w8\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows64\n  red: halfwarp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  On B200 the parent's one-shot tile has only about 64 KB of loads in flight per SM, and it drains at every CTA\n  turnover. Holding T tokens of one head per half-warp works differently: all T 256-bit loads are issued before the\n  reduction, weights are reused from registers, and each byte costs half the load/store instructions. This should\n  give about 128 KB in flight per SM on L and lift sustained bandwidth from 6.4 toward 7+ TB/s. H200 and A100 cannot\n  show the 256-bit or bytes-in-flight effect.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: low\n  M:\n    pct: -5\n    confidence: low\n  L:\n    pct: -8\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 56\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 4\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 256\n  T_S: 1\n  T_M: 2\n  T_L: 4\n  MINB_S: 8\n  MINB_M: 6\n  MINB_L: 4\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_tok\n    meta:\n      T: 1\n      minBlocks: 8\n  - max_tokens: 2100\n    kernel: qk_rms_tok\n    meta:\n      T: 2\n      minBlocks: 6\n  - max_tokens: 4611686018427387904\n    kernel: qk_rms_tok\n    meta:\n      T: 4\n      minBlocks: 4\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"arch guard compiles 2x128-bit accesses on sm_90; correctness and token-blocking signal only\"\n  A100:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; checks correctness and the masked T=2/4 paths (odd token counts)\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"__launch_bounds__(256,8) caps T=1 at 32 regs; if ptxas spills, raise to minBlocks 6 (check LOCAL in the sm_100a compile)\"\n  - \"T=4 rows are 24 KB apart per half-warp (4 separate 8 KB chunks per CTA); DRAM page locality may be worse than the parent's contiguous 8 KB tile\"\n  - \"no L2 evict_first hints on the 256-bit accesses (only the verified PTX forms are used); the parent's hints may have mattered slightly\"\n  - \"M band at T=2 with 6 CTAs/SM: 1024 tokens give 3072 CTAs (about 3.5 waves), so a partial last wave\"\n  - \"S path untested against the Triton parent on B200; CUDA one-shot fixed cost could differ by \u00b15%\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-ldg256-tokblk",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows64"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "g2-os-r16w8"
+  ],
+  "round": "r2",
+  "solution": "loop/rounds/r2/candidates/r2-ldg256-tokblk.json",
+  "status": "proposed",
+  "timings": {}
+ },
  "v028": {
   "b200": {
    "geomean_us": 35.882,

@@ -1,0 +1,69 @@
+id: r2-ldg256-os-r16
+parents:
+  - g2-os-r16w8
+operation: port
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  This keeps g2-os-r16w8's one-shot fused grid unchanged: 16 rows per 256-thread CTA, 8 CTAs per SM and 64 KB of
+  loads in flight per SM. Each half-warp lane moves 32 B per ld/st.global.v8.f32, which halves load/store
+  instructions and LSU requests per byte. At B200's 36 B/clk/SM under the 1.5 GHz lock, issue overhead is the likely
+  cap on the parent's 6.4 TB/s (L) and 5.7 TB/s (M). H200, A100 and L40S cannot see this: they run the float4
+  fallback.
+expected_effect:
+  S:
+    pct: -3
+    confidence: low
+  M:
+    pct: -5
+    confidence: low
+  L:
+    pct: -6
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  min_blocks_per_sm: 8
+  QK_USE_L2_HINT: 1
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 compiles the float4 fallback (__ldcs/__stcs); use for correctness only, timing does not represent the 256-bit path"
+  A100:
+    runs: true
+    representative: false
+    note: "float4 fallback; correctness check only"
+  L40S:
+    runs: true
+    representative: false
+    note: "float4 fallback; correctness smoke test only"
+risks:
+  - "ptxas may reject .L2::cache_hint combined with .v8.f32; the compile-verified forms (L1::no_allocate.v8 / st.global.v8) are available by setting QK_USE_L2_HINT=0"
+  - "__launch_bounds__(256,8) caps the kernel at 32 regs; if ptxas needs more it will spill (check LOCAL in the sm_100a compile)"
+  - "per-SM bytes in flight are unchanged from the parent (64 KB), so if B200 is latency/occupancy-bound rather than issue-bound the gain may be ~0"
+  - "the alignment TORCH_CHECK requires 32-B aligned buffers; the harness gives 256-B aligned buffers, but any other caller with misaligned views would error rather than run"
+  - "uneven wave on the smallest workloads (768 CTAs over 148 SMs, 5-6 each), the same as the parent"
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

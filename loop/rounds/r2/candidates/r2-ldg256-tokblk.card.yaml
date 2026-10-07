@@ -1,0 +1,87 @@
+id: r2-ldg256-tokblk
+parents:
+  - g2-os-r16w8
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows64
+  red: halfwarp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  On B200 the parent's one-shot tile has only about 64 KB of loads in flight per SM, and it drains at every CTA
+  turnover. Holding T tokens of one head per half-warp works differently: all T 256-bit loads are issued before the
+  reduction, weights are reused from registers, and each byte costs half the load/store instructions. This should
+  give about 128 KB in flight per SM on L and lift sustained bandwidth from 6.4 toward 7+ TB/s. H200 and A100 cannot
+  show the 256-bit or bytes-in-flight effect.
+expected_effect:
+  S:
+    pct: 0
+    confidence: low
+  M:
+    pct: -5
+    confidence: low
+  L:
+    pct: -8
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 56
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  THREADS: 256
+  T_S: 1
+  T_M: 2
+  T_L: 4
+  MINB_S: 8
+  MINB_M: 6
+  MINB_L: 4
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_tok
+    meta:
+      T: 1
+      minBlocks: 8
+  - max_tokens: 2100
+    kernel: qk_rms_tok
+    meta:
+      T: 2
+      minBlocks: 6
+  - max_tokens: 4611686018427387904
+    kernel: qk_rms_tok
+    meta:
+      T: 4
+      minBlocks: 4
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "arch guard compiles 2x128-bit accesses on sm_90; correctness and token-blocking signal only"
+  A100:
+    runs: true
+    representative: false
+    note: "128-bit fallback; checks correctness and the masked T=2/4 paths (odd token counts)"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "__launch_bounds__(256,8) caps T=1 at 32 regs; if ptxas spills, raise to minBlocks 6 (check LOCAL in the sm_100a compile)"
+  - "T=4 rows are 24 KB apart per half-warp (4 separate 8 KB chunks per CTA); DRAM page locality may be worse than the parent's contiguous 8 KB tile"
+  - "no L2 evict_first hints on the 256-bit accesses (only the verified PTX forms are used); the parent's hints may have mattered slightly"
+  - "M band at T=2 with 6 CTAs/SM: 1024 tokens give 3072 CTAs (about 3.5 waves), so a partial last wave"
+  - "S path untested against the Triton parent on B200; CUDA one-shot fixed cost could differ by ±5%"
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

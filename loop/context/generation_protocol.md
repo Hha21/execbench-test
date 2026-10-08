@@ -122,7 +122,9 @@ paths:                           # REQUIRED. What each code path does, for the e
   # one entry per size range, smallest first; max_tokens is the largest B*S it serves (null = all above).
   # lang triton|cuda|cute; width 128|256; threads per CTA; rows per CTA; grid oneshot|persistent;
   # mem ldg|tma|cpasync; wstat true|false; launches 1|2; prefetch true|false;
-  # x none|ef (Q/K loads); w none|el|nc (weight loads); st none|ef|el (output stores). Omitted = default.
+  # x none|ef (Q/K loads); w none|el|nc (weight loads); st none|ef|el (output stores);
+  # cluster 1|2|4 (thread-block cluster size at launch). Omitted = default. Every launch attribute you set
+  # must appear here: the emulator cannot predict what it is not told.
 runs_on:                         # can this exact code run, and is the timing representative of B200 behaviour?
   H200: {runs: true, representative: true}
   A100: {runs: true, representative: false, note: "Triton compiles a non-TMA fallback on sm_80 (runtime untested); correctness check only"}

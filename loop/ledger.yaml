@@ -3,68 +3,137 @@
 # Seeded 8 October from rounds r1-r10 and the portal results; updated by the research lead for r11 (8 October).
 
 constraints:
-  - "No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness's measurement, not kernel speed. Off-limits unless NVIDIA approves."
-  - "Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call."
-  - "No overlap with the harness's own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window."
-
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
 hypotheses:
-  - id: H1
-    statement: "Output stores marked L2 evict_last keep output in L2 past the end of the timed window, so medium sizes gain most."
-    status: supported
-    evidence: ["portal: r5 0.609 vs r3 0.588 (M -8%)", "probe r10: evict_last stores beat plain stores by 8-19% at 128-1024 tokens, 2.5-5% at 4096-8192", "probe r10: the saving is capped at 3-4 us (~25-30 MB) from 1024 tokens up; partial/fractional evict_last is no better (see H15)"]
-  - id: H2
-    statement: "evict_first on stores and evict_last on weights hurt on B200."
-    status: supported
-    evidence: ["portal: r2 0.576 (hinted 256-bit) = g2 0.577 (hinted 128-bit); d1 0.582 (no hints)", "quack sm100 regression"]
-  - id: H3
-    statement: "256-bit loads/stores help medium and large sizes a little."
-    status: supported
-    evidence: ["portal: r3 (256-bit, no hints) vs d1 (128-bit, no hints): M -2.4%, L -1.2%"]
-  - id: H4
-    statement: "CTA launch/retire overhead is a bottleneck, so fewer, fatter CTAs or one resident wave help."
-    status: refuted
-    evidence: ["probe r10: one-wave grids tie at 12.6-101 MB and lose 11-15% above 200 MB", "portal: r8 512-thread CTAs at L +3.2%", "probe r10: all 768 CTAs of the 12.6 MB grid start within 0.06 us; the empty-grid span overlaps fully with memory work at L"]
-  - id: H5
-    statement: "TMA / bulk-copy pipelines cut SM instructions per byte and win at the portal's 1500 MHz SM clock."
-    status: refuted
-    evidence: ["probe r10: bulk stores 27% slower than STG.256 at 805 MB; bulk loads +3%; TMA + mbarrier setup adds ~0.8 us at 12.6 MB", "portal: g2-tma 0.510, g2-tmaws 0.537; bench r10-bulk1d-ring-stel predicted 0.5815"]
-  - id: H6
-    statement: "Persistent grids with work stealing remove the tail and beat one-shot."
-    status: refuted
-    evidence: ["probe r10: one failing atomic per CTA costs ~1 us at 12.6 MB; pipelined stealing +9-10% at S/M, +0.7% at L; static persistent 3% worse than stealing at L", "portal: v039, g2-ws, g2-tma all slower; bench r10-ws-l-steal-disp predicted 0.605"]
-  - id: H7
-    statement: "The harness's zero-fill flush leaves dirty lines in L2; their write-back during our kernel costs ~0.5 us at S and ~4 us (about 30-40 MB) at M/L, and the cost lands on reads, not writes."
-    status: supported
-    evidence: ["probe r10: in-kernel span after zero flush vs read-only flush: 12.6 MB 3.07 vs 2.56 us, 25 MB 4.10 vs 3.58, 100 MB 16.6 vs 12.3", "probe r10: read-only kernels +7..11 us at 100-400 MB after a zero flush, copy +5..6 us, write-only +-1 us", "no legitimate kernel-side mechanism found; load hints do not avoid it (H8)"]
-  - id: H8
-    statement: "evict_first on the streamed loads makes later allocations evict our own clean lines instead of dirty flush lines, cutting H7's write-backs."
-    status: refuted
-    evidence: ["probe r10: read-only kernel -13 to -15% with evict_first loads, but the full kernel with evict_last stores gains only 1-2% at 256-1024 tokens (8% once at 586), 0 to +1.5% above; .cs/.lu/no_allocate/nc+EF all within +-2%", "bench r10-ldef-real-stel-disp: S -0.8%, M -1.2%, L +0.3% vs r6; kept as a ~1% tweak for B*S <= 1024, not a lever", "r10: the CUTLASS EVICT_FIRST constant passed as a kernel argument is a no-op; the qualifier or createpolicy form works"]
-  - id: H9
-    statement: "The portal (SM 1500 MHz) penalises SM-bound designs more than the bench (~1940 MHz): kernels that lag a plain copy on the bench lose more on the portal; the clock-bound share is ~2.5 us of 4.2 us at 12.6 MB and ~6 us of 14.5 us at 100 MB."
-    status: supported
-    evidence: ["emulator fit on 18 kernels: about +5% portal time per 20% copy lag at L", "r8/r9 bench -1% -> portal +3-4%", "portal/bench ratios: c1 S +15%, M +9%, L 0% (INFERRED split of the clock-bound share)", "untested on the portal: the 48-register R=3 path of r10-rtok-m-disp"]
-  - id: H10
-    statement: "At 12.6 MB the one-shot kernel already equals a plain copy; the remaining S time is ~1 us outside the CTAs (clock-bound), one DRAM round trip (~0.7 us), streaming at ~8 TB/s marginal, and H7's write-backs."
-    status: supported
-    evidence: ["probe r10 timelines: all 768 CTAs start within 0.06 us, first load returns at 0.67 us, last at 2.9 us; in-kernel span 3.1-3.3 us vs 4.16 us CUPTI", "probe: copy 4.4 us vs r5 4.2 us (bench); empty 768-CTA grid 1.57 us", "portal marginal 12.6->25 MB 8.4 TB/s, 25->57.6 MB 8.1 TB/s; fixed ~3.3 us on the portal"]
-  - id: H11
-    statement: "The ~7 TB/s read+write ceiling at L is DRAM-side: read-only bandwidth (5.6-6.3 TB/s clean) does not rise with more active SMs, more in-flight bytes per SM, or TMA, so no SM-side change can lift L."
-    status: open
-    evidence: ["probe r10: read-only 402 MB 71.9 us (64 us clean, 5.6-6.3 TB/s); write-only 54.6 us (7.4 TB/s); copy 6.7-6.95 TB/s", "probe r10: 64-128 KB in flight per SM (R=2..4) and bulk loads do not beat r6 at L", "untested: bandwidth vs number of active SMs (smid gating)"]
-  - id: H12
-    statement: "Each B200 die homes half the HBM/L2; the address-to-partition hash is visible in low address bits, and a CTA reading only lines homed on its own die gets higher bandwidth or lower latency than mixed traffic, so a die-affine tile assignment lifts M/L."
-    status: open
-    evidence: ["chipsandcheese-b200: L2 21 TB/s local vs 16.8 TB/s cross-die, far-partition latency 'dramatically' higher", "no measurement yet; dispatch pattern of blockIdx across dies unknown (r10 smid trace shows CTAs spread over GPCs)"]
-  - id: H13
-    statement: "FlashInfer's sm_100 layout (4 lanes per row, 32 floats per thread, 8 rows per warp instruction) beats the half-warp-per-row layout on B200, especially at 4-60 MB."
-    status: open
-    evidence: ["fi-pr5305: 1.14x at M=8192, 1.20x at M=32768 rows (bf16, 4-16 MB traffic) on B200; 'adding threads per CTA instead was monotonically worse'", "counter-evidence: r10 R=2..4 contiguous rows per thread (64-128 KB in flight per SM) gave no gain, but kept 16 lanes per row; the strided layout itself is untested"]
-  - id: H14
-    statement: "Part of the ~1 us outside the CTAs at S depends on launch attributes we control (grid/block shape, parameter bytes, shared-memory carve-out, launch API, cluster dims)."
-    status: open
-    evidence: ["probe r10: empty 768-CTA grid spans 1.57 us CUPTI; r6 CUPTI 4.16 vs in-kernel 3.1-3.3 us", "CAKE: 2.53 us for a 2.1 MB kernel, so about 1 us of our fixed cost is above the public floor"]
-  - id: H15
-    statement: "L2 protects at most ~25-30 MB of evict_last lines (and holds a similar amount of dirty flush lines), a hardware cap; the store-side end state cannot be improved further."
-    status: parked
-    evidence: ["probe r10: evict_last saves 3-4 us (~25-30 MB) at every size from 1024 to 8192 tokens; last-48/80/112 MB-only and fractional 0.5/0.75 variants are within +-1% or worse", "probe r10: H7's cost is also ~30-40 MB worth at M/L"]
+- id: H1
+  statement: Output stores marked L2 evict_last keep output in L2 past the end of the timed window, so medium sizes gain most.
+  status: supported
+  evidence:
+  - 'portal: r5 0.609 vs r3 0.588 (M -8%)'
+  - 'probe r10: evict_last stores beat plain stores by 8-19% at 128-1024 tokens, 2.5-5% at 4096-8192'
+  - 'probe r10: the saving is capped at 3-4 us (~25-30 MB) from 1024 tokens up; partial/fractional evict_last is no better
+    (see H15)'
+- id: H2
+  statement: evict_first on stores and evict_last on weights hurt on B200.
+  status: supported
+  evidence:
+  - 'portal: r2 0.576 (hinted 256-bit) = g2 0.577 (hinted 128-bit); d1 0.582 (no hints)'
+  - quack sm100 regression
+- id: H3
+  statement: 256-bit loads/stores help medium and large sizes a little.
+  status: supported
+  evidence:
+  - 'portal: r3 (256-bit, no hints) vs d1 (128-bit, no hints): M -2.4%, L -1.2%'
+- id: H4
+  statement: CTA launch/retire overhead is a bottleneck, so fewer, fatter CTAs or one resident wave help.
+  status: refuted
+  evidence:
+  - 'probe r10: one-wave grids tie at 12.6-101 MB and lose 11-15% above 200 MB'
+  - 'portal: r8 512-thread CTAs at L +3.2%'
+  - 'probe r10: all 768 CTAs of the 12.6 MB grid start within 0.06 us; the empty-grid span overlaps fully with memory work
+    at L'
+- id: H5
+  statement: TMA / bulk-copy pipelines cut SM instructions per byte and win at the portal's 1500 MHz SM clock.
+  status: refuted
+  evidence:
+  - 'probe r10: bulk stores 27% slower than STG.256 at 805 MB; bulk loads +3%; TMA + mbarrier setup adds ~0.8 us at 12.6 MB'
+  - 'portal: g2-tma 0.510, g2-tmaws 0.537; bench r10-bulk1d-ring-stel predicted 0.5815'
+- id: H6
+  statement: Persistent grids with work stealing remove the tail and beat one-shot.
+  status: refuted
+  evidence:
+  - 'probe r10: one failing atomic per CTA costs ~1 us at 12.6 MB; pipelined stealing +9-10% at S/M, +0.7% at L; static persistent
+    3% worse than stealing at L'
+  - 'portal: v039, g2-ws, g2-tma all slower; bench r10-ws-l-steal-disp predicted 0.605'
+- id: H7
+  statement: The harness's zero-fill flush leaves dirty lines in L2; their write-back during our kernel costs ~0.5 us at S
+    and ~4 us (about 30-40 MB) at M/L, and the cost lands on reads, not writes.
+  status: supported
+  evidence:
+  - 'probe r10: in-kernel span after zero flush vs read-only flush: 12.6 MB 3.07 vs 2.56 us, 25 MB 4.10 vs 3.58, 100 MB 16.6
+    vs 12.3'
+  - 'probe r10: read-only kernels +7..11 us at 100-400 MB after a zero flush, copy +5..6 us, write-only +-1 us'
+  - no legitimate kernel-side mechanism found; load hints do not avoid it (H8)
+- id: H8
+  statement: evict_first on the streamed loads makes later allocations evict our own clean lines instead of dirty flush lines,
+    cutting H7's write-backs.
+  status: refuted
+  evidence:
+  - 'probe r10: read-only kernel -13 to -15% with evict_first loads, but the full kernel with evict_last stores gains only
+    1-2% at 256-1024 tokens (8% once at 586), 0 to +1.5% above; .cs/.lu/no_allocate/nc+EF all within +-2%'
+  - 'bench r10-ldef-real-stel-disp: S -0.8%, M -1.2%, L +0.3% vs r6; kept as a ~1% tweak for B*S <= 1024, not a lever'
+  - 'r10: the CUTLASS EVICT_FIRST constant passed as a kernel argument is a no-op; the qualifier or createpolicy form works'
+- id: H9
+  statement: 'The portal (SM 1500 MHz) penalises SM-bound designs more than the bench (~1940 MHz): kernels that lag a plain
+    copy on the bench lose more on the portal; the clock-bound share is ~2.5 us of 4.2 us at 12.6 MB and ~6 us of 14.5 us
+    at 100 MB.'
+  status: supported
+  evidence:
+  - 'emulator fit on 18 kernels: about +5% portal time per 20% copy lag at L'
+  - r8/r9 bench -1% -> portal +3-4%
+  - 'portal/bench ratios: c1 S +15%, M +9%, L 0% (INFERRED split of the clock-bound share)'
+  - 'untested on the portal: the 48-register R=3 path of r10-rtok-m-disp'
+- id: H10
+  statement: At 12.6 MB the one-shot kernel already equals a plain copy; the remaining S time is ~1 us outside the CTAs (clock-bound),
+    one DRAM round trip (~0.7 us), streaming at ~8 TB/s marginal, and H7's write-backs.
+  status: supported
+  evidence:
+  - 'probe r10 timelines: all 768 CTAs start within 0.06 us, first load returns at 0.67 us, last at 2.9 us; in-kernel span
+    3.1-3.3 us vs 4.16 us CUPTI'
+  - 'probe: copy 4.4 us vs r5 4.2 us (bench); empty 768-CTA grid 1.57 us'
+  - portal marginal 12.6->25 MB 8.4 TB/s, 25->57.6 MB 8.1 TB/s; fixed ~3.3 us on the portal
+- id: H11
+  statement: 'The ~7 TB/s read+write ceiling at L is DRAM-side: read-only bandwidth (5.6-6.3 TB/s clean) does not rise with
+    more active SMs, more in-flight bytes per SM, or TMA, so no SM-side change can lift L.'
+  status: open
+  evidence:
+  - 'probe r10: read-only 402 MB 71.9 us (64 us clean, 5.6-6.3 TB/s); write-only 54.6 us (7.4 TB/s); copy 6.7-6.95 TB/s'
+  - 'probe r10: 64-128 KB in flight per SM (R=2..4) and bulk loads do not beat r6 at L'
+  - 'untested: bandwidth vs number of active SMs (smid gating)'
+- id: H12
+  statement: Each B200 die homes half the HBM/L2; the address-to-partition hash is visible in low address bits, and a CTA
+    reading only lines homed on its own die gets higher bandwidth or lower latency than mixed traffic, so a die-affine tile
+    assignment lifts M/L.
+  status: open
+  evidence:
+  - 'chipsandcheese-b200: L2 21 TB/s local vs 16.8 TB/s cross-die, far-partition latency ''dramatically'' higher'
+  - no measurement yet; dispatch pattern of blockIdx across dies unknown (r10 smid trace shows CTAs spread over GPCs)
+- id: H13
+  statement: FlashInfer's sm_100 layout (4 lanes per row, 32 floats per thread, 8 rows per warp instruction) beats the half-warp-per-row
+    layout on B200, especially at 4-60 MB.
+  status: open
+  evidence:
+  - 'fi-pr5305: 1.14x at M=8192, 1.20x at M=32768 rows (bf16, 4-16 MB traffic) on B200; ''adding threads per CTA instead was
+    monotonically worse'''
+  - 'counter-evidence: r10 R=2..4 contiguous rows per thread (64-128 KB in flight per SM) gave no gain, but kept 16 lanes
+    per row; the strided layout itself is untested'
+- id: H14
+  statement: Part of the ~1 us outside the CTAs at S depends on launch attributes we control; a cluster-of-2 launch cuts the
+    smallest sizes.
+  status: supported
+  evidence:
+  - 'probe r10: empty 768-CTA grid spans 1.57 us CUPTI; r6 CUPTI 4.16 vs in-kernel 3.1-3.3 us'
+  - 'CAKE: 2.53 us for a 2.1 MB kernel, so about 1 us of our fixed cost is above the public floor'
+  - 'portal r11-e3-cluster2-rtok-disp (#62670) vs r10-rtok: 128 tok -6.2%, 131 -4.2%, 256 -1.6/-3.1% (bench -3.8/-4.6/-1.5/-2.7%):
+    the S gain is real and larger on the portal'
+- id: H15
+  statement: L2 protects at most ~25-30 MB of evict_last lines (and holds a similar amount of dirty flush lines), a hardware
+    cap; the store-side end state cannot be improved further.
+  status: parked
+  evidence:
+  - 'probe r10: evict_last saves 3-4 us (~25-30 MB) at every size from 1024 to 8192 tokens; last-48/80/112 MB-only and fractional
+    0.5/0.75 variants are within +-1% or worse'
+  - 'probe r10: H7''s cost is also ~30-40 MB worth at M/L'
+- id: H16
+  status: open
+  statement: Cluster launches cost at medium/large sizes on the portal, either directly (clusters at >= 2048 tokens) or by
+    slowing later plain launches in the same process at the portal's clock.
+  evidence:
+  - 'portal r11-e3-cluster2-rtok-disp: +1.6..+5.0% at 2048-8192 tokens (clustered there; bench -0.7..+1.9%) and +2.5..+2.9%
+    at 586-1024 tokens where code and launch equal r10-rtok (bench +0.3..+0.6%)'
+  - 'bench probe: one cluster launch does not slow later plain launches in the same process (within 1%)'
+  - 'test: c2-cluster2-s-only (clusters at <= 300 tokens only), predicted 0.6136 +- 0.0045'

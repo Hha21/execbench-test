@@ -1,0 +1,28 @@
+id: c2-cluster2-s-only
+parents:
+  - r10-rtok-m-disp
+  - r11-e3-cluster2-rtok-disp
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests: [H14]
+hypothesis: >-
+  Portal A/B for r11 E3. r11-e3-cluster2-rtok-disp (0.6055) gained 2-6% at <= 256 tokens with clusters of 2 but
+  lost 2.5-5% at 586-8192 tokens, including 586 and 1024 tokens where its code and launch were identical to
+  r10-rtok-m-disp. With clusters only at <= 300 tokens: if M/L match r10-rtok again, the r11 M/L loss was portal
+  variation or the >= 2048 cluster launches; if M/L are slow again, cluster launches slow later plain launches in
+  the same process at the portal's clock (not seen on the bench).
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+findings: []

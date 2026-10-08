@@ -130,5 +130,5 @@ def harness_time(fn, inputs=(), outputs=(), warmup=10, rep=50, tries=3):
                                return_mode="median", methodology="cupti")
             return ms * 1e3
         except ValueError as e:                          # CUPTI occasionally drops an iteration's records here
-            if "activity sequence" not in str(e) or attempt == tries - 1:
+            if not any(m in str(e) for m in ("activity sequence", "No timing results")) or attempt == tries - 1:
                 raise

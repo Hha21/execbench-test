@@ -24,7 +24,7 @@ import archive  # noqa: E402
 import planner  # noqa: E402
 
 FEATS = ["width256", "threads", "rows", "persistent", "tma", "cpasync", "wstat", "launches2", "x_ef", "w_el", "w_nc",
-         "st_ef", "st_el", "prefetch", "triton", "cute"]
+         "st_ef", "st_el", "prefetch", "triton", "cute", "cluster"]
 FEATURES_FILE = archive.ROOT / "loop" / "emulator_features.yaml"
 COPY_FILE = archive.ROOT / "loop" / "b200" / "copy_reference.json"     # plain read+write copy, rented B200, per workload
 LAG_SCALE = 0.2
@@ -54,6 +54,7 @@ def encode(path):
         1.0 if g("prefetch") else 0.0,
         1.0 if g("lang") == "triton" else 0.0,
         1.0 if g("lang") == "cute" else 0.0,
+        math.log2(g("cluster") or 1),                 # thread-block cluster size (1 = none)
     ])
 
 

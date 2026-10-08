@@ -3,7 +3,7 @@
 # New candidates carry the same block in their design card under `paths:`.
 #
 # Fields (defaults in brackets):
-#   lang: triton | cuda | cute          width: 128 | 256 (bits per global access)
+#   lang: triton | cuda | cute          width: 128 | 256 (bits per global access)   cluster: 1 | 2 | 4... [1]
 #   threads: CTA threads [256]          rows: rows of 128 floats per CTA [16]
 #   grid: oneshot | persistent          mem: ldg | tma | cpasync [ldg]       wstat: weight-stationary [false]
 #   launches: 1 | 2 [1]                 prefetch: L2 bulk prefetch of the tile [false]
@@ -40,3 +40,9 @@ r9-xo-spf-l2mode-disp:
 c1-control-r6:        # identical code to r6-s-ldef-nc-disp, resubmitted 8 October (portal repeatability control)
   - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
   - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+r11-e3-cluster2-rtok-disp:    # clusters of 2 at <= 300 and >= 2048 tokens (its card's paths omitted them)
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: 2047, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el, cluster: 2}

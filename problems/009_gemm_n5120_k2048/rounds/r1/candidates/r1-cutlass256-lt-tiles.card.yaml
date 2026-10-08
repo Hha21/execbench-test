@@ -1,0 +1,175 @@
+id: r1-cutlass256-lt-tiles
+parents:
+  - r0-skinny16-cublas
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: persistent
+  launch: fused
+  tile: rows256
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H6 test. At M >= 8828 a CUTLASS sm100 2-CTA tcgen05 GEMM (256x256x64, cluster 2x1, CLC persistent, TMA-store
+  epilogue, no C source) runs at cuBLAS's ceiling. On the rented B200 that ceiling is set by the 1 kW power cap
+  (1117 MHz under load), not by tiling. Smaller N tiles (160/128) fill the last wave better but lose 2-8%, because
+  they move more bytes per FLOP. The candidate keeps CUTLASS there so the portal shows whether it holds parity at
+  the 1500 MHz lock; there is no hidden cuBLAS heuristic on that path. Mid M: cublasLt with a forced tile id at
+  M 20-48 (tile 314) and 150-200 (tile 183) is 4-10% faster than cuBLAS's default pick. M <= 16 keeps r0's skinny
+  kernel; everything else stays on cuBLAS.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: medium
+  L:
+    pct: 0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 214016
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  CUTLASS_TILE: 256x256x64
+  CLUSTER: 2x1
+  STAGES: 6
+  RASTER: AlongN
+  SWIZZLE: 0
+  CUTLASS_MIN_M: 4096
+  LT_TILE_M20_48: 314
+  LT_TILE_M150_200: 183
+dispatch:
+  - max_tokens: 16
+    kernel: skinny_m16_kernel
+    meta:
+      BN: 8
+      WARPS: 8
+  - max_tokens: 19
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: 48
+    kernel: cublasLtMatmul tile 314
+    meta: {}
+  - max_tokens: 149
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: 200
+    kernel: cublasLtMatmul tile 183
+    meta: {}
+  - max_tokens: 4095
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: null
+    kernel: CUTLASS sm100 2SM 256x256x64 cluster 2x1 persistent
+    meta: {}
+tests:
+  - H6
+  - H11
+findings:
+  - "H6 supported: CUTLASS 256x256x64 cluster 2x1 2-CTA (6 stages, CLC persistent, no C load) equals cuBLAS in interleaved repeats: 111.6 vs 111.0 us (M=8828), 199.5 vs 200.3 us (M=16294); output bit-identical to torch.matmul (max err 0.0) [probe_b200]"
+  - "dead end: other large-M tiles at M=16294 vs reference 199.4 us: 256x160 2x1 203.1 (+2%), 256x128 2x1 213-215 (+7%), 256x128 2x2 232 (+17%), 256x256 2x2 214-216 (+8%), 256x256x128 (3 stages) +2.3-2.6% at 8828/12251, 256x256 cluster 4x1 +7-8% [probe_b200]"
+  - "dead end: raster AlongM is 5-13% slower than AlongN/heuristic for every tile; swizzle 2/4/8 changes nothing (within 1%) [probe_b200]"
+  - "dead end: CUTLASS StreamK scheduler for the wave tail at 256x256: +4.5% (M=16294) and +8% (M=8828), with a 24-28 MB workspace; forced data-parallel through the StreamK scheduler +2-6% [probe_b200]"
+  - "rented B200 is power-capped under sustained GEMM load: 1117 MHz at 1017 W, throttle reason SW power cap (0x4). So rented compute-band times are power-bound, and tiles that move more bytes per FLOP lose even when their wave quantisation is better [probe_b200 nvidia-smi]"
+  - "H11 refuted for stock CUTLASS: at M=93-952 every CUTLASS sm100 config is 1.2-3x slower than cuBLAS (best: M=289 128x128 13.6 vs 11.2 us; M=492 128x256 19.1 vs 11.7; M=952 256x128 2SM 23.4-24.7 vs 18.0). Too few tiles for 148 SMs, and CUTLASS split-K/stream-K costs another +20-100% [probe_b200]"
+  - "cublasLt heuristic list (8 algos, all algo 66, w/o workspace) has faster picks than the default: M=25 tile 13 or 314 7.85 vs 8.45 us (2 repeats); M=34 tile 314/315 8.0 vs 8.7; M=172 tile 183 9.7 vs 10.2. No gain at M=17, 32, 63, 64, 93, 128, 289, 492, 952 [probe_b200]"
+  - "run_tests x2 vs r0: M=34 -10.2/-8.7%, M=172 -5.3/-6.0%, M=25 -5.0/-3.8%; large M +2-4% then +0.3-2.4%, while unchanged S paths also read +1%, i.e. session drift against r0's stored times; interleaved probe says parity [run_tests]"
+  - "torch.matmul(A,B.T,out=C) equals torch.matmul(A,B.T) on the rented box at M=8828/16294 (111.0 vs 111.0, 200.8 vs 200.3): H12's rented gap is not reproduced in interleaved timing [probe_b200]"
+  - "CUTLASS sm100 single instantiation builds in ~40-45 s with nvcc 13.1; 5-8 instantiations build in parallel in ~30-47 s on the 24-core box [probe_b200]"
+paths:
+  - max_tokens: 16
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 8
+    grid: oneshot
+    mem: ldg
+    launches: 1
+    cluster: 1
+  - max_tokens: 19
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+  - max_tokens: 48
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 64
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cublasLt forced tile id 314, no workspace"
+  - max_tokens: 149
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+  - max_tokens: 200
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cublasLt forced tile id 183, no workspace"
+  - max_tokens: 4095
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    note: "CUTLASS sm100 2-CTA 256x256x64, 6 stages, raster AlongN, TMA store"
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "sm_100a tcgen05 and 256-bit loads; B200 only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Large M only at parity with cuBLAS on the rented box; on the portal it could land either side of at::matmul_out by 1-3% (the open part of H6/H12)"
+  - "cublasLt tile ids 314/183 come from this cuBLAS build's heuristic list; if missing on the portal, the plan falls back to heuristic index 0 (the default kernel), so no failure"
+  - "Adds -lcublasLt to ld_flags; build time ~45 s for the CUTLASS file (parallel with the other two)"
+  - "M=25/34/172 gains are 0.4-0.9 us at sizes where portal Tb noise is +-5%"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

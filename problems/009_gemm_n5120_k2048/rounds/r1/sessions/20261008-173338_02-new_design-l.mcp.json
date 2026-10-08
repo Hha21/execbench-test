@@ -1,0 +1,1 @@
+{"mcpServers": {"solx": {"command": "/home/lain/execbench-test/.venv/bin/python", "args": ["/home/lain/execbench-test/loop/mcp_tools.py", "--name", "20261008-173338_02-new_design-l", "--round", "r1", "--dir", "/home/lain/execbench-test/problems/009_gemm_n5120_k2048/rounds/r1/sessions", "--gpu-calls", "6", "--probes", "10", "--b200-minutes", "6.666666666666667"]}}}

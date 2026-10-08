@@ -1,0 +1,84 @@
+id: r1-skinny16-mmout
+parents:
+  - r0-skinny16-cublas
+operation: repair
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E1/H12 diagnostic. H12 proposed that at::matmul_out picks a slower cuBLAS path than the reference torch.matmul.
+  Profiling refutes that: every entry point launches the same nvjet kernel (128x256_64x6 2cta at M >= 8828), and
+  cublasLt's other heuristic algorithms are not faster. The remaining 0.7-1.7% rented gap at M >= 8828 is the
+  harness zero-filling a DPS output tensor before each call. Writing into an untouched fixed buffer equals the
+  reference time exactly, so no cuBLAS call can close it. The 6-9% portal gap to Tb is therefore not in our call:
+  either Tb is not reproducible as plain cuBLAS under our conditions, or it is portal run variance. Closing it
+  needs our own kernel (E3). This candidate is r0 with at::mm_out; it is time-neutral.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 5120
+  threads_per_cta: 256
+  ctas_per_sm: 5
+  bytes_in_flight_per_sm: 139264
+  launches_per_call: 1
+knobs:
+  BN: 8
+  WARPS: 8
+  CH: 4
+  M_MAX_SKINNY: 16
+dispatch:
+  - {max_tokens: 16, kernel: skinny_m16_kernel, meta: {BN: 8, WARPS: 8}}
+  - {max_tokens: null, kernel: "at::mm_out (cuBLAS nvjet)", meta: {}}
+tests:
+  - H12
+findings:
+  - "torch.profiler: reference torch.matmul(A,B.T), matmul(out=C) at C offsets of 256 and 1024 B, and F.linear all launch one identical kernel: nvjet_hsh_128x256_64x6_2x1_2cta_v_bz_TNT at M=8828/16294 (118-119 / 211-212 us profiler) and nvjet_hsh_256x136_64x4_2x1_v_bz_TNT at M=952 [probe_b200]"
+  - "cublasLt direct (ctypes, CUBLAS_COMPUTE_32F, TN, 32 MB workspace allowed): heuristic returns 8 algos, all with workspace 0. M=8828: algo0 111.5 us (= default), others 115.5-123.2. M=16294: algo0 199.7, algo1 198.1 (noise), others 205-222 us. No better cuBLAS algorithm exists [probe_b200]"
+  - "interleaved harness_time x3, ratio mm_out(out=C)/reference: 1.001 (M=172), 0.996 (492), 1.000 (952), 1.007 (8828), 1.012 (11006), 1.017 (12251), 0.971 (12853, noisy), 1.009 (14915), 1.001 (16294); F.linear equals the reference [probe_b200]"
+  - "C alignment is irrelevant: mm_out into a fixed buffer at offsets 0/256/512/1024/2048/4096 B from 2 MB: 111.3-111.7 us at M=8828, 145.9-146.8 at 12251, 198.3-200.6 at 16294 [probe_b200]"
+  - "cause of the residual ~1%: the same mm_out into a fixed buffer takes 111.6 us when the harness also zero-fills a DPS output and 110.8 us with no harness outputs, equal to the reference (110.7); at M=16294 200.9 vs 199.1 (reference 199.5). It is the harness's DPS output zero-fill, which the return-style reference never pays; no solution-side fix [probe_b200]"
+  - "run_tests: 25/25 pass; vs r0 S +0.1%, M +0.3%, L -0.2% (neutral) [run_tests]"
+  - "untested: the reference at 1500 MHz (the rented box cannot lock clocks). Tb/rented-reference = 1.12-1.18 at M >= 8828, but our portal/rented = 1.22-1.26; the 6-9% portal gap stays unexplained (Tb from another solution or another portal run). Next: E3 own kernel, or a repeat r0-equivalent portal submission to measure run-to-run variance [INFERRED]"
+paths:
+  - {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cuBLAS nvjet via at::mm_out; same kernel as the reference torch.matmul at every M"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "ld.global.v8 (256-bit) is sm_100 only; the cuBLAS path runs anywhere"
+  A100:
+    runs: false
+    representative: false
+    note: "256-bit loads unsupported"
+  L40S:
+    runs: false
+    representative: false
+    note: "256-bit loads unsupported"
+risks:
+  - "No expected score change; portal result will differ from r0 only by noise (~5%)"
+  - "Relies on 32-B alignment of A and B for the skinny path (harness pointers are 256-B aligned; falls back to cuBLAS otherwise)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

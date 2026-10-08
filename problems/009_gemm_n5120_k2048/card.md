@@ -136,7 +136,11 @@ r0 (`r0-skinny16-cublas`): M <= 16 served by the mma.sync skinny kernel (46 regs
 M <= 16 7.7-8.2 / 8.7-9.3 / 0.54-0.55 (our kernel, -10% on both machines); M = 17-952 9.1-22.0 / 8.9-21.3 /
 0.46-0.52; M >= 8828 140.6-242.6 / 130.6-223.1 / **0.39-0.42**. The same `at::matmul_out` cuBLAS call is 3%
 slower than the reference on the rented B200 at large M and **6-9% slower on the portal** (mid sizes: 0.95-1.11x
-Tb, i.e. portal Tb noise is ~+-5% per size at 9-20 us, while r0's own portal times are smooth). Portal/rented time
+Tb, while r0's own portal times are smooth).
+**Tb is a stored constant, not re-measured per submission**: #38's 23 pages show identical Tb for every workload.
+So the uneven mid-size Tb is a fixed target (some sizes are easy, some hard), and the 6-9% large-M gap is fixed:
+NVIDIA's baseline run was faster than any run of the same cuBLAS kernel we get. Matching it needs a kernel ~7%
+faster than cuBLAS under the portal's conditions. Portal/rented time
 ratio: 1.07-1.13 for M <= 16 (memory-bound), 1.18-1.23 for 93-952, 1.22-1.26 for the compute band (clock ratio
 1965/1500 = 1.31). The reference's portal/rented ratio is 1.06-1.23 (noisy at small M, 1.16-1.21 at large M).
 
@@ -144,10 +148,15 @@ ratio: 1.07-1.13 for M <= 16 (memory-bound), 1.18-1.23 for 93-952, 1.22-1.26 for
 
 - The exact atol/rtol of this definition (both cuBLAS and mma.sync pass; relevant only if a reduction order gets
   sloppy).
-- **Why is `at::matmul_out(C, A, B.t())` slower than the reference's `torch.matmul(A, B.T)` at large M** (3% rented,
-  6-9% portal)? Same library; candidates: a different nvjet kernel/heuristic for a caller-supplied C, the cuBLAS
-  workspace, cublas vs cublasLt path, output alignment. Check the kernel names and times of both calls [probe]. This
-  is worth ~+0.02 of the total score on its own.
+- Answered in r1 (H12 refuted): `at::matmul_out`, `mm_out`, `matmul(out=)`, `F.linear` and the reference launch the
+  identical nvjet kernel (128x256_64x6 2cta at M >= 8828); no other cublasLt algorithm is faster; C alignment is
+  irrelevant. The residual ~1% on the rented box is the harness zero-filling the DPS output before each call.
+  The portal gap is the stored Tb (above).
+- r1 also found: CUTLASS 256x256x64 2-CTA persistent = cuBLAS at large M (every other tile, raster, StreamK is
+  2-17% slower); stock CUTLASS is 1.2-3x slower than cuBLAS at M = 93-952; forced cublasLt tiles beat cuBLAS's pick
+  at M = 25/34 (tile 314) and 172 (tile 183) by 4-10%; the rented box power-caps to ~1117 MHz under sustained GEMM
+  load; up-front-load split-K with mma.sync for M = 17-64 is 1.3-2.6x slower than cuBLAS (all MMA runs after the
+  stream ends: a mid-band kernel must pipeline loads and tensor work).
 - Answered by r0's page: Tb is the reference (cuBLAS) timed on the portal, 1.16-1.21x the rented time at large M
   (not the full 1.31x clock ratio); Tsol is the roofline above.
 - Whether tcgen05 can be driven from raw PTX in a small kernel for M = 64-952 without the CUTLASS machinery, and the

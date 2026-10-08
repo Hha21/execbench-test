@@ -272,6 +272,25 @@ def register(arc, round_id, text, t):
         print(f"  {cid}: {arc[cid]['status']}")
 
 
+def load_ledger_text(text):
+    """Parse an agent's ledger, repairing the usual mistake (an unquoted value containing ': ') by quoting it."""
+    import yaml
+    try:
+        yaml.safe_load(text)
+        return text
+    except yaml.YAMLError:
+        pass
+    fixed = []
+    for line in text.splitlines():
+        m = re.match(r"^(\s*(?:- )?(?:[\w-]+: |- ))(.*)$", line)
+        if m and ": " in m.group(2) and not m.group(2).lstrip().startswith(("'", '"', "[", "{", "|", ">")):
+            line = m.group(1) + "'" + m.group(2).replace("'", "''") + "'"
+        fixed.append(line)
+    fixed = "\n".join(fixed)
+    yaml.safe_load(fixed)                          # still invalid: let the caller see the error
+    return fixed
+
+
 def cmd_research(a):
     """Research phase for a problem: B200 measurements, then a research agent writes the problem card, the first
     hypothesis ledger and a simple, correct first kernel (round r0)."""
@@ -279,6 +298,10 @@ def cmd_research(a):
     p = problem.current()
     p.dir.mkdir(parents=True, exist_ok=True)
     rows_file = p.b200 / "reference_times.json"
+    d = rdir("r0") / "research"
+    if a.from_reply:                                # finish from a saved reply without re-running the agent
+        text, out = (d / "reply.md").read_text(), json.loads((d / "research.claude.json").read_text())
+        return finish_research(p, d, text, out)
     if a.remeasure or not rows_file.exists():
         print(f"measuring {p.level}/{p.name} on the rented B200 (copy floor and PyTorch reference per workload)...",
               flush=True)
@@ -313,15 +336,21 @@ def cmd_research(a):
     text = out.get("result") or ""
     (d / "reply.md").write_text(text)
     (d / "research.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+    finish_research(p, d, text, out)
+
+
+def finish_research(p, d, text, out):
     blocks = {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
     card = next((v for k, v in blocks.items() if k.startswith("markdown") and "card" in k), None)
     ledger = next((v for k, v in blocks.items() if k.startswith("yaml") and "ledger" in k), None)
     if card:
         p.card.write_text(card)
     if ledger:
-        import yaml
-        yaml.safe_load(ledger)
-        p.ledger.write_text(ledger)
+        try:
+            p.ledger.write_text(load_ledger_text(ledger))
+        except Exception as e:                      # keep the raw text for a human; do not lose the kernel
+            (p.dir / "ledger.raw.yaml").write_text(ledger)
+            print(f"ledger is not valid YAML ({str(e)[:200]}); saved as {p.dir / 'ledger.raw.yaml'}")
     arc = get_archive()
     register(arc, "r0", text, dict(operation="new_design", parents=[], band="all", niche="research:first-kernel"))
     archive.save(arc)
@@ -602,6 +631,7 @@ def main():
                        "default B200 with --tool-gpu B200, else A100,H200")
     q = sub.add_parser("research", parents=[llm_args], help="research phase for a new problem")
     q.add_argument("--remeasure", action="store_true", help="redo the B200 copy-floor and reference measurements")
+    q.add_argument("--from-reply", action="store_true", help="finish from the saved research reply (no agent run)")
     for name in ("test", "status", "collect", "shortlist"):
         q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)

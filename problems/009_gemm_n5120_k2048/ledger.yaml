@@ -1,0 +1,70 @@
+# Hypothesis ledger for FlashInfer-Bench/009_gemm_n5120_k2048, seeded 2026-10-08 by the research phase (r0).
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'fp16 inputs with fp32 accumulation only: no FP8/FP4/TF32-style truncation of A or B, no fp16 accumulation.'
+hypotheses:
+- id: H1
+  statement: For M <= 172 the time is the cost of streaming B (21 MB) under the harness, about 6.4 us (read floor incl. ~2 us dirty-L2 write-back), plus a kernel-specific tail; cuBLAS sits 1.4-3.9 us above that.
+  status: supported
+  evidence:
+  - 'probe r0: 256-bit read-only kernel 6.4-6.7 us for every grid shape; empty kernel 1.5 us; read-only flush is 2.1 us faster than the zero flush (event timing)'
+  - 'run_tests r0: cuBLAS 7.6-10.3 us at M <= 172'
+- id: H2
+  statement: At M <= 16 a one-shot 640-CTA mma.sync kernel with 256-bit loads straight into fragments beats cuBLAS by ~10%; the residual 0.6 us is the post-load tail plus 640/148 CTA imbalance.
+  status: supported
+  evidence:
+  - 'run_tests r0: 6.9-7.2 us vs cuBLAS 7.6-7.9'
+  - 'probe r0: 8 warps x 4 loads/lane best; 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us; tail/imbalance split not yet measured'
+- id: H3
+  statement: For 17 <= M <= 172 the winning structure is BN = 32-64 B-rows per CTA with A staged once per k-chunk in shared memory and split-K across a 2-4 CTA cluster (DSMEM reduction), reaching ~7-7.5 us; re-reading A per warp from L2 does not work.
+  status: open
+  evidence:
+  - 'probe r0: per-warp A re-read (640 CTAs) 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A L2 traffic = 640 x M x 4 KB)'
+- id: H4
+  statement: mma.sync (~550 TFLOP/s on B200) is enough up to M ~ 64 when overlapped with the B stream; from M ~ 93 upward tcgen05 is required to stay memory-bound.
+  status: open
+  evidence:
+  - 'probe r0: mma.sync m16n8k16 fp16 peaks at 553 TFLOP/s (148-1184 CTAs); 2.5 us of MMA at M=64, 6.5 us at M=172'
+- id: H5
+  statement: Triton tl.dot GEMMs cannot compete at any M on B200; CUDA C++ (mma.sync / tcgen05 / CUTLASS) is the only route.
+  status: supported
+  evidence:
+  - 'probe r0: Triton 8.9-13 us at M <= 64 vs cuBLAS 7.8-8.0; 309 us vs 199 us at M=16294 (best of 5 configs)'
+- id: H6
+  statement: 'At M >= 8828 cuBLAS nvjet 128x256 2-CTA kernels are at the same ceiling as CUTLASS (CuTe DSL persistent 256x256 2cta: 195 vs 199 us at M=16294); only wave-quantization and raster tuning for N=5120 can gain 1-3%.'
+  status: open
+  evidence:
+  - 'probe r0: CuTe DSL dense_gemm_persistent 195.5 us (256x256, 2x1), 216.7 us (128x256), 252.7 us (128x128 no 2cta); cuBLAS 198.7 us harness'
+- id: H7
+  statement: On the portal's 1500 MHz lock the compute-band workloads slow by up to 1.31x for both cuBLAS and us (peak 1.82 PF), while M <= 952 barely moves; Tb for large M will be ~1.2-1.3x the rented-box cuBLAS time.
+  status: open
+  evidence:
+  - 'rented box runs 1965 MHz under GEMM load; cuBLAS 1.75 PFLOP/s = 73% of 2.38 PF at that clock (probe r0)'
+- id: H8
+  statement: SOLAR Tsol = max(FLOPs/2.25 PF, bytes/8 TB/s) ~ 2.6 us for M <= 172, so with Tb = cuBLAS the small-M score ceiling at the 6.4 us floor is ~0.58 per workload (0.55 at 6.9 us), and the compute band is capped near 0.5.
+  status: open
+  evidence:
+  - 'arithmetic from the card; needs the first portal page to confirm Tb and Tsol'
+- id: H9
+  statement: evict_first on the streamed B loads does not reduce the dirty-L2 write-back cost for a read-dominated 21 MB kernel.
+  status: refuted
+  evidence:
+  - 'probe r0: rd4e 6.46 us vs rd4 6.43 us; skinny k8w8m1e 7.07/7.28 vs 7.07/7.33'
+- id: H10
+  statement: cuBLAS's small-M nvjet kernels are latency-limited by their small grids (64x8 tiles over N=5120 = 80 CTAs), which is why a 640-CTA stream wins and why 1184-1280 CTAs with cluster split-K may win more.
+  status: open
+  evidence:
+  - 'kernel names from torch.profiler (probe r0); grid sizes inferred, not measured'
+- id: H11
+  statement: For M = 289-952 a persistent tcgen05 kernel with 128-row tiles that keeps B streaming lands near max(memory, compute floor) + ~3 us, i.e. 1.5-2x faster than cuBLAS (11-18 us).
+  status: open
+  evidence:
+  - 'floors from the card; cuBLAS tiles (128x104, 144x128, 256x136) give one under-filled wave'

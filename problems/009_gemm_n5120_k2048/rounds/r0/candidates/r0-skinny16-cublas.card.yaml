@@ -1,0 +1,61 @@
+id: r0-skinny16-cublas
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  For M <= 16 the GEMM is a 21 MB stream of B; 640 CTAs that load 32 KB each with 256-bit loads straight into
+  mma.sync fragments (k permuted identically for A and B) beat cuBLAS's latency-limited small-tile kernels by ~10%.
+  Every other M is served by cuBLAS (at::matmul_out) so the submission anchors Tb and Tsol per workload.
+expected_effect:
+  S: {pct: -10, confidence: medium}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 5120
+  threads_per_cta: 256
+  ctas_per_sm: 5
+  bytes_in_flight_per_sm: 139264
+  launches_per_call: 1
+knobs: {BN: 8, WARPS: 8, CH: 4, M_MAX_SKINNY: 16}
+dispatch:
+  - {max_tokens: 16, kernel: skinny_m16_kernel, meta: {BN: 8, WARPS: 8}}
+  - {max_tokens: null, kernel: at::matmul_out (cuBLAS nvjet), meta: {}}
+tests: [H1, H2, H8]
+findings:
+  - "cuBLAS launches one nvjet kernel per call at every M; 7.6-10.3 us for M <= 172, 11-18 us for 289-952, 109-195 us for M >= 8828 on the rented B200 at 1965 MHz [run_tests, probe]"
+  - "256-bit read-only kernel over the 21 MB of B: 6.4-6.7 us for any grid shape (320-2560 CTAs); empty kernel 1.5 us; read-only flush instead of the zero flush saves 2.1 us (event timing), so ~2 us is dirty-L2 write-back [probe_b200]"
+  - "evict_first on B loads: no change (6.46 vs 6.43 us read-only; 7.07 vs 7.07 skinny) [probe_b200]"
+  - "mma.sync m16n8k16 fp16 peaks at ~553 TFLOP/s on B200 (1/4 of tcgen05) [probe_b200]"
+  - "skinny kernel for M<=16: 8 warps x 4 x 32 B per lane best (6.9-7.2 us); 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us, A loads issued before B +0.3 us [probe_b200]"
+  - "dead end: extending the skinny kernel to M > 16 by re-reading 16-row A tiles per warp from L2: 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A traffic 640 x M x 4 KB) [probe_b200]"
+  - "Triton tl.dot pointer GEMMs 8.9-13 us at M <= 64 and 309 us at M=16294 vs cuBLAS 7.8 / 199 us [probe_b200]"
+  - "CuTe DSL dense_gemm_persistent (256x256, cluster 2x1, 2-CTA MMA) 195.5 us at M=16294 vs cuBLAS 198.7 us: same ceiling, 73% of the 2.38 PF peak at 1965 MHz [probe_b200]"
+  - "r0 passes 25/25; M<=16 6.9-7.2 us (-10% vs cuBLAS), all other sizes equal to cuBLAS within noise [run_tests]"
+paths:
+  - {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cuBLAS nvjet via at::matmul_out; tile and kernel chosen by cuBLAS heuristics per M"}
+runs_on:
+  H200: {runs: false, representative: false, note: "ld.global.v8 (256-bit) is sm_100 only; the cuBLAS path runs anywhere"}
+  A100: {runs: false, representative: false, note: "256-bit loads unsupported"}
+  L40S: {runs: false, representative: false, note: "256-bit loads unsupported"}
+risks:
+  - "Tolerance of this definition not read directly; cuBLAS-equivalent fp32-accumulate error (1 fp16 ulp) passed 10 rounds x 25 workloads"
+  - "640 CTAs over 148 SMs (4.3 per SM) leave a 1-CTA imbalance; the 0.6 us above the read floor is unexplained in detail"
+  - "Relies on 32-B alignment of A and B (harness pointers are 256-B aligned; falls back to cuBLAS otherwise)"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

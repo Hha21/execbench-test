@@ -1,0 +1,1 @@
+{"id": "r0-skinny16-cublas", "kernels": [{"kernel": "_ZN41_GLOBAL__N__20af5a10_9_kernel_cu_77587d0c17skinny_m16_kernelEPK6__halfS2_PS0_i", "num_warps": null, "regs": 46, "smem": 5120, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT.256": 8, "LDG.NA.CONSTANT.256": 4, "STG": 1}}], "error": ""}

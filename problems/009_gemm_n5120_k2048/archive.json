@@ -1,0 +1,29 @@
+{
+ "r0-skinny16-cublas": {
+  "card": "id: r0-skinny16-cublas\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  For M <= 16 the GEMM is a 21 MB stream of B; 640 CTAs that load 32 KB each with 256-bit loads straight into\n  mma.sync fragments (k permuted identically for A and B) beat cuBLAS's latency-limited small-tile kernels by ~10%.\n  Every other M is served by cuBLAS (at::matmul_out) so the submission anchors Tb and Tsol per workload.\nexpected_effect:\n  S: {pct: -10, confidence: medium}\n  M: {pct: 0, confidence: high}\n  L: {pct: 0, confidence: high}\nresources_sm100a:\n  regs_per_thread: 46\n  smem_per_cta_bytes: 5120\n  threads_per_cta: 256\n  ctas_per_sm: 5\n  bytes_in_flight_per_sm: 139264\n  launches_per_call: 1\nknobs: {BN: 8, WARPS: 8, CH: 4, M_MAX_SKINNY: 16}\ndispatch:\n  - {max_tokens: 16, kernel: skinny_m16_kernel, meta: {BN: 8, WARPS: 8}}\n  - {max_tokens: null, kernel: at::matmul_out (cuBLAS nvjet), meta: {}}\ntests: [H1, H2, H8]\nfindings:\n  - \"cuBLAS launches one nvjet kernel per call at every M; 7.6-10.3 us for M <= 172, 11-18 us for 289-952, 109-195 us for M >= 8828 on the rented B200 at 1965 MHz [run_tests, probe]\"\n  - \"256-bit read-only kernel over the 21 MB of B: 6.4-6.7 us for any grid shape (320-2560 CTAs); empty kernel 1.5 us; read-only flush instead of the zero flush saves 2.1 us (event timing), so ~2 us is dirty-L2 write-back [probe_b200]\"\n  - \"evict_first on B loads: no change (6.46 vs 6.43 us read-only; 7.07 vs 7.07 skinny) [probe_b200]\"\n  - \"mma.sync m16n8k16 fp16 peaks at ~553 TFLOP/s on B200 (1/4 of tcgen05) [probe_b200]\"\n  - \"skinny kernel for M<=16: 8 warps x 4 x 32 B per lane best (6.9-7.2 us); 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us, A loads issued before B +0.3 us [probe_b200]\"\n  - \"dead end: extending the skinny kernel to M > 16 by re-reading 16-row A tiles per warp from L2: 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A traffic 640 x M x 4 KB) [probe_b200]\"\n  - \"Triton tl.dot pointer GEMMs 8.9-13 us at M <= 64 and 309 us at M=16294 vs cuBLAS 7.8 / 199 us [probe_b200]\"\n  - \"CuTe DSL dense_gemm_persistent (256x256, cluster 2x1, 2-CTA MMA) 195.5 us at M=16294 vs cuBLAS 198.7 us: same ceiling, 73% of the 2.38 PF peak at 1965 MHz [probe_b200]\"\n  - \"r0 passes 25/25; M<=16 6.9-7.2 us (-10% vs cuBLAS), all other sizes equal to cuBLAS within noise [run_tests]\"\npaths:\n  - {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: \"cuBLAS nvjet via at::matmul_out; tile and kernel chosen by cuBLAS heuristics per M\"}\nruns_on:\n  H200: {runs: false, representative: false, note: \"ld.global.v8 (256-bit) is sm_100 only; the cuBLAS path runs anywhere\"}\n  A100: {runs: false, representative: false, note: \"256-bit loads unsupported\"}\n  L40S: {runs: false, representative: false, note: \"256-bit loads unsupported\"}\nrisks:\n  - \"Tolerance of this definition not read directly; cuBLAS-equivalent fp32-accumulate error (1 fp16 ulp) passed 10 rounds x 25 workloads\"\n  - \"640 CTAs over 148 SMs (4.3 per SM) leave a 1-CTA imbalance; the 0.6 us above the read floor is unexplained in detail\"\n  - \"Relies on 32-B alignment of A and B (harness pointers are 256-B aligned; falls back to cuBLAS otherwise)\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r0-skinny16-cublas",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r0",
+  "solution": "problems/009_gemm_n5120_k2048/rounds/r0/candidates/r0-skinny16-cublas.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "niche": "research:first-kernel",
+   "operation": "new_design",
+   "parents": []
+  },
+  "timings": {}
+ }
+}

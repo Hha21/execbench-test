@@ -51,7 +51,8 @@ cheap GPU against the current best kernel, and the projected B200 score. 4. Revi
 - Budget: {gpu_calls} GPU calls (compile_b200 + run_tests) and {turns} turns. GPU calls queue on one shared GPU; a test
   takes 1-4 minutes, a compile under 1. Pass complete files every time; nothing persists between calls.
 - Finish with a reply that makes no tool call and contains exactly one candidate in the OUTPUT CONTRACT format. Put
-  what you measured into the design card (hypothesis, expected_effect). Submit the best version you tested, with its
+  what you measured into the design card (hypothesis, expected_effect), and list what you learned under findings,
+  dead ends included: later sessions read them in the lab notebook. Submit the best version you tested, with its
   code unchanged apart from comments; if you clean it up, run_tests it again first. If its benefit is B200-only, say
   so in the card."""
 

@@ -62,6 +62,42 @@ def parent_block(rec):
             f"source:\n{src}\n")
 
 
+def lab_notebook(arc, limit=40):
+    """What earlier rounds learned: portal outcomes against the bench, and findings recorded in design cards."""
+    import math
+    import planner
+    from archive import BANDS, parse_card, tokens
+    lines = []
+    best = planner.best_kernel(arc)
+    bp, br = best["b200"]["timings"], (best.get("timings") or {}).get("B200r", {})
+
+    def rel(t, ref, lo, hi):
+        ks = [k for k in t if lo < tokens(k) <= hi and k in ref and t[k] and ref[k]]
+        return 100 * (math.exp(sum(math.log(t[k] / ref[k]) for k in ks) / len(ks)) - 1) if ks else None
+    out = []
+    for r in arc.values():
+        p_t, r_t = (r.get("b200") or {}).get("timings"), (r.get("timings") or {}).get("B200r")
+        if p_t and r_t and r["id"] != best["id"] and str(r.get("round", "")).startswith(("r", "d")):
+            cells = []
+            for b, lo, hi in BANDS:
+                a, c = rel(p_t, bp, lo, hi), rel(r_t, br, lo, hi)
+                if a is not None and c is not None:
+                    cells.append(f"{b} bench {c:+.1f}% / portal {a:+.1f}%")
+            out.append(f"- {r['id']} (portal {r['b200']['score']:.4f}) vs {best['id']}: " + "; ".join(cells))
+    if out:
+        lines.append("Portal outcomes vs the bench (change vs the current best, same kernel pair):")
+        lines.extend(sorted(out))
+    notes = []
+    for r in arc.values():
+        card = parse_card(r.get("card", "")) if r.get("card") else {}
+        for f in card.get("findings") or []:
+            notes.append((str(r.get("round", "")), f"- [{r['id']}] {str(f).strip()}"))
+    if notes:
+        lines.append("Findings recorded by earlier design sessions (most recent first):")
+        lines.extend(n for _, n in sorted(notes, key=lambda x: x[0], reverse=True)[:limit])
+    return "\n".join(lines) or "empty"
+
+
 def dynamic_prompt(arc, round_id, operation, parents, n=1, band="all", niche="any empty niche", extra="",
                    feedback="none"):
     measured = [r for r in arc.values() if r.get("b200")]
@@ -73,6 +109,7 @@ def dynamic_prompt(arc, round_id, operation, parents, n=1, band="all", niche="an
         f"exactly. Give every candidate a new unique id starting with '{round_id}-'.\n{extra}",
         "=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) "
         f"===\n{table(arc)}\nB200 results so far:\n{calib or 'none'}",
+        f"=== LAB NOTEBOOK ===\n{lab_notebook(arc)}",
         "=== PARENTS ===\n" + ("\n".join(parent_block(arc[p]) for p in parents) if parents else "none"),
         f"=== FEEDBACK FROM LAST ATTEMPT ===\n{feedback}",
     ])

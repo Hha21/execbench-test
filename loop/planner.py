@@ -139,7 +139,56 @@ def in_flight(arc):
     return out
 
 
-def plan(arc, max_tasks=3, last_round=None):
+EXPLORE_COMMON = (
+    " This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the "
+    "portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for "
+    "reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan "
+    "out, still return your best version of it as the candidate and record what you learned in the card's findings: "
+    "negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like "
+    "(memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte "
+    "(problem card section 7). CUDA C++ uses the two-file layout.")
+
+EXPLORE_IDEAS = [
+    ("explore:one-wave-fat", "One wave of fat CTAs. Launching and retiring CTAs is not free on B200: an empty grid of "
+     "49,152 CTAs spans 26 us and 768 CTAs 1.6 us (problem card section 7). Design a kernel whose grid is exactly one "
+     "resident wave (148 SMs x the CTAs that fit) at every size, each CTA streaming a contiguous chunk of rows with "
+     "several rows' 256-bit loads in flight per thread (issue all loads, then reduce), keeping evict_last stores. "
+     "First probe a plain copy: one wave of fat CTAs vs many small CTAs, at 12.6, 101 and 805 MB."),
+    ("explore:bulk-pipeline", "A hand-written bulk-copy pipeline in CUDA C++: cp.async.bulk (1-D TMA) global to shared "
+     "memory with mbarrier completion, normalise from shared memory, then store (cp.async.bulk shared to global, or "
+     "st.global with evict_last), double or triple buffered in a persistent single wave. The aim is fewer SM "
+     "instructions per byte, which the portal's 1500 MHz SM clock rewards. Earlier Triton TMA designs (g2-tma, "
+     "g2-tmaws) were slow for other reasons; this is a different bet. First probe a bulk-copy pipeline copy against a "
+     "plain LDG/STG copy at 12.6, 101 and 805 MB."),
+    ("explore:work-steal", "A persistent single wave with dynamic work stealing: CTAs take tiles from an atomic counter "
+     "in a deliberate order (for example interleaving Q and K, or spreading consecutive tiles across the chip), so "
+     "there is no tail and no per-CTA launch cost. The counter must be correct across back-to-back calls with no host "
+     "synchronisation and no extra launch (for example reset by the last CTA to finish); allocate it once outside "
+     "run(). First probe whether a work-stealing copy beats a one-shot copy at 12.6, 101 and 805 MB."),
+    ("explore:l2-endstate", "Engineer the L2 end state. r5's evict_last stores gained 7-9% at M because output still "
+     "in L2 when the kernel ends is written back after the timer stops. Find out which outputs end up resident (the "
+     "L2 is 126 MB; the harness fills it with dirty lines before every call), then change the order of work and the "
+     "store and load policies so that more output stays resident at M and L sizes. Probe the L2 behaviour first, "
+     "for example a copy whose last X MB of stores are evict_last versus all of them."),
+    ("explore:wildcard", "Wildcard: propose the idea you believe has the best chance of moving some size band by 3% "
+     "or more on the portal, reasoning from first principles, the briefing and the lab notebook. It must differ "
+     "structurally from the best kernel, and its core assumption must be tested with probe_b200 before you build."),
+]
+
+
+def plan_explore(arc, max_tasks=5):
+    best = best_kernel(arc)
+    tried = {str((r.get("task") or {}).get("niche", "")) for r in arc.values()}
+    ideas = [i for i in EXPLORE_IDEAS if i[0] not in tried or i[0] == "explore:wildcard"]
+    return [dict(operation="new_design", parents=[best["id"]], band="all", niche=tag, gain=None,
+                 instructions=text + EXPLORE_COMMON) for tag, text in ideas[:max_tasks]]
+
+
+def plan(arc, max_tasks=3, last_round=None, mode="exploit"):
+    if mode == "explore":
+        best = best_kernel(arc)
+        return dict(best=best["id"], best_score=best["b200"]["score"], gains=gains(best, anchors()),
+                    tasks=plan_explore(arc, max_tasks))
     anc = anchors()
     best = best_kernel(arc)
     g = gains(best, anc)

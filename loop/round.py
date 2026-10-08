@@ -144,7 +144,7 @@ def cmd_propose(a):
 
 def make_plan(a):
     arc = get_archive()
-    p = planner.plan(arc, max_tasks=a.max_tasks, last_round=a.last_round)
+    p = planner.plan(arc, max_tasks=a.max_tasks, last_round=a.last_round, mode=a.mode)
     d = rdir(a.round)
     d.mkdir(parents=True, exist_ok=True)
     (d / "plan.json").write_text(json.dumps(p, indent=1, default=str))
@@ -329,6 +329,8 @@ def main():
         q.add_argument("--round", required=True)
         q.add_argument("--max-tasks", type=int, default=3)
         q.add_argument("--last-round", help="round whose failures get repair tasks")
+        q.add_argument("--mode", choices=("exploit", "explore"), default="exploit",
+                       help="exploit: improve the best kernel band by band; explore: one big idea per session")
         q.add_argument("--gpus", help="where to test the final candidates: B200 (rented, Modal) and/or CSF3 GPUs; "
                        "default B200 with --tool-gpu B200, else A100,H200")
     for name in ("test", "status", "collect", "shortlist"):

@@ -188,7 +188,8 @@ def cmd_lead(a):
     except Exception as e:
         effects = f"(unavailable: {e})"
     prompt = "\n\n".join([
-        f"=== TASK ===\nRound {a.round}: update the hypothesis ledger and design {a.max_tasks} experiments.",
+        f"=== TASK ===\nRound {a.round}: update the hypothesis ledger and design {a.max_tasks} experiments."
+        + (f"\n\nBRIEF FROM THE OPERATOR FOR THIS ROUND:\n{a.brief}" if getattr(a, "brief", None) else ""),
         f"=== HYPOTHESIS LEDGER (loop/ledger.yaml) ===\n{LEDGER.read_text()}",
         f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=80)}",
         f"=== PORTAL RESULTS (best first) ===\n{calib}",
@@ -503,6 +504,7 @@ def main():
         q.add_argument("--max-tasks", type=int, default=3)
         q.add_argument("--last-round", help="round whose failures get repair tasks")
         q.add_argument("--use-plan", action="store_true", help="auto: run rounds/<round>/plan.json as it is")
+        q.add_argument("--brief", help="extra guidance for the research lead this round")
         q.add_argument("--lead", action="store_true", help="auto: let the research lead (claude backend) update "
                        "the hypothesis ledger and choose the experiments instead of the planner")
         q.add_argument("--mode", choices=("exploit", "explore"), default="exploit",

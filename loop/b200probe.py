@@ -62,6 +62,7 @@ def compile_cubin(src, opts=()):
 class Kernel:
     def __init__(self, cubin, name):
         torch.zeros(1, device="cuda")                    # make torch's primary context current
+        self.ctx = _ok(driver.cuCtxGetCurrent(), "cuCtxGetCurrent")
         self.module = _ok(driver.cuModuleLoadData(cubin), "cuModuleLoadData")
         self.fn = _ok(driver.cuModuleGetFunction(self.module, name.encode()), "cuModuleGetFunction")
         self.name = name
@@ -72,6 +73,7 @@ class Kernel:
         _ok(driver.cuFuncSetAttribute(self.fn, attr, nbytes), "cuFuncSetAttribute")
 
     def __call__(self, grid, block, *args, smem=0, stream=None):
+        _ok(driver.cuCtxSetCurrent(self.ctx), "cuCtxSetCurrent")   # driver contexts are per thread
         vals, types = [], []
         for a in args:
             if isinstance(a, torch.Tensor):

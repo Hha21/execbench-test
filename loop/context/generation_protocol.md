@@ -111,6 +111,13 @@ resources_sm100a:                # estimates; the loop overwrites them with the 
 knobs: {ROWS: 16, STAGES: 4, PROGS_PER_SM: 2, num_warps: 4}
 dispatch:                        # only for dispatch:size designs
   - {max_tokens: 600, kernel: _qk_rms, meta: {ROWS: 4, num_warps: 2}}
+paths:                           # REQUIRED. What each code path does, for the emulator (portal = rented x correction)
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+  # one entry per size range, smallest first; max_tokens is the largest B*S it serves (null = all above).
+  # lang triton|cuda|cute; width 128|256; threads per CTA; rows per CTA; grid oneshot|persistent;
+  # mem ldg|tma|cpasync; wstat true|false; launches 1|2; prefetch true|false;
+  # x none|ef (Q/K loads); w none|el|nc (weight loads); st none|ef|el (output stores). Omitted = default.
 runs_on:                         # can this exact code run, and is the timing representative of B200 behaviour?
   H200: {runs: true, representative: true}
   A100: {runs: true, representative: false, note: "Triton compiles a non-TMA fallback on sm_80 (runtime untested); correctness check only"}

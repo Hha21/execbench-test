@@ -190,6 +190,19 @@ passed, with 0.15% run-to-run noise.
   hints, and it is no faster than the 128-bit, hinted `g2-os-r8w4`. Small sizes are the same for all three. The
   untested combination is 128-bit loads without hints, which would separate width from hints (`b200_sota.md` §3).
   [portal; INFERRED]
+- **Reading B200 test numbers (8 October).** The test bench is a rented B200 whose SM clock runs at about
+  1940 MHz under load; the portal locks it at 1500 MHz (DRAM 3996 MHz on both). So run_tests reports a *predicted
+  portal score ± error* from a multi-fidelity emulator fitted on 17 kernels measured on both (loop/emulator.py).
+  What it learned:
+  - Portal times are longer than rented ones by ~15% (S), ~9% (M), ~0-5% (L): the fixed cost is clock-bound.
+  - A kernel that runs at plain-copy speed on the rented B200 transfers almost 1:1 at large sizes. A kernel that
+    lags a plain copy is partly SM-bound and loses **more** on the portal: about +5% for each 20% of lag at L.
+    Prefer designs that stay memory-bound (copy-like); extra instructions per byte cost more on the portal than
+    the bench shows.
+  - No single design feature (hints, CTA size, width, prefetch, language) has an effect beyond about ±2-4% once lag
+    is accounted for, and typical prediction error is ±0.01 in score. **A change worth less than ~1% cannot be
+    confirmed on the bench**; only the portal settles it. Aim for changes worth several percent in a band.
+  - r8/r9 (EF loads at M, 512-thread CTAs at L) looked 1% faster on the bench and were 3-4% slower on the portal.
 - **Where the fixed cost goes (rented B200, harness timing, 7 October; unlocked clocks, so the portal is a little
   slower).** Plain float4 kernels, grid of 256-thread CTAs over the same bytes as #38:
 

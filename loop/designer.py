@@ -62,7 +62,11 @@ DRAFT = {"type": "object", "properties": {
     "files": {"type": "array", "items": {"type": "object", "properties": {
         "path": {"type": "string"}, "content": {"type": "string", "description": "complete file"}},
         "required": ["path", "content"]}},
-    "note": {"type": "string", "description": "one line: what this draft changes"}},
+    "note": {"type": "string", "description": "one line: what this draft changes"},
+    "paths": {"type": "array", "description": "the design card's `paths` block for this draft (what each size "
+              "range's code path does: lang, width, threads, rows, grid, mem, x, w, st, prefetch...). run_tests uses "
+              "it to predict the portal score with the emulator; without it the prediction has wider error bars.",
+              "items": {"type": "object"}}},
     "required": ["solution_spec", "files"]}
 
 TOOLS = [
@@ -277,7 +281,25 @@ def fmt_compile(res):
     return "\n".join(lines)
 
 
-def fmt_test(res, ref, best, anc, k=None):
+def emulator_line(emu, paths, wl, ref, best):
+    """Predicted portal score from this B200 run, via the multi-fidelity emulator (loop/emulator.py)."""
+    rented = {w["workload"]: w["latency_us"] for w in wl if w.get("latency_us")}
+    ref_now = {w["workload"]: w["latency_us"] for w in ref["workloads"] if w.get("latency_us")}
+    import emulator
+    ref_train = emulator.rented_times(emu.arc.get(best["id"]) or {})
+    if ref_train:      # this container may run a little faster or slower than the training runs: rescale by the reference
+        rented = {k: v * ref_train[k] / ref_now[k] for k, v in rented.items() if k in ref_train and k in ref_now}
+    guessed = not paths
+    p = emu.predict(paths or emu.feats.get(best["id"]) or [{}], rented, best_score=best["b200"]["score"])
+    sd = math.sqrt(p["sd"] ** 2 + (0.004 ** 2 if guessed else 0))
+    return (f"predicted portal score {p['score']:.4f} ± {sd:.4f} (current best {best['b200']['score']:.4f} on the portal; "
+            f"P(beats it) = {p['p_better']:.0%}). From the multi-fidelity emulator: portal = this B200's time x a "
+            f"correction learned from {len(emu.kernels)} kernels measured on both, by size and by design features; "
+            f"the ± grows for designs unlike those." + (" No `paths` given, so the parent's features were assumed; "
+                                                         "pass `paths` for a sharper prediction." if guessed else ""))
+
+
+def fmt_test(res, ref, best, anc, k=None, emu=None, paths=None):
     wl = res.get("workloads") or []
     passed = sum(w["status"] == "PASSED" for w in wl)
     lines = [f"run_tests on {res.get('gpu', '?')} ({res.get('seconds', '?')} s): {passed}/{len(wl) or 16} workloads "
@@ -306,8 +328,11 @@ def fmt_test(res, ref, best, anc, k=None):
     lines.append(f"latency vs reference {ref['ref']} on the same GPU (µs, this vs reference):\n  " + "; ".join(rows))
     by_band = {b: gmean([x for bs, v in rel.items() if band_of(bs) == b for x in v]) for b in "SML"}
     lines.append("change by band (geomean): " + ", ".join(f"{b} {100 * (v - 1):+.1f}%" for b, v in by_band.items() if v))
-    bt = planner.b200_times(best)
     on_b200 = "B200" in str(res.get("gpu"))
+    if on_b200 and emu is not None:
+        lines.append(emulator_line(emu, paths, wl, ref, best))
+        return "\n".join(lines)
+    bt = planner.b200_times(best)
     k = (k or {}) if on_b200 else {}
     pred = {bs: t * (gmean(rel[bs]) ** k.get(band_of(bs), 1.0) if rel.get(bs) else 1.0) for bs, t in bt.items()}
     if on_b200:
@@ -352,12 +377,13 @@ def with_tail_cache(messages):
 
 
 class Session:
-    def __init__(self, name, task, static, dyn, server, best, anc, arc, a, d):
+    def __init__(self, name, task, static, dyn, server, best, anc, arc, a, d, emu=None):
         self.name, self.task, self.server, self.best, self.anc, self.arc, self.a = name, task, server, best, anc, arc, a
         self.messages = [llm.system_message(static),
                          {"role": "user", "content": [{"type": "text", "text": dyn, "cache_control": CACHE}]}]
         self.gpu_calls, self.drafts, self.probes = 0, 0, 0
         self.k = planner.rented_exponents(arc, best)
+        self.emu = emu
         self.totals = dict(prompt_tokens=0, completion_tokens=0, cached_tokens=0, reasoning_tokens=0, cost_usd=0.0,
                            seconds=0.0)
         self.log_json, self.log_md = d / f"{name}.jsonl", d / f"{name}.md"
@@ -415,7 +441,7 @@ class Session:
             self.measured_path.write_text(json.dumps(self.measured))
         if kind == "compile":
             return fmt_compile(res)
-        return fmt_test(res, self.server.reference(), self.best, self.anc, self.k)
+        return fmt_test(res, self.server.reference(), self.best, self.anc, self.k, self.emu, args.get("paths"))
 
     def turn(self, n, tool_choice=None):
         effort = self.a.effort if n == 0 else self.a.turn_effort
@@ -484,7 +510,16 @@ def run_sessions(round_id, jobs, static, a, slurm, sessions_dir):
                              "Try again later, or another --tool-gpu.")
         print(f"tool server up on {gpu}", flush=True)
         static = static + "\n\n" + PROTOCOL.format(gpu=gpu, gpu_calls=a.gpu_calls, turns=a.turns)
-        sess = {i: Session(name, t, static, dyn, server, best, anc, arc, a, sessions_dir) for i, t, dyn, name in jobs}
+        emu = None
+        if isinstance(server, ModalB200):
+            try:
+                import emulator
+                emu = emulator.Emulator(arc)
+                print(f"emulator: {len(emu.kernels)} paired kernels, hyperparameters {emu.hp}", flush=True)
+            except Exception as e:                    # fall back to the per-band correction
+                print(f"emulator unavailable ({type(e).__name__}: {e}); using the per-band correction", flush=True)
+        sess = {i: Session(name, t, static, dyn, server, best, anc, arc, a, sessions_dir, emu)
+                for i, t, dyn, name in jobs}
         warm = threading.Event()
         with ThreadPoolExecutor(max_workers=len(sess)) as pool:
             first = min(sess)

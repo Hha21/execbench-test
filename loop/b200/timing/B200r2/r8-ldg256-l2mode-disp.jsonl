@@ -1,0 +1,16 @@
+{"workload": {"axes": {"batch_size": 2, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00546}}}
+{"workload": {"axes": {"batch_size": 4, "seq_len": 1657}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.09281}}}
+{"workload": {"axes": {"batch_size": 4, "seq_len": 1024}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05813}}}
+{"workload": {"axes": {"batch_size": 8, "seq_len": 773}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.08652}}}
+{"workload": {"axes": {"batch_size": 8, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0143}}}
+{"workload": {"axes": {"batch_size": 2, "seq_len": 293}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00865}}}
+{"workload": {"axes": {"batch_size": 16, "seq_len": 256}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05794}}}
+{"workload": {"axes": {"batch_size": 1, "seq_len": 1024}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01466}}}
+{"workload": {"axes": {"batch_size": 4, "seq_len": 256}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01418}}}
+{"workload": {"axes": {"batch_size": 1, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00413}}}
+{"workload": {"axes": {"batch_size": 32, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05799}}}
+{"workload": {"axes": {"batch_size": 4, "seq_len": 512}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0285}}}
+{"workload": {"axes": {"batch_size": 1, "seq_len": 131}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.004070000000000001}}}
+{"workload": {"axes": {"batch_size": 8, "seq_len": 256}}, "evaluation": {"status": "RUNTIME_ERROR", "log": "Timing failed: No timing results for methodology: cupti", "performance": {"latency_ms": null}}}
+{"workload": {"axes": {"batch_size": 1, "seq_len": 8192}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.11487}}}
+{"workload": {"axes": {"batch_size": 1, "seq_len": 256}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00554}}}

@@ -1,0 +1,39 @@
+# Per-path design features of kernels with portal results, for the multi-fidelity emulator (loop/emulator.py).
+# A kernel is a list of code paths; each path serves input sizes up to max_tokens (B*S; null = everything above).
+# New candidates carry the same block in their design card under `paths:`.
+#
+# Fields (defaults in brackets):
+#   lang: triton | cuda | cute          width: 128 | 256 (bits per global access)
+#   threads: CTA threads [256]          rows: rows of 128 floats per CTA [16]
+#   grid: oneshot | persistent          mem: ldg | tma | cpasync [ldg]       wstat: weight-stationary [false]
+#   launches: 1 | 2 [1]                 prefetch: L2 bulk prefetch of the tile [false]
+#   x: none | ef  (streamed Q/K loads)  w: none | el | nc (weight loads)    st: none | ef | el (output stores)
+
+v028:                 [{max_tokens: null, lang: triton, width: 128, threads: 64, rows: 32, grid: persistent}]
+v039:                 [{max_tokens: null, lang: triton, width: 128, threads: 256, rows: 16, grid: persistent, x: ef, w: el, st: ef}]
+v040:                 [{max_tokens: null, lang: triton, width: 128, threads: 128, rows: 2, grid: oneshot}]
+v050:                 [{max_tokens: null, lang: triton, width: 128, threads: 32, rows: 8, grid: oneshot, launches: 2}]
+g2-os-r16w8:          [{max_tokens: null, lang: triton, width: 128, threads: 256, rows: 16, grid: oneshot, x: ef, w: el, st: ef}]
+g2-os-r8w4:           [{max_tokens: null, lang: triton, width: 128, threads: 128, rows: 8, grid: oneshot, x: ef, w: el, st: ef}]
+g2-ws-hb16w8s3:       [{max_tokens: null, lang: triton, width: 128, threads: 256, rows: 16, grid: persistent, mem: cpasync, wstat: true, x: ef, st: ef}]
+g2-tma-r8s3:          [{max_tokens: null, lang: triton, width: 128, threads: 128, rows: 8, grid: persistent, mem: tma, w: el}]
+g2-tmaws-hb8s4:       [{max_tokens: null, lang: triton, width: 128, threads: 128, rows: 8, grid: persistent, mem: tma, wstat: true}]
+r2-ldg256-os-r16:     [{max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: el, st: ef}]
+r3-cute-ldg256-os-r16: [{max_tokens: null, lang: cute, width: 256, threads: 256, rows: 16, grid: oneshot}]
+d1-os-r8w4-nohint:    [{max_tokens: null, lang: triton, width: 128, threads: 128, rows: 8, grid: oneshot}]
+r5-ldg256-os-r16-stel: [{max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}]
+r6-s-ldef-nc-disp:
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+r7-ldg256-l2pf-mdisp:
+  - {max_tokens: 1536, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, prefetch: true}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+r8-ldg256-l2mode-disp:
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1536, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 512, rows: 32, grid: oneshot, st: el}
+r9-xo-spf-l2mode-disp:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, prefetch: true}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1536, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 512, rows: 32, grid: oneshot, st: el}

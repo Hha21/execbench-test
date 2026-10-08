@@ -231,6 +231,11 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
     best = best_kernel(arc)
     bt = b200_times(best)
     ranked, explore, awaiting = [], [], []
+    try:
+        import emulator
+        emu = emulator.Emulator(arc)
+    except Exception:
+        emu = None
     for r in arc.values():
         if r.get("round") != round_id or r.get("status") != "passed" or r.get("b200"):
             continue
@@ -241,6 +246,20 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
             awaiting.append(dict(id=r["id"], gpu=waiting))
             continue
         ref = (best.get("timings") or {}).get(gpu or "", {})
+        if gpu == "B200r" and emu is not None:
+            card = archive.parse_card(r.get("card", ""))
+            paths = card.get("paths") if isinstance(card.get("paths"), list) else None
+            parent = next((pp for pp in (r.get("parents") or []) if pp in emu.feats), best["id"])
+            pred = emu.predict(paths or emu.feats.get(parent) or [{}], emulator.rented_times(r),
+                               best_score=best["b200"]["score"])
+            rel = defaultdict(list)
+            for key, v in r["timings"]["B200r"].items():
+                if v and ref.get(key):
+                    rel[archive.tokens(key)].append(v / ref[key])
+            ranked.append(dict(id=r["id"], gpu="B200r (emulator)" + ("" if paths else ", parent's features"),
+                               predicted_score=pred["score"], sd=pred["sd"], p_better=pred["p_better"],
+                               rel=f"{fmt_rel(rel, 0, S_MAX)}/{fmt_rel(rel, S_MAX, M_MAX)}/{fmt_rel(rel, M_MAX, 1 << 30)}"))
+            continue
         if gpu and ref:
             ct = r["timings"][gpu]
             rel = defaultdict(list)
@@ -255,7 +274,7 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
         else:
             explore.append(dict(id=r["id"], gpu=None, predicted_score=None,
                                 rel="no representative cheap GPU (B200-only features)"))
-    ranked.sort(key=lambda x: -x["predicted_score"])
+    ranked.sort(key=lambda x: (-x.get("p_better", -1), -x["predicted_score"]))
     return dict(best=best["id"], best_score=best["b200"]["score"], awaiting=awaiting,
                 picks=ranked[:k_predicted] + explore[:k_explore], ranked=ranked, explore=explore)
 

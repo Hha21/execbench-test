@@ -155,7 +155,8 @@ def refresh(arc):
     for cid, v in verdicts.items():                   # a failure on any GPU (above all the B200) beats a pass elsewhere
         fails = [x for x in v.values() if x]
         arc[cid]["status"] = "; ".join(fails) if fails else "passed"
-    for sf in sorted((ROOT / "loop" / "rounds").glob("*/results/static_*.jsonl")):
+    for sf in sorted((ROOT / "loop" / "rounds").glob("*/results/static_*.jsonl")) + \
+            sorted((ROOT / "loop" / "b200").glob("static_*.jsonl")):
         for line in open(sf):
             s = json.loads(line)
             if s["id"] in arc and s.get("kernels"):

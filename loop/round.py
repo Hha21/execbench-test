@@ -273,13 +273,17 @@ def cmd_shortlist(a):
              f"speed relative to the reference, per workload, on the rented B200 when measured there (else its most "
              f"representative cheap GPU), onto the reference's "
              f"B200 per-workload times.", "",
-             "| file | basis | change vs reference S/M/L | predicted B200 score |", "|---|---|---|---|"]
+             "| file | basis | change vs reference S/M/L (rented) | predicted portal score | P(beats best) |",
+             "|---|---|---|---|---|"]
     for w in s.get("awaiting", []):
-        lines.append(f"| (not copied) `{w['id']}` | waiting for {w['gpu']} timings | - | run collect again when they land |")
+        lines.append(f"| (not copied) `{w['id']}` | waiting for {w['gpu']} timings | - | run collect again when they land | - |")
     for p in s["picks"]:
         shutil.copy(ROOT / arc[p["id"]]["solution"], out / f"{p['id']}.json")
         pred = f"{p['predicted_score']:.4f}" if p["predicted_score"] else "unknown (exploration)"
-        lines.append(f"| `{p['id']}.json` | {p['gpu'] or '-'} | {p['rel']} | {pred} |")
+        if p.get("sd"):
+            pred += f" ± {p['sd']:.4f}"
+        pb = f"{p['p_better']:.0%}" if p.get("p_better") is not None else "-"
+        lines.append(f"| `{p['id']}.json` | {p['gpu'] or '-'} | {p['rel']} | {pred} | {pb} |")
     (out / "README.md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

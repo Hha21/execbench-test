@@ -1,71 +1,69 @@
 # solx: evolving B200 kernels without a B200
 
 An automated research loop in which LLM agents design, test and refine GPU kernels for NVIDIA's
-[SOL-ExecBench](https://research.nvidia.com/benchmarks/sol-execbench) leaderboard. The target is problem
-**#38 `038_flux_multi_head_rmsnorm_qk`**: per-head RMSNorm of the query and key tensors of FLUX attention, in fp32,
-at 16 input sizes from 13 MB to 805 MB of traffic. Kernels are scored on the portal's B200 (clocks locked). We test
-on a rented B200 (Modal, pay per second), correct its numbers with a multi-fidelity emulator trained on our own portal
-results, and submit the best candidates to the portal by hand (about five results a day).
+[SOL-ExecBench](https://research.nvidia.com/benchmarks/sol-execbench) leaderboard. Kernels are scored on the portal's
+B200 with clocks locked. We test on a rented B200 (Modal, pay per second), correct its numbers with a multi-fidelity
+emulator trained on our own portal results, and submit the best candidates to the portal by hand (about five results
+a day). The first problem is #38; more are planned.
 
 ## Where we are
 
-**0.6111**, faster than NVIDIA's hidden baseline at all 16 sizes (public #1: 0.628 when last checked).
-
-```mermaid
-xychart-beta
-    title "B200 portal score (flat line: public #1, 0.628)"
-    x-axis ["v028", "v039", "g2-os", "r3-cute", "r5-stel", "r6-s", "r10-rtok"]
-    y-axis "SOL score" 0.40 --> 0.65
-    line [0.451, 0.531, 0.577, 0.588, 0.609, 0.610, 0.611]
-    line [0.628, 0.628, 0.628, 0.628, 0.628, 0.628, 0.628]
-```
-
-| Kernel | How it was made | B200 latency (geomean) | Portal score |
+| Problem | Best | How | Public #1 |
 |---|---|---|---|
-| Scoring baseline (hidden, NVIDIA) | - | 31.8 µs | 0.500 |
-| `v028` | first submission: best of 72 Triton knob variants on A100 | 35.9 µs | 0.451 |
-| `v039` | best knob variant on B200 (persistent grid) | 28.6 µs | 0.531 |
-| `g2-os-r8w4` | generation 2: one-shot Triton kernel | 25.3 µs | 0.577 |
-| `r3-cute-ldg256-os-r16` | round r3: CuTe DSL, 256-bit loads, no cache hints | 24.6 µs | 0.588 |
-| `r5-ldg256-os-r16-stel` | round r5, first interactive session: outputs kept in L2 (`evict_last` stores) | 23.4 µs | 0.609 |
-| `r6-s-ldef-nc-disp` / `c1` | small-input load policy; resubmitted unchanged as a control (0.6105) | 23.3 µs | 0.610 |
-| `r10-rtok-m-disp` | exploratory round r10: 3 tokens per thread at 1024 tokens | **23.2 µs** | **0.611** |
-| Leaderboard #1 (public) | - | 22.2 µs | 0.628 |
+| **#38 `038_flux_multi_head_rmsnorm_qk`** (per-head RMSNorm of Q and K, fp32, 16 sizes, 13-805 MB) | **0.6125** (`c2-cluster2-s-only`) | one-shot 256-bit kernel, outputs kept in L2, 3 tokens per thread at 1024 tokens, cluster-of-2 launch at the smallest sizes | 0.6275 |
 
-Large inputs run at about the B200's practical memory ceiling. What is left sits at small and medium sizes: a
-clock-bound fixed cost of about 1 µs outside the kernel's blocks, and the write-back of dirty lines that the harness's
-cache flush leaves in L2 (20-35% of in-kernel time). Details: [`loop/context/problem_038.md`](loop/context/problem_038.md)
-and the hypothesis ledger [`loop/ledger.yaml`](loop/ledger.yaml).
+<details><summary>#38 history</summary>
+
+| Kernel | How it was made | Portal score |
+|---|---|---|
+| Scoring baseline (hidden, NVIDIA) | - | 0.500 |
+| `v028` | first submission: best of 72 Triton knob variants on A100 | 0.451 |
+| `v039` | best knob variant on B200 (persistent grid) | 0.531 |
+| `g2-os-r8w4` | generation 2: one-shot Triton kernel | 0.577 |
+| `r3-cute-ldg256-os-r16` | round r3: CuTe DSL, 256-bit loads, no cache hints | 0.588 |
+| `r5-ldg256-os-r16-stel` | round r5, first interactive session: outputs kept in L2 (`evict_last` stores) | 0.609 |
+| `r6-s-ldef-nc-disp` / `c1` | small-input load policy; resubmitted unchanged as a control (0.6105) | 0.610 |
+| `r10-rtok-m-disp` | exploratory round r10: 3 tokens per thread at 1024 tokens | 0.611 |
+| `c2-cluster2-s-only` | portal A/B after round r11: cluster-of-2 launch only at <= 300 tokens | **0.6125** |
+
+Large inputs run at the B200's DRAM read ceiling; small inputs sit at the launch floor; medium inputs are bounded by
+the write-back of dirty lines the harness's cache flush leaves in L2. Details: the problem card and the hypothesis
+ledger.
+</details>
 
 ## How the loop works
 
 ```mermaid
 flowchart TB
-    subgraph outer["Outer loop: the B200 portal (about 5 results a day)"]
+    subgraph portal["Portal: the judge (manual, about 5 results a day)"]
         SL["round.py shortlist<br/>predicted portal score ± error,<br/>P(beats the best)"]
-        SUB["you submit privately to #38"]
+        SUB["you submit privately"]
         ING["ingest_portal.py<br/>per-size latency, hidden baseline, score"]
         SL --> SUB --> ING
     end
-    subgraph middle["Middle loop: research lead (each round)"]
-        LEAD["research lead (Fable, headless Claude)<br/>reads the evidence, updates the ledger,<br/>designs experiments with success criteria"]
-        LEDGER[("ledger.yaml<br/>hypotheses: open / supported / refuted")]
-        EVID[("archive + lab notebook<br/>every kernel, portal vs bench outcome,<br/>findings incl. dead ends")]
-        EVID --> LEAD
-        LEDGER <--> LEAD
+    subgraph knowledge["Shared knowledge (per problem)"]
+        LEDGER[("hypothesis ledger<br/>open / supported / refuted, with evidence")]
+        NOTE[("archive + lab notebook<br/>every kernel; portal vs bench outcomes;<br/>findings and dead ends")]
+        EMU["emulator<br/>portal ≈ bench time × correction<br/>(size, design features, copy lag)"]
     end
-    subgraph inner["Inner loop: design sessions (Opus / Sonnet, headless Claude, in parallel)"]
-        SESS["design session<br/>hypothesis -> probe -> build -> measure -> revise"]
-        TOOLS["MCP tools (mcp_tools.py)<br/>probe_b200 (1-6 s), compile_b200, run_tests (10-20 s)<br/>on a rented B200 (Modal), predict_score,<br/>get_kernel, read_example"]
-        EMU["emulator.py<br/>portal = rented time x correction<br/>(size, design features, copy lag)"]
-        SESS <-->|"tool calls"| TOOLS
-        TOOLS --> EMU
+    subgraph round["Each round"]
+        LEAD["research lead · Fable<br/>reads the evidence, updates the ledger,<br/>designs experiments with success criteria"]
+        subgraph sessions["design sessions · Opus / Sonnet, in parallel (headless Claude on your plan)"]
+            S1["hypothesis → probe → build →<br/>measure → revise → hand in<br/>kernel + design card + findings"]
+        end
+        TOOLS["MCP tools on a rented B200 (Modal)<br/>probe_b200 1-6 s · compile_b200 · run_tests 10-20 s<br/>predict_score · get_kernel · read_example"]
+        LEAD -->|"experiments"| S1
+        S1 <-->|"tool calls"| TOOLS
     end
-    LEAD -->|"experiments"| SESS
-    SESS -->|"candidate + design card + findings"| EVID
-    EVID --> SL
-    ING --> EVID
-    ING -->|"new training pair"| EMU
+    LEDGER --> LEAD
+    NOTE --> LEAD
+    LEAD -->|"updated ledger"| LEDGER
+    S1 -->|"candidates, findings"| NOTE
+    TOOLS --> EMU
+    EMU --> SL
+    NOTE --> SL
+    ING -->|"portal result"| NOTE
+    ING -->|"training pair"| EMU
 ```
 
 - **Research lead.** Once per round, a Fable agent reads the lab notebook (every portal result next to its bench

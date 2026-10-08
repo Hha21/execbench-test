@@ -137,7 +137,7 @@ def claude_sessions(round_id, jobs, static, a, sdir):
                                     billing="claude-plan (cost is the API-equivalent estimate)")) + "\n")
         return i, (text, info)
 
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+    with ThreadPoolExecutor(max_workers=max(1, min(a.parallel, len(jobs)))) as pool:    # each session = claude + MCP
         return dict(pool.map(one, jobs))
 
 
@@ -469,6 +469,8 @@ def main():
     llm_args.add_argument("--session-model", default="opus", help="claude backend: model for design sessions")
     llm_args.add_argument("--lead-model", default="fable", help="claude backend: model for the research lead")
     llm_args.add_argument("--session-timeout", type=int, default=60, help="claude backend: minutes per session")
+    llm_args.add_argument("--parallel", type=int, default=2, help="claude backend: sessions at once (each runs a "
+                          "claude process and an MCP server; keep low on a laptop)")
     llm_args.add_argument("--interactive", action="store_true",
                           help="design sessions with tools (compile, test, score model) on a CSF3 GPU tool server")
     llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server: CSF3 types "

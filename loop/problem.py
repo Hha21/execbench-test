@@ -6,6 +6,7 @@ every subprocess (MCP tool servers, session runners).
 
 Layout per problem, problems/<name>/:
     card.md         problem card: semantics, numerics, workloads, bounds, results, lessons (part of the briefing)
+    sol.yaml        optional: `flops: <expression in axis names>`, so the portal's Tsol can be modelled as a roofline
     ledger.yaml     hypothesis ledger
     features.yaml   per-path design features of kernels with portal results (emulator)
     archive.json    every kernel: design card, timings per GPU, compile statistics, portal results
@@ -83,6 +84,8 @@ class Problem:
         self.archive = self.dir / "archive.json"
         self.rounds = self.dir / "rounds"
         self.b200 = self.dir / "b200"
+        sol = self.dir / "sol.yaml"
+        self.sol = (__import__("yaml").safe_load(sol.read_text()) or {}) if sol.exists() else {}
         sizes = sorted(self.mbytes(self.key(w["axes"])) for w in self.workloads)   # tertiles over workloads (5/5/6 for #38)
         n = len(sizes)
         self.s_max = sizes[max(0, n // 3 - 1)]
@@ -131,6 +134,10 @@ class Problem:
                 n = math.prod(env[d] if isinstance(d, str) and not d.isdigit() else int(d) for d in (t.get("shape") or []))
                 total += n * DTYPE_BYTES.get(t["dtype"], 4)
         return total / 1e6
+
+    def gflop(self, key):
+        """GFLOP of the workload from sol.yaml's `flops` expression; 0 when the problem has none."""
+        return _eval(self.sol["flops"], self.axes(key)) / 1e9 if self.sol.get("flops") else 0.0
 
     def band(self, key):
         mb = self.mbytes(key)

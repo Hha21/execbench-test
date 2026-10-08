@@ -85,9 +85,13 @@ The loop's S/M/L bands (by bytes) do not follow the physics. The useful bands ar
   CuTe DSL `dense_gemm_persistent` example (256x256 tile, cluster 2x1, 2-CTA MMA) reaches 195 us at M=16294 vs
   cuBLAS 199 us: the same ceiling [probe]. At the portal's 1500 MHz the FP16 peak is 1.82 PF, so these 6 workloads
   cannot go below ~102-188 us; whether cuBLAS slows by the full 1.31x there is unknown.
-- **SOLAR Tsol guess**: `max(FLOPs / 2.25 PF, bytes / 8 TB/s)`: ~2.6 us for M <= 172, 3.1-8.9 us for 289-952, and
-  82-152 us for the compute band. If Tb is cuBLAS, the S/M-band score ceiling at the 6.4 us floor is about
-  `5.2 / (3.8 + 5.2) = 0.58`, and 0.55 at 6.9 us; large-M scores stay near 0.5 unless cuBLAS is beaten.
+- **Portal Tsol (measured, r0's page)**: `max(bytes / 6.75 TB/s, FLOPs / 1.81 PFLOP/s)` reproduces all 25 reported
+  scores to within rounding (rms error 0.0014; `sol.yaml`, `planner.sol_model`). That is 3.1-3.7 us for M <= 289,
+  5.7 us at 492, 11.1 us at 952 and 102-189 us for the compute band. The compute term already binds from M ~ 450.
+- **Score leverage per workload.** Small/mid M: Tb 8.7-21 us against Tsol 3-11 us, so 1 us is worth ~0.04 of S
+  there; reaching the ~8 us portal read floor at M = 17-128 would give S ~ 0.56-0.57. Large M: Tsol is 85% of Tb
+  (189 vs 223 us at M=16294), so **each 1% of time is ~0.02-0.03 of S** on those 6 workloads: matching the
+  reference is +0.08-0.11 each, beating it by 3% about +0.15.
 
 ## 5. Where the reference loses, and what a fast kernel must do
 
@@ -128,13 +132,24 @@ r0 (`r0-skinny16-cublas`): M <= 16 served by the mma.sync skinny kernel (46 regs
 111-196 us (cuBLAS 109-195, within noise). Skinny-kernel knobs tried: 8 warps x 4 loads per lane best; 4 warps
 (8.9 us), 16 warps (7.7-8.4), BN=16 (7.5-7.7), evict_first loads (no change), A loads before B loads (+0.3 us).
 
+**Portal, submission 62765: score 0.4870** (B200, v1.1, AC). Per workload (portal us / Tb us / S):
+M <= 16 7.7-8.2 / 8.7-9.3 / 0.54-0.55 (our kernel, -10% on both machines); M = 17-952 9.1-22.0 / 8.9-21.3 /
+0.46-0.52; M >= 8828 140.6-242.6 / 130.6-223.1 / **0.39-0.42**. The same `at::matmul_out` cuBLAS call is 3%
+slower than the reference on the rented B200 at large M and **6-9% slower on the portal** (mid sizes: 0.95-1.11x
+Tb, i.e. portal Tb noise is ~+-5% per size at 9-20 us, while r0's own portal times are smooth). Portal/rented time
+ratio: 1.07-1.13 for M <= 16 (memory-bound), 1.18-1.23 for 93-952, 1.22-1.26 for the compute band (clock ratio
+1965/1500 = 1.31). The reference's portal/rented ratio is 1.06-1.23 (noisy at small M, 1.16-1.21 at large M).
+
 ## 8. Open questions
 
 - The exact atol/rtol of this definition (both cuBLAS and mma.sync pass; relevant only if a reduction order gets
   sloppy).
-- Tb per workload: is the hidden baseline exactly cuBLAS, and how much slower is cuBLAS at the 1500 MHz lock on the
-  compute band? (first portal submission)
-- Tsol per workload: FLOPs/2.25 PF or bytes/8 TB/s? (derive from the submission page)
+- **Why is `at::matmul_out(C, A, B.t())` slower than the reference's `torch.matmul(A, B.T)` at large M** (3% rented,
+  6-9% portal)? Same library; candidates: a different nvjet kernel/heuristic for a caller-supplied C, the cuBLAS
+  workspace, cublas vs cublasLt path, output alignment. Check the kernel names and times of both calls [probe]. This
+  is worth ~+0.02 of the total score on its own.
+- Answered by r0's page: Tb is the reference (cuBLAS) timed on the portal, 1.16-1.21x the rented time at large M
+  (not the full 1.31x clock ratio); Tsol is the roofline above.
 - Whether tcgen05 can be driven from raw PTX in a small kernel for M = 64-952 without the CUTLASS machinery, and the
   CuTe DSL compile time budget (20 s per kernel, 300 s limit).
 - Whether a 2-CTA cluster DSMEM split-K reduction costs less than the 0.3-0.6 us it is meant to save at M <= 16.

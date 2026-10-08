@@ -1,0 +1,1 @@
+flops: "2 * M * N * K"     # C = A @ B.T, fp16 tensor cores; the portal Tsol is max(bytes / 6.75 TB/s, flops / 1.81 PF)

@@ -47,17 +47,44 @@ def anchors():
     """Per workload key: (Tb, Tsol) in µs for the current problem, recovered from every ingested portal page.
 
     Tb is shown on the page; Tsol follows from the per-workload score S = (Tb - Tsol) / ((T - Tsol) + (Tb - Tsol)).
-    Workloads with no well-conditioned score get the problem's median Tsol per MB times their size."""
-    tb, ts = {}, defaultdict(list)
+    That inversion is ill-conditioned near S = 0.5, so those workloads get the roofline fitted by sol_model()."""
+    tb, ts, rows = {}, defaultdict(list), []
     for r in archive.portal_rows(archive.PORTAL_WL):
         k = P().key_from_label(r["workload"])
-        t, b, s = float(r["latency_ms"]), float(r["baseline_ms"]), float(r["sol_score"])
-        tb[k] = b * 1e3
-        if abs(1 - 2 * s) > 0.1:
-            ts[k].append((b - s * t - s * b) / (1 - 2 * s) * 1e3)
-    per_mb = [statistics.median(v) / mb(k) for k, v in ts.items() if v]
-    fallback = statistics.median(per_mb) if per_mb else 0.0
-    return {k: (tb[k], statistics.median(ts[k]) if ts.get(k) else fallback * mb(k)) for k in tb}
+        t, b, s = float(r["latency_ms"]) * 1e3, float(r["baseline_ms"]) * 1e3, float(r["sol_score"])
+        tb[k] = b
+        rows.append((k, t, b, s))
+        x = (b - s * t - s * b) / (1 - 2 * s) if abs(1 - 2 * s) > 0.1 else None
+        if x is not None and 0 < x < min(t, b):
+            ts[k].append(x)
+    model = sol_model(rows)
+    return {k: (tb[k], statistics.median(ts[k]) if ts.get(k) else model(k)) for k in tb}
+
+
+def sol_model(rows):
+    """Roofline Tsol(key) = max(MB / TB/s, GFLOP / PFLOP/s), fitted to the reported per-workload scores.
+
+    rows are (key, T, Tb, S). #218's portal scores fit this with 6.75 TB/s and 1.81 PFLOP/s to within rounding; a
+    problem without a sol.yaml `flops` expression gets the bandwidth term only."""
+    if not rows:
+        return lambda k: 0.0
+    flops = any(P().gflop(k) for k, *_ in rows)
+    tsol = lambda k, bw, pf: max(mb(k) / bw, P().gflop(k) / pf if flops else 0.0)
+
+    def err(bw, pf):
+        e = 0.0
+        for k, t, b, s in rows:
+            x = tsol(k, bw, pf)
+            d = (t - x) + (b - x)
+            e += ((b - x) / d - s) ** 2 if d > 0 and x < b else 1.0
+        return e
+
+    bw, pf, step = 7.0, 2.0, 0.5                      # coarse-to-fine search in log space
+    for _ in range(12):
+        grid = [(bw * math.exp(i * step), pf * math.exp(j * step)) for i in range(-4, 5) for j in (range(-4, 5) if flops else [0])]
+        bw, pf = min(grid, key=lambda p: err(*p))
+        step /= 2
+    return lambda k: tsol(k, bw, pf)
 
 
 def score(times, anc):

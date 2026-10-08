@@ -1,0 +1,401 @@
+=== TASK ===
+Round r13: update the hypothesis ledger and design 4 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+We are at 0.6125; the public #1 scores 0.6275, about 2.5% lower geomean latency (~0.015 score). Twelve rounds mapped the one-shot kernel's limits: L at the DRAM read ceiling, S at the launch floor (minus cluster-2), M bounded by the harness's dirty-flush write-backs. Reason explicitly about what a kernel scoring 0.6275 must be doing differently given our per-size portal times and the per-size baseline and SOL anchors: which sizes would its extra score most plausibly come from, how many microseconds, and which legitimate mechanisms could deliver that. Then propose experiments outside the current design family (at least two), each with a clear test. Keep the constraints in the ledger.
+
+=== HYPOTHESIS LEDGER (loop/ledger.yaml) ===
+# Hypothesis ledger for #38, maintained by the research lead (round.py lead) and read by every design session.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+# Seeded 8 October from rounds r1-r10 and the portal results; updated by the research lead for r11 and r12 (8 October).
+
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+hypotheses:
+- id: H1
+  statement: Output stores marked L2 evict_last keep output in L2 past the end of the timed window, so medium sizes gain most.
+  status: supported
+  evidence:
+  - 'portal: r5 0.609 vs r3 0.588 (M -8%)'
+  - 'probe r10: evict_last stores beat plain stores by 8-19% at 128-1024 tokens, 2.5-5% at 4096-8192'
+  - 'probe r10: the saving is capped at 3-4 us (~25-30 MB) from 1024 tokens up; partial/fractional evict_last is no better
+    (see H15)'
+- id: H2
+  statement: evict_first on stores and evict_last on weights hurt on B200.
+  status: supported
+  evidence:
+  - 'portal: r2 0.576 (hinted 256-bit) = g2 0.577 (hinted 128-bit); d1 0.582 (no hints)'
+  - quack sm100 regression
+  - 'portal r7 vs c1 at L (same code except x evict_first + nc weights): +1.9..+2.6%; evict_first on x costs at L too'
+- id: H3
+  statement: 256-bit loads/stores help medium and large sizes a little.
+  status: supported
+  evidence:
+  - 'portal: r3 (256-bit, no hints) vs d1 (128-bit, no hints): M -2.4%, L -1.2%'
+- id: H4
+  statement: CTA launch/retire overhead is a bottleneck, so fewer, fatter CTAs or one resident wave help.
+  status: refuted
+  evidence:
+  - 'probe r10: one-wave grids tie at 12.6-101 MB and lose 11-15% above 200 MB'
+  - 'portal: r8 512-thread CTAs at L +3.2%'
+  - 'probe r10: all 768 CTAs of the 12.6 MB grid start within 0.06 us; the empty-grid span overlaps fully with memory work
+    at L'
+  - 'probe r11 E3(1): empty-kernel CUPTI floor ~1.4 us at any block size; 768x256 1.63 us; launch params/API/smem/priority
+    move it by < 0.03 us'
+- id: H5
+  statement: TMA / bulk-copy pipelines cut SM instructions per byte and win at the portal's 1500 MHz SM clock.
+  status: refuted
+  evidence:
+  - 'probe r10: bulk stores 27% slower than STG.256 at 805 MB; bulk loads +3%; TMA + mbarrier setup adds ~0.8 us at 12.6 MB'
+  - 'portal: g2-tma 0.510, g2-tmaws 0.537; bench r10-bulk1d-ring-stel predicted 0.5815'
+- id: H6
+  statement: Persistent grids with work stealing remove the tail and beat one-shot.
+  status: refuted
+  evidence:
+  - 'probe r10: one failing atomic per CTA costs ~1 us at 12.6 MB; pipelined stealing +9-10% at S/M, +0.7% at L; static persistent
+    3% worse than stealing at L'
+  - 'portal: v039, g2-ws, g2-tma all slower; bench r10-ws-l-steal-disp predicted 0.605'
+- id: H7
+  statement: The harness's zero-fill flush leaves dirty lines in L2; their write-back during our kernel costs ~0.5 us at S
+    and ~4 us (about 30-40 MB) at M/L, and the cost lands on reads, not writes.
+  status: supported
+  evidence:
+  - 'probe r10: in-kernel span after zero flush vs read-only flush: 12.6 MB 3.07 vs 2.56 us, 25 MB 4.10 vs 3.58, 100 MB 16.6
+    vs 12.3'
+  - 'probe r10: read-only kernels +7..11 us at 100-400 MB after a zero flush, copy +5..6 us, write-only +-1 us'
+  - 'no legitimate kernel-side mechanism found; load hints do not avoid it at >= 1024 tokens (H8); the 586-token exception is
+    now H18'
+- id: H8
+  statement: evict_first on the streamed loads makes later allocations evict our own clean lines instead of dirty flush lines,
+    cutting H7's write-backs.
+  status: refuted
+  evidence:
+  - 'probe r10: read-only kernel -13 to -15% with evict_first loads, but the full kernel with evict_last stores gains only
+    1-2% at 256-1024 tokens (8% once at 586), 0 to +1.5% above; .cs/.lu/no_allocate/nc+EF all within +-2%'
+  - 'bench r10-ldef-real-stel-disp: S -0.8%, M -1.2%, L +0.3% vs r6; kept as a ~1% tweak for B*S <= 1024, not a lever'
+  - 'r10: the CUTLASS EVICT_FIRST constant passed as a kernel argument is a no-op; the qualifier or createpolicy form works'
+  - 'r11 probes: evict_first at 586 tokens -8% in three separate sessions (r10, r11-consol, r11-fi4lane); at 1024 -1.9..-2.5%;
+    at 2048 +1.5%. The size dependence is the open question (H18)'
+- id: H9
+  statement: 'The portal (SM 1500 MHz) penalises SM-bound designs more than the bench (~1940 MHz): kernels that lag a plain
+    copy on the bench lose more on the portal; the clock-bound share is ~2.5 us of 4.2 us at 12.6 MB and ~6 us of 14.5 us
+    at 100 MB.'
+  status: supported
+  evidence:
+  - 'emulator fit on 18 kernels: about +5% portal time per 20% copy lag at L'
+  - r8/r9 bench -1% -> portal +3-4%
+  - 'portal/bench ratios: c1 S +15%, M +9%, L 0% (INFERRED split of the clock-bound share)'
+  - 'r11-consol: copy lag of the current paths: S +3-5% (the shuffle/rsqrt chain, 0.15-0.2 us), 1024 R=3 +0.1%, 2048-8192 0%'
+  - 'r10-rtok R=3 (48 regs) at 1024 tokens: bench -2.7%, portal -2.4% vs c1; the 48-register path did not lose extra on the portal'
+  - 'untested: whether the rented B200 can lock clocks (nvidia-smi -lgc/-lmc); if it can, the emulator is replaced by direct timing (E4)'
+- id: H10
+  statement: At 12.6 MB the one-shot kernel already equals a plain copy; the remaining S time is ~1 us outside the CTAs (clock-bound),
+    one DRAM round trip (~0.7 us), streaming at the ~6 TB/s read cap, and H7's write-backs.
+  status: supported
+  evidence:
+  - 'probe r10 timelines: all 768 CTAs start within 0.06 us, first load returns at 0.67 us, last at 2.9 us; in-kernel span
+    3.1-3.3 us vs 4.16 us CUPTI'
+  - 'probe: copy 4.4 us vs r5 4.2 us (bench); empty 768-CTA grid 1.57 us'
+  - 'probe r11 E3(3), 128 tokens, medians of 105: CUPTI/in-kernel: EL stores 4.51/3.42, plain stores 4.35/3.30, no stores
+    3.80/2.75, empty body 2.02/0.38. Outside-the-CTAs 1.05 us with or without stores (launch front-end + teardown); reads
+    12.6 MB in ~2.1 us (~6 TB/s); stores add 0.67 us'
+  - portal marginal 12.6->25 MB 7-8 TB/s; fixed ~3.0 us on the portal
+- id: H11
+  statement: 'The ~7 TB/s read+write ceiling at L is DRAM/L2-side: read-only bandwidth (5.0-6.3 TB/s clean) does not rise with
+    more active SMs, more in-flight bytes per SM, TMA, or die-affine addressing, so no SM-side change can lift L.'
+  status: supported
+  evidence:
+  - 'probe r10: read-only 402 MB 71.9 us (64 us clean, 5.6-6.3 TB/s); write-only 54.6 us (7.4 TB/s); copy 6.7-6.95 TB/s'
+  - 'probe r10: 64-128 KB in flight per SM (R=2..4) and bulk loads do not beat r6 at L'
+  - 'probe r11 E1: read-only 400 MB gated by %smid: 148 SMs 83.9 us, 74 SMs (any half) 81.5-84.1 us, 37 SMs 91.3 us. Half the
+    SMs reach 100% of full read bandwidth'
+  - 'probe r11 E1: affine/mixed/sorted reads 77.4/77.8/78.2 us; anti-affine 96.9 (+25%, cross-die cap ~3.8 TB/s)'
+  - 'open corollary: the mixed read+write stream (7.0 TB/s) beats alternating pure phases (read 6.3, write 7.4 -> harmonic 6.8),
+    so read/write phasing cannot help'
+- id: H12
+  statement: Each B200 die homes half the HBM/L2; the address-to-partition hash is visible in low address bits, and a CTA
+    reading only lines homed on its own die gets higher bandwidth or lower latency than mixed traffic, so a die-affine tile
+    assignment lifts M/L.
+  status: refuted
+  evidence:
+  - 'probe r11 E1: cold-miss latency is bimodal (~790 near vs ~1160 cycles far); die map recovered (group A 72 SMs, group B 76);
+    home granularity exactly 4 KB; no XOR mask of bits 7..20 correlates (> 0.08): the hash uses physical bits above 2 MB'
+  - 'probe r11 E1: read 350 MB classified: affine 77.4 us, mixed 77.8, anti-affine 96.9; copy 265+265 MB affine/mixed within
+    1%; per-die queue needs one atomic per CTA (+6-7% at L)'
+  - 'r11-e1-h12-control: dead end, do not revisit'
+- id: H13
+  statement: FlashInfer's sm_100 layout (4 lanes per row, 32 floats per thread, 8 rows per warp instruction) beats the half-warp-per-row
+    layout on B200, especially at 4-60 MB.
+  status: refuted
+  evidence:
+  - 'fi-pr5305: 1.14x at M=8192, 1.20x at M=32768 rows (bf16) on B200'
+  - 'probe r11-fi4lane: 4-lane and 8-lane layouts within +-3% of c1 at 128-8192 tokens with matched hints, 1-4% slower at 586;
+    4/8-lane plain copies no faster than 16-lane copies. The bf16 gain was about bytes per thread, which fp32 already has'
+- id: H14
+  statement: Part of the ~1 us outside the CTAs at S depends on launch attributes we control; a cluster-of-2 launch cuts the
+    smallest sizes.
+  status: supported
+  evidence:
+  - 'probe r10: empty 768-CTA grid spans 1.57 us CUPTI; r6 CUPTI 4.16 vs in-kernel 3.1-3.3 us'
+  - 'probe r11 E3(2): param count, launch API, dyn smem, memory-sync domain, priority, carveout (except 100) each move the real
+    kernel by 0 +- 0.03 us; cluster 2 is the only attribute that moves it (-3..-4% at 128-256 tokens); cluster 4/8/16 worse'
+  - 'portal r11-e3-cluster2-rtok-disp (#62670) vs r10-rtok: 128 tok -6.2%, 131 -4.2%, 256 -1.6/-3.1%'
+  - 'portal c2-cluster2-s-only (#62679, clusters at <= 300 tokens only): 0.6125, new best; 128 tok 4.6 us (-4.2%), M/L unchanged'
+  - 'mechanism unknown: the empty kernel does not change with cluster dims, so it is not a faster launch path (see H17)'
+- id: H15
+  statement: L2 protects at most ~25-30 MB of evict_last lines (and holds a similar amount of dirty flush lines), a hardware
+    cap; the store-side end state cannot be improved further.
+  status: parked
+  evidence:
+  - 'probe r10: evict_last saves 3-4 us (~25-30 MB) at every size from 1024 to 8192 tokens; last-48/80/112 MB-only and fractional
+    0.5/0.75 variants are within +-1% or worse (tested at 2048-8192 tokens only; 1024 untested, see H18)'
+  - 'probe r10: H7''s cost is also ~30-40 MB worth at M/L'
+- id: H16
+  statement: 'Cluster launches of large grids cost on the portal: directly at the clustered sizes, and they seem to slow later
+    plain launches in the same harness process; small-grid clusters do not.'
+  status: supported
+  evidence:
+  - 'portal r11-e3-cluster2-rtok-disp: +1.6..+5.0% at 2048-8192 tokens (clustered there; bench -0.7..+1.9%) and +2.5..+2.9%
+    at 586-1024 tokens where code and launch equal r10-rtok (bench +0.3..+0.6%)'
+  - 'bench probe: one cluster launch does not slow later plain launches in the same process (within 1%)'
+  - 'portal c2 (clusters only <= 300 tokens): 586-8192 tokens back to r10-rtok within +-0.4%, so r11''s M/L loss came from
+    clustering >= 2048 tokens'
+  - 'harness workload order: r11''s clustered 4,1657 / 4,1024 / 8,773 run at positions 2-4, before the plain 586/1024-token
+    workloads (positions 5-9) that slowed 2.5-2.9% (single observation)'
+- id: H17
+  statement: 'The cluster-of-2 gain at <= 256 tokens comes from CTA placement or dispatch order (pairs co-scheduled on one GPC/TPC,
+    a different SM fill order, or paired L2 traffic), not from the launch path; the same effect can be reproduced or enlarged
+    with a plain launch and a blockIdx-to-tile permutation, or with a different CTA size inside the cluster.'
+  status: open
+  evidence:
+  - 'r11 E3: empty kernels unchanged by cluster dims; real kernel -3..-4% at 128-256 tokens; cluster 4/8/16 worse than 2;
+    scheduling policy (spread/load-balance) changes nothing'
+  - 'r11 E1: plain one-shot grids are dispatched round-robin over GPCs in TPC pairs (blockIdx 0.. -> smid 142,143,0,1,16,17,...),
+    every SM gets exactly 8 CTAs at 1184; the per-SM histogram for cluster-2 launches was not run'
+  - 'r8: a balanced 148xk interleaved blockIdx mapping under a plain launch was within +-1% (so a naive permutation is not it)'
+- id: H18
+  statement: 'The -8% from evict_first loads at 586 tokens is a footprint effect: dirty flush lines are not written back while
+    the kernel''s new L2 allocations (evict_last stores plus the small evict_first recycling set) stay below a clean-capacity
+    threshold somewhere between ~37 MB (586 tokens) and ~58 MB (1024 tokens). Capping the dirty-output footprint at 1024-2048
+    tokens (evict_first stores for the early CTAs, evict_last for the last ~25-30 MB) recovers part of the -8% there.'
+  status: open
+  evidence:
+  - 'EF loads: 586 tok -8% in three sessions; 1024 -1.9..-2.5%; 2048 +1.5% (r10, r11-consol, r11-fi4lane probes)'
+  - 'r7 prefetch (normal-priority allocations) at 586: +1.7%, consistent with extra allocations evicting dirty lines'
+  - 'counter-evidence: last-48/80/112 MB evict_last with earlier EN/EF stores was within +-1% at 2048-8192 tokens (r10); the
+    1024 case and a fine size sweep were never measured'
+  - 'H7: write-only kernels pay no dirty cost, read-only pay most; so the hybrid must keep READ allocations small (EF loads) too'
+- id: H19
+  statement: 'L2 bulk prefetch one resident wave ahead (r7) is additive to cluster-2 at the 256-token sizes and to R=3 at 1024
+    tokens; with an evict_first cache policy on the prefetch it stops hurting at 586-2048 tokens and gains there too.'
+  status: open
+  evidence:
+  - 'portal r7 vs c1 (same loads at <= 1536 tokens): 1x256 6.2 vs 6.5, 2x128 6.3 vs 6.4, 1024 tok 16.0/16.0/16.1 vs 16.4/16.4/16.2
+    (-2..-3%); 586 10.6 vs 10.4; 128 tok 4.8 vs 4.8 (one wave: no-op)'
+  - 'bench r7/r8: prefetch -2% at 256 tokens, +1.7% at 586, -2.5% at 1024, neutral at 2048, +4-5% at L; evict_last prefetch
+    worse everywhere; evict_first prefetch untested'
+  - 'never combined with cluster-2 (c2) or R=3; both r7''s prefetch and R=3 give -2.4% at 1024 on the portal (16.0 vs 16.4)'
+- id: H20
+  statement: 'The blockIdx-to-tile order (Q then K vs Q/K interleaved per CTA or per wave, reversed, channel-spreading permutations)
+    changes DRAM efficiency by >= 2% at 2048-8192 tokens.'
+  status: open
+  evidence:
+  - 'r10: block order within 1% at 128-256 tokens; 586-8192 never measured (a CUPTI error ended the run)'
+  - 'r10 one-wave probes: per-CTA contiguous chunks were the worst layout at L (132-137 vs 115 us), so address order does matter
+    at L in at least one direction'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- d1-os-r8w4-nohint (portal 0.5822) vs c2-cluster2-s-only: S bench +16.1% / portal +7.4%; M bench +19.8% / portal +12.4%; L bench +4.6% / portal +4.7%
+- r10-ldef-real-stel-disp (portal 0.6086) vs c2-cluster2-s-only: S bench +3.1% / portal +3.5%; M bench +0.5% / portal +0.6%; L bench +0.0% / portal +0.1%
+- r10-rtok-m-disp (portal 0.6111) vs c2-cluster2-s-only: S bench +3.5% / portal +1.6%; M bench -0.6% / portal -0.4%; L bench -0.0% / portal -0.0%
+- r11-e3-cluster2-rtok-disp (portal 0.6055) vs c2-cluster2-s-only: S bench +0.9% / portal -0.9%; M bench +0.0% / portal +3.0%; L bench -0.7% / portal +2.0%
+- r2-ldg256-os-r16 (portal 0.5756) vs c2-cluster2-s-only: S bench +18.1% / portal +8.2%; M bench +20.4% / portal +13.1%; L bench +5.9% / portal +8.2%
+- r3-cute-ldg256-os-r16 (portal 0.5882) vs c2-cluster2-s-only: S bench +15.6% / portal +6.6%; M bench +19.0% / portal +9.8%; L bench +4.5% / portal +3.4%
+- r5-ldg256-os-r16-stel (portal 0.6089) vs c2-cluster2-s-only: S bench +5.1% / portal +2.8%; M bench +1.5% / portal +0.5%; L bench -0.1% / portal -0.0%
+- r6-s-ldef-nc-disp (portal 0.6099) vs c2-cluster2-s-only: S bench +3.0% / portal +2.2%; M bench +1.2% / portal +0.4%; L bench +0.0% / portal -0.0%
+- r7-ldg256-l2pf-mdisp (portal 0.6084) vs c2-cluster2-s-only: S bench +3.1% / portal +0.1%; M bench -0.4% / portal -0.2%; L bench +0.5% / portal +2.4%
+- r8-ldg256-l2mode-disp (portal 0.5986) vs c2-cluster2-s-only: S bench +3.1% / portal +2.6%; M bench +0.4% / portal +4.6%; L bench -0.8% / portal +3.2%
+- r9-xo-spf-l2mode-disp (portal 0.5995) vs c2-cluster2-s-only: S bench +2.3% / portal +1.9%; M bench +0.9% / portal +4.6%; L bench -0.5% / portal +3.2%
+Findings recorded by earlier design sessions (most recent first):
+- [r12-c2-natural-order] Part A skipped on the operator's note: clock locking is refused on the rented B200 (nvidia-smi -lgc/-pl/-ac fail with no permission); nvidia-smi shows the SM at 1965 MHz under load [operator, probe_b200]
+- [r12-c2-natural-order] probe, c2 R=1 path, 5 interleaved reps, harness timing, medians vs natural at 2048/4096/8192 tokens (28.44/57.81/115.86 us): Q/K interleaved per CTA +3.0/+1.2/0.0%; interleaved per 1184-CTA wave +1.9/+0.7/+0.1%; reversed -0.2/-0.5/-0.2%; stride 1187 (CTAs 1187 tiles apart) +8.0/+6.4/+6.1%; TPC pair reads tiles N/4 apart +2.3/+0.5/+0.1% [probe_b200]
+- [r12-c2-natural-order] probe, plain copy with the same six orders: within 1% of the kernel's per-order deltas (copy 2048 tok: +2.5/+1.4/-0.5/+7.1/+2.1%; 8192 tok: +0.2/+0.2/-0.1/+6.1/-0.2%), so the order effect is in the memory system, not the SM work [probe_b200]
+- [r12-c2-natural-order] probe, 12 interleaved reps, reversed vs natural: 1024 tok -0.39% (reversed faster in 12/12), 2048 -0.48% (9/12), 4096 +0.07%, 6184 +0.23%, 8192 -0.08% (9/12). Noise level, below the 1% bar; not worth a dispatcher [probe_b200]
+- [r12-c2-natural-order] H20 verdict: refuted. No order is 2% faster at two L sizes; every order that spreads concurrent CTAs far apart in address space (stride) loses 6-8%, matching the r10 one-wave finding that scattered or contiguous-per-CTA layouts cost more. Natural adjacent-tile order is optimal for the one-shot grid. Close H20 [probe_b200]
+- [r12-c2-natural-order] pair-spread (order 6) and per-CTA Q/K interleave both lose 0-3% at 2048 tokens: putting the two CTAs of a TPC pair on far-apart lines does not help, and adjacent tiles for the TPC pair are at least as good. This also bears on H17: the cluster-of-2 gain at <= 256 tokens is not reproduced by any simple permutation of tile order [probe_b200]
+- [r12-c2-natural-order] run_tests of the final code: 16/16 pass on the second try (the first run lost workload 12, 1x131, to the known CUPTI 'No timing results' flake); vs c2 on the same GPU S +0.3%, M +0.1%, L +0.1%; predicted portal 0.6113 +- 0.006, P(beats 0.6125) = 40%, i.e. a tie with c2 [run_tests]
+- [r12-c2-natural-order] tooling: the first compile_b200 call was rejected because no files were passed; pass complete files every time [compile_b200]
+- [r12-c3-c2-no-prefetch] probe, 256 tokens, 15 interleaved reps (us): cluster-2 c2 5.250; c2+plain prefetch 5.392 (+2.7%); c2+EF prefetch 5.377 (+2.4%); plain launch 5.407; plain+prefetch 5.476 (+1.3% vs plain); plain+EF prefetch 5.475. An earlier 7-rep run gave the same signs. The 2x128 and 1x256 workloads are the same kernel call (it sees only n_tok), so one probe covers both. [probe_b200]
+- [r12-c3-c2-no-prefetch] H19 additivity at 256 tokens: prefetch and cluster-2 are not additive. Cluster-2 alone is -2.9..-3.0% vs a plain launch. Prefetch is +1.3% on a plain launch and +2.4..2.7% on top of cluster-2, so it cancels more than the whole cluster gain. Only 352 of 1536 CTAs have a CTA one wave ahead; every one of those prefetches lands during the first-wave ramp and competes with demand loads. [probe_b200]
+- [r12-c3-c2-no-prefetch] probe, 128 and 131 tokens (one wave, prefetch distance 1184 > grid 768): c2 4.017 / 4.033; +plain prefetch 4.032 / 4.034; +EF prefetch 4.002 / 4.032 (all within +-0.4%). A no-op, as expected, and free. [probe_b200]
+- [r12-c3-c2-no-prefetch] probe, 586 tokens, 15 reps: plain launch 8.549; +plain prefetch 9.378 (+9.7%); +EF prefetch 9.376 (+9.7%). Prefetch costs about 10% here and the EF policy did not help. This matches H18 (extra allocations evict dirty flush lines at this size). [probe_b200]
+- [r12-c3-c2-no-prefetch] probe, 1024 tokens (15-21 reps): R=3 vs R=3 + prefetch +12.3%, vs R=3 + EF prefetch +12.6%; R=1 EF-load + prefetch about 1% worse than R=1 EF-load without it. R=3 prefetch (three 8 KB prefetches from thread 0, distance 740 CTAs) is clearly harmful. Across processes the R=3 vs R=1+EF order flipped (R=1+EF +1.8%, then -2.0% vs R=3), so a single comparison at 1024 tokens is good to only about 2%. [probe_b200]
+- [r12-c3-c2-no-prefetch] probe, 2048 tokens, two 15-rep runs: c2 28.47 / 28.45; c2+EF prefetch +3.1% / +3.3%; EF-load kernel without prefetch +1.5% / +1.6%; EF-load kernel + plain prefetch -1.1% / -1.0%; EF-load + EF prefetch -1.0% / -0.9%. The only positive result in the study: a 1% gain at 2048 tokens that needs EF loads and a prefetch together. It is below the 1.5% bar and not confirmable on the bench, so it was left out. [probe_b200]
+- [r12-c3-c2-no-prefetch] dead end: an evict_first policy on the prefetch (cp.async.bulk.prefetch.L2.global.L2::cache_hint with createpolicy evict_first) behaves like the plain prefetch at 256, 586, 1024 and 2048 tokens (differences <= 0.3%). The prefetch hint is not what makes it lose. [probe_b200]
+- [r12-c3-c2-no-prefetch] compile sm_100a: S path 30 regs, R=3 path 48 regs, M/L path 30 regs, 0 B local, 0 B shared (unchanged from c2) [compile_b200]
+- [r12-c3-c2-no-prefetch] run_tests, c3 (code identical to c2) vs c2 on the same GPU: 16/16 pass; S +0.2%, M +0.1%, L +0.0%; per workload -0.4%..+0.7%. Useful noise floor: two identical builds differ by up to +-0.7% per workload. Predicted portal 0.6122 +- 0.0060 against c2's 0.6125 [run_tests]
+- [r12-c3-c2-no-prefetch] verdict: H19 refuted. Prefetch adds nothing on top of cluster-2 at 256 tokens, nothing on top of R=3 at 1024, and the EF policy does not help at 586-2048. Do not revisit L2 prefetch at 128-2048 tokens. r7's portal gain (-2..-3% at 256 and 1024 tokens) was most likely its R-less EF-loads plus nc-weights in a different run, not the prefetch. [probe_b200, run_tests]
+- [r12-e1-h18-efcurve-disp] probe E1 curve (R=1, 1xN, harness CUPTI, 5 interleaved reps, medians us; dirty = harness zero flush, clean = zero flush then a read of the same 2xL2 buffer). Columns: tok: (a) default x + EL stores dirty/clean/d-c | (b) EF x + EL dirty/clean/d-c | EF gain dirty/clean. 300: 6.11/5.33/0.78 | 5.95/5.31/0.64 | -2.6/-0.4%. 400: 7.15/6.35/0.80 | 6.87/6.34/0.54 | -3.9/-0.3. 500: 8.42/7.31/1.11 | 7.87/7.30/0.58 | -6.5/-0.2. 586: 9.41/8.19/1.21 | 8.74/8.19/0.54 | -7.1/-0.0. 700: 10.88/9.38/1.51 | 10.08/9.34/0.74 | -7.4/-0.3. 800: 12.11/10.35/1.76 | 11.29/10.34/0.96 | -6.7/-0.1. 900: 13.09/11.44/1.65 | 12.58/11.39/1.19 | -3.9/-0.4. 1024: 14.69/12.67/2.01 | 14.56/12.48/2.08 | -0.8/-1.5. 1200: 16.85/14.60/2.25 | 16.72/14.37/2.35 | -0.8/-1.6. 1536: 21.27/18.48/2.79 | 21.57/17.70/3.87 | +1.4/-4.2. 2048: 28.81/24.18/4.63 | 29.13/23.37/5.76 | +1.1/-3.3 [probe_b200]
+- [r12-e1-h18-efcurve-disp] H18 threshold: with EF loads the dirty cost stays flat at ~0.55 us up to 586-700 tokens (<= ~34 MB of EL output) and then grows. The EF gain falls from -6.7% at 800 tokens (39 MB) to -0.8% at 1024 (50 MB). The edge is sharp at about 40-45 MB of evict_last output, which explains the 586-token -8%. No production workload falls in 600-1000 tokens, so the effect cannot be extended to a scored size [probe_b200]
+- [r12-e1-h18-efcurve-disp] probe (c)/(d) and cross terms, dirty/clean/d-c us. 586: L0+EL 9.49/8.27/1.23; EF+EL 8.67/8.24/0.42; EF+EFst 10.95/8.29/2.66; L0+plain 10.95/8.23/2.72; L0+EFst 11.17/8.26/2.92; EF+plain 10.91/8.21/2.70; EF+ENst 10.93/8.23/2.70. 1024: 14.60/12.71/1.89; 14.27/12.58/1.69; 17.66/12.67/4.98; 17.67/12.68/4.99; 17.93/12.74/5.19; 17.57/12.58/4.99; 17.66/12.59/5.07. 2048: 28.51/24.06/4.45; 28.93/23.27/5.66; 32.63/26.07/6.56; 32.41/24.74/7.67; 32.64/25.38/7.26; 32.38/25.95/6.43; 32.32/25.97/6.36 [probe_b200]
+- [r12-e1-h18-efcurve-disp] key mechanism finding: after a clean flush all store policies tie at 586-1024 tokens (8.21-8.29 and 12.58-12.74 us). The evict_last-store gain (H1) is therefore entirely a dirty-flush effect. Non-EL stores (plain/EF/EN) pay 2.7 us of dirty cost at 586 and 5.0 at 1024; EL stores cut it to 1.2/1.9. EF loads cut it further only while the EL footprint stays under ~40 MB. Load policy alone (any store policy except EL) changes nothing dirty [probe_b200]
+- [r12-e1-h18-efcurve-disp] dead end (H18 step 2), 7 interleaved reps vs c2 paths (1024: R=3 14.14 us; 2048: R=1 28.69 us), EF loads, R=1, tail = last-dispatched K CTAs. 1024: all-EL +0.5%; tailEL20 EFst +11.9 / ENst +11.0; tailEL30 +3.7/+2.9; tailEL40 -0.6/-0.7; headEL (EL first, EF after) 20/30/40: +3.9/+0.7/+0.0%. 2048: all-EL +0.7; tailEL20 +6.0/+5.3; tailEL30 +3.0/+2.1; tailEL40 +1.3/+0.5; headEL20/30/40 +3.5/+1.7/+1.6%. Every hybrid ties or loses, and EL on the FIRST output beats EL on the last. Evict_last avoids in-kernel dirty write-backs; it is not output parked past the window [probe_b200]
+- [r12-e1-h18-efcurve-disp] dead end: fractional evict_last (0.75 or 0.5 with evict_first secondary; 0.75 with unchanged secondary), default or EF loads, vs c2 paths, 5 reps. 900 tok: best L1 EL.75/unch -0.8% (all-EL+EF -1.5%); 1024: +0.8..+9.8% (all-EL+EF -0.5%); 1200: -0.4..+5.8%; 2048: +0.5..+3.7%. Full evict_last (1.0) is the best store policy everywhere. Extends H15 to 900-1200 tokens [probe_b200]
+- [r12-e1-h18-efcurve-disp] EF loads after a CLEAN flush gain 3-4% at 1536-2048 tokens but lose 1% after the dirty flush; this cannot be used under the harness [probe_b200]
+- [r12-e1-h18-efcurve-disp] run_tests: 16/16 pass; vs c2-cluster2-s-only S -0.0%, M -0.1%, L +0.3% (same code on every workload; 4,256 -2.5% and 8,256 +2.0% are noise); predicted portal 0.6129 +- 0.006 [run_tests]
+- [r12-e1-h18-efcurve-disp] tooling: b200probe.harness_time has no clean-flush option; monkey-patching sol_execbench.core.bench.timing._clear_cache inside a probe (zero_ then int64 max over the same buffer) gives one. /tmp persists between probes, so a shared helper module (/tmp/e1lib.py) saves re-sending code. One harness_time call (rep 50) takes ~0.07 s [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2 step1 (%smid log, 5 cold-L2 reps): 128 tok, both launches give 5 CTAs on 120 SMs and 6 on 28; both CTAs of every blockIdx pair (2b,2b+1) land on one TPC (100%); 372/768 CTAs on die A for both. Placement is identical [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2 step1: dispatch order differs only in SM order. Cluster-2 is a strict period-148 round robin in SM index order (142..147,0,1,2,3,...; SM142 gets bids 0,148,296,...). Plain round-robins over GPCs in TPC pairs (142..147,0,1,16,17,32,33,...) and its later rounds are irregular (SM142 gets 0,108,236,366,...) [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2 step1: cluster dispatch is slower. CTA start spread p50/p90/max 384/544/768 ns (cluster) vs 64/480/640 ns (plain) at 128 tok; first-load-return and end distributions are the same (firstld p50 1760 ns, end p50 2432 ns for both) [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2: in-kernel globaltimer span (first CTA start to last CTA end, 40 cold reps) 128 tok 3024 vs 3024 ns, 256 tok 4416 (plain) vs 4480 (cluster), while CUPTI is 4.19 vs 4.03 and 5.60 vs 5.39 us. The gain is entirely outside the CTAs [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2: the cluster saving appears in every traffic mode at 128 tok (768 CTAs): full -0.161 us, read-only -0.161, write-only -0.128, EMPTY kernel -0.153 (1.616 -> 1.463). Mechanism: a cheaper launch front-end/teardown for a one-wave cluster grid. This contradicts r11's 'empty kernel unchanged by cluster dims' (r11 used the launch attribute; here __cluster_dims__ was compiled in, 8 params) [probe_b200]
+- [r12-e2-h17-cl2-frontend] probe E2: the empty kernel loses with cluster 2 once the grid exceeds one wave: 1536 CTAs +0.24 us, 6144 CTAs +1.43 us (4.11 -> 5.55). Slow cluster CTA dispatch is hidden behind memory work at 256 tok (full -0.17 us) and roughly breaks even at 1024 tok (full -0.03). This is a likely mechanism for H16's portal losses at M/L at the 1500 MHz clock [probe_b200]
+- [r12-e2-h17-cl2-frontend] dead end (step 2i): a plain launch with an SM-major contiguous tile permutation is +4.9% at 128 tok and +5.6% at 131 vs cluster-2, the same as plain identity order (+4.1/+5.0%). Reversed blockIdx order: plain -0.2/-0.1/+0.6%, cluster -4.0/-3.7/-2.3% vs plain at 128/131/256. Order is not the mechanism [probe_b200]
+- [r12-e2-h17-cl2-frontend] dead end: staggering load issue in a plain launch (bid-proportional spin of 0-300/600/1000 ns) costs +3/+4.5/+8% at 128 tok and +3/+5/+14% at 256; cluster + 300 ns stagger loses its gain. Smoothing the DRAM burst does not help [probe_b200]
+- [r12-e2-h17-cl2-frontend] dead end (step 2ii): cluster pairs taking Q tile i and K tile i (half the grid apart) instead of adjacent tiles: -0.8% at 128 tok, +2.8% at 131 vs c2. Pairing a working CTA with an idle partner: +12% (128) / +24% (256) [probe_b200]
+- [r12-e2-h17-cl2-frontend] dead end (step 2iii, 10 interleaved reps, vs c2 S path): cluster 2 of 128-thread CTAs +9.9/+10.5% (128/131 tok); 384 threads -0.6/+0.6/+0.3% (128/131/256, a tie); 512 threads with masks +1.2/+2.0%; 768 threads (one token per CTA) +1.6/+1.7/+13%; R=2 rows per thread (half the threads) cluster +3.2/+5.6/+7.5%, plain +5.6/+7.5/+10.6%. Step 2iv (DSMEM weight sharing) skipped: nothing pointed at L2 request count [probe_b200]
+- [r12-e2-h17-cl2-frontend] H17 verdict: refuted. Placement and pairing are identical; the order differs, but reproducing or changing it moves nothing; the gain is a ~0.13-0.16 us fixed launch-path saving at one-wave grids. Park H17 and stop S-band launch work [inferred from probes]
+- [r12-e2-h17-cl2-frontend] run_tests: 16/16 pass; vs c2 on the same GPU S +0.1%, M -0.4%, L -0.0% (identical code); predicted portal 0.6122 +- 0.006 [run_tests]
+- [r12-e2-h17-cl2-frontend] tooling: NVRTC in b200probe has no <cstdint> (typedef uint64_t yourself); files written to /tmp do not persist between probes; harness_time with warmup=5, rep=40 takes about 0.1 s per call, so 8-10 interleaved reps of 8 variants at 3 sizes fit in one probe [probe_b200]
+- [r11-consol-disp] compile sm_100a: S path 30 regs, R=3 path 48 regs, above 30 regs; 0 B local, 0 B shared in all three [compile_b200]
+- [r11-consol-disp] run_tests (16/16 pass on the second try; the first run lost one workload to the known CUPTI 'No timing results' flake): vs r10-rtok-m-disp S -0.3%, M -0.2%, L +0.3%; predicted portal 0.6100 +- 0.0060, P(beats the portal best 0.6111) = 41%. Same code paths as rtok except EF qualifier on the R=3 loads [run_tests]
+- [r11-consol-disp] probe, 1024 tokens, 5 interleaved reps, median us: plain R=1 14.56, R=1 + EF qualifier 14.28 (-1.9%), R=3 14.10 (-3.2%), R=3 + EF 14.11, plain copy R=1 14.08, plain copy R=3 shape 14.56. R=3 adds nothing on top of R=1+EF beyond -1.3%, and EF adds nothing on top of R=3 [probe_b200]
+- [r11-consol-disp] copy lag (same CTA shape, width, EL stores): R=1 hint path vs copy: 128 tok 4.14 vs 3.95 (+4.8%), 256 tok 5.34 vs 5.18 (+3.1%); 1024 tok R=1 plain +3.4%, R=3 +0.1%; 2048 tok 28.18 vs 28.27 (-0.3%); 4096 57.63 vs 57.88; 8192 115.76 vs 115.81 (both 0%). So L/M paths are at copy speed; S lags 3-5% (0.15-0.2 us, the shuffle/rsqrt chain) [probe_b200]
+- [r11-consol-disp] the R=3 copy shape (3 rows per thread, 5 CTAs/SM) is itself slower than the R=1 copy at 1024 tokens (14.56 vs 14.08), yet the full R=3 kernel is as fast as the R=1 copy. R=3's gain is therefore not 'more bytes in flight'; the weight-load saving is more likely [probe_b200]
+- [r11-consol-disp] EF qualifier vs r6's cache_hint-constant form at S: 128 tok 4.13 (qualifier + default weights) / 4.16 (qualifier + nc) / 4.16 (const hint + nc); 256 tok 5.51 / 5.54 / 5.51; plain no-hint 4.13 and 5.60. Indistinguishable; at 586 tokens EF is -8% (8.58 vs 9.34) [probe_b200]
+- [r11-consol-disp] dead end: consolidation of r10-ldef-real-stel-disp and r10-rtok-m-disp. ldef's evict_first at 128-586 tokens is what r6 already does; at 1024 it is subsumed by R=3. The portal pair (this + ldef) would give no new information: ldef is already scored (0.6086, S +1.9% vs rtok on the portal, likely 0.1 us rounding) and this candidate is ~rtok (0.6111) [probe_b200, run_tests]
+- [r11-consol-disp] H9 note: the S-path copy lag (+3-5%) is the only SM-side excess left; the 5% lag threshold was not exceeded by R=3, so the R=3 path is kept. The only untested way to cut S lag is a shorter dependent chain (e.g. 4 lanes per row, H13)
+- [r11-consol-disp] limitation: the three interleaved run_tests against c1-control-r6 were not run; run_tests only compares against the current best (rtok). The c1 comparison was done with probe_b200 using code-identical kernels, 5 interleaved reps, which reproduces the earlier two run_tests (-2.9..-4.0% at 1024) [probe_b200]
+- [r11-e1-h12-control] probe: read-only grid-stride over 400 MB (LDG.256, 8 CTAs/SM, clean L2), active SMs gated by %smid: 148 SMs 83.9 us (5.00 TB/s); 74 SMs odd smids 84.1, smid<74 83.6, smid>=74 81.5, hashed half 82.5; 37 SMs 91.3 us (4.60 TB/s). Half the SMs reach 100% of full read bandwidth: the ceiling is DRAM/L2-side (H11 supported) [probe_b200]
+- [r11-e1-h12-control] probe: one-shot grid of 1184 CTAs is dispatched round-robin over GPCs in TPC pairs (blockIdx 0.. -> smid 142..147,0,1,16,17,32,33,48,49,64,65,2,3,...); every SM gets exactly 8 CTAs [probe_b200]
+- [r11-e1-h12-control] probe: L2-hit latency (warm, every SM touching every line) is 241-325 cycles and not bimodal; a ~30-cycle split tracks SM position within a GPC, not the die. Far lines seem served at near-L2 speed once warmed by all SMs [probe_b200]
+- [r11-e1-h12-control] probe: cold DRAM-miss latency per 128 B line from a single SM is bimodal: ~790 cycles (near home) vs ~1160 (far), plus a ~1450+ tail (row conflicts). Fast-line sets correlate 0.87 within an SM group and -0.16 across [probe_b200]
+- [r11-e1-h12-control] probe: die map from cold latency. Group A (72 SMs) = smids 0-1, 10-17, 26-33, 42-49, 58-65, 74-79, 88-93, 102-107, 116-121, 130-143; group B (76) = the rest (2-9, 18-25, 34-41, 50-57, 66-73, 80-87, 94-101, 108-115, 122-129, 144-147) [probe_b200]
+- [r11-e1-h12-control] probe: home granularity is exactly 4 KB (100% agreement within 4 KB blocks, 71% at 8 KB, ~52% at 2 MB). Walsh-Hadamard search finds no XOR mask of bits 7..20 with correlation above 0.08: the hash uses physical bits above the 2 MB page, so a kernel cannot know which die homes a block [probe_b200]
+- [r11-e1-h12-control] probe: read 350 MB of classified lines: affine (each die reads its own homed lines) 77.4 us, mixed 77.8, address-sorted 78.2, anti-affine (every SM reads only far lines) 96.9 us (+25%, cross-die cap ~3.8 TB/s). Near-only vs mixed within 0.5%: H12 refuted [probe_b200]
+- [r11-e1-h12-control] probe: copy of 265+265 MB in 4 KB blocks, persistent grid-stride (4 CTAs/SM): dirty flush affine 106.7, mixed 107.9, sorted 107.2, read-only-affine 106.6, write-only-affine 106.0, anti 106.7 us; clean flush 96.6-98.9 for all. No affinity effect for read+write [probe_b200]
+- [r11-e1-h12-control] probe: one-shot copy, one 4 KB block per 128-thread CTA, block taken from a per-die queue (one atomic per CTA): dirty flush affine 103.2, mixed 102.7, anti 102.3 us; the same kernel indexed by blockIdx (no atomic) 95.6-96.5 us. The atomic costs 6-7% at L and affinity gains nothing; clean-flush queue runs were noisy (101-132 us) [probe_b200]
+- [r11-e1-h12-control] dead end: die-affine tile assignment for #38. No bandwidth gain, the home hash cannot be computed from virtual addresses, and choosing tiles by smid needs an atomic per CTA (+6-7%). Close H12 [inferred from probes]
+- [r11-e1-h12-control] tooling: dependent clock64 timing needs a real data dependence. clock reads after a load with only an asm register input do not wait (gave 2 cycles); a chain of ld.shared on the loaded value before the second clock works [probe_b200]
+- [r11-e1-h12-control] tooling: 32-float register arrays plus long long offsets under __launch_bounds__(256,8) spill (STACK 264); a grid-stride copy then ran at 2.2 TB/s. Check resources before trusting probe bandwidths [probe_b200]
+- [r11-e1-h12-control] run_tests: this control 16/16 pass; vs r10-rtok-m-disp S +0.6%, M +1.6% (r10 uses R=3 at 1024 tokens), L +1.0%; predicted portal 0.6070 +- 0.006 [run_tests]
+- [r11-e3-cluster2-rtok-disp] probe E3(1), empty kernel CUPTI span (us, medians of 3 interleaved, rep 30), grid rows x block cols 64/128/256/512/1024: 1 CTA 1.52/1.38/1.39/1.38/1.42; 148 1.26/1.47/1.53/1.52/1.38; 768 1.25/1.44/1.63/1.53/2.17; 1536 1.86/1.70/1.90/2.08/3.04; 12288 7.30/7.45/7.44/8.70/16.79. The floor is about 1.4 us at any block size, and the span grows with total thread count [probe_b200]
+- [r11-e3-cluster2-rtok-disp] probe E3(2), empty 768x256, 16 interleaved repeats: 1 param vs 7 params, <<<>>> vs cuLaunchKernelEx, dyn smem 1 KB, memory-sync-domain remote, launch priority, cluster 2, carveout 0/100 are all within +-0.03 us of 1.377 us. Only a pointer-to-device-struct param is slower (1.95 vs 1.65 us; it costs a dependent load, and building the struct each call needs a second GPU activity) [probe_b200]
+- [r11-e3-cluster2-rtok-disp] probe E3(3), r6 S path at 128 tokens, in-kernel globaltimer span vs CUPTI span, medians of 105 samples: evict_last stores CUPTI 4.51 / in-kernel 3.42 (outside 1.09 us); plain stores 4.35 / 3.30 (1.06); NO stores (read-only) 3.80 / 2.75 (1.05); empty body 2.02 / 0.38 (1.63). The part outside the CTAs is 1.05 us with or without stores, so it is not store drain; it is launch front-end plus teardown, a hardware cost [probe_b200]
+- [r11-e3-cluster2-rtok-disp] tooling: CUPTI and globaltimer clocks are offset by about 380 ms with per-iteration jitter of several us, so the before-first-CTA / after-last-CTA split cannot be resolved; only their sum is. Not attempted further [probe_b200]
+- [r11-e3-cluster2-rtok-disp] trap: cuFuncSetAttribute is sticky across launches. A first sweep that did not reset it appeared to show carveout 0 at -0.74 us; with the carveout set explicitly before every launch, default/0/8/32/64 are all equal (4.13 us at 128 tokens, 14.42 at 1024) and only carveout 100 is bad (4.86 and 21.8 us). Always set it explicitly in interleaved tests [probe_b200]
+- [r11-e3-cluster2-rtok-disp] probe, r6-style kernel, harness timing, 8-10 interleaved repeats, cluster 2 vs plain: 128 tok 4.095->3.968 (-3.1%), 131 4.281->4.112 (-4.0%), 256 5.520->5.359 (-2.9%), 586 +0.6%, 1024 +1.6%, 2048 -1.4%, 4096 -0.8%, 8192 -1.1%. __cluster_dims__ and the cudaLaunchAttributeClusterDimension launch attribute give the same result [probe_b200]
+- [r11-e3-cluster2-rtok-disp] probe: cluster 4/8/16 are worse than 2 (256 tok -1.3/-1.6/-0.1% vs -3.1%; 1024 tok +4/+5/+12%); the cluster scheduling policy (spread / load-balancing) changes nothing [probe_b200]
+- [r11-e3-cluster2-rtok-disp] run_tests, candidate on r6 only (r11-e3-cluster2-s, cluster at <=300 and >=2048): 16/16 pass after a retry of two 'No timing results for cupti' flakes (workloads 5 and 11, retried with identical files); S -2.2%, M +0.8% (only because it lacks r10's R=3 path), L -1.0% vs r10-rtok-m-disp [run_tests]
+- [r11-e3-cluster2-rtok-disp] run_tests, final candidate: 16/16 pass; vs r10-rtok-m-disp on the same GPU S -2.2%, M -0.5%, L -1.3%; 128 tok -3.1%, 131 -3.9%, 256 -2.9% (the 1x256 workload) and -1.5% (the 2x128 workload); the 2x293 workload (586 tok, plain launch) +0.3%; predicted portal 0.6129 +- 0.0061 (current best 0.6111) [run_tests]
+- [r11-e3-cluster2-rtok-disp] H14 verdict: partly supported. One launch attribute (cluster dims 2) moves S by 3-4% on the bench, which misses the 0.2 us / 5% success bar (observed 0.12-0.16 us). The empty-kernel span is untouched by every attribute, and about 1.05 us outside the CTAs is fixed hardware. Open: why a cluster of 2 helps. A per-SM CTA histogram (%smid) for plain vs cluster-2 launches was not run because the probe budget ran out
+- [r11-e3-cluster2-rtok-disp] dead end: carveout, param count, launch API, dynamic smem, memory-sync domain, priority and cluster scheduling policy each move the real kernel by 0 +- 0.03 us (carveout 100 aside, which is harmful)
+- [r11-fi4lane-m-disp] H13 refuted: FlashInfer's 4-lane layout gives no gain for fp32 direct loads on B200; within +-3% of c1 with the same hints at every size and 1-4% slower at 586 tokens. Close H13 [probe_b200]
+- [r11-fi4lane-m-disp] probe (default x loads, 5 reps, vs c1): 4-lane/128 thr 128 tok +2.3%, 256 -1.2%, 1024 -1.5%, 2048 -0.3%, 8192 +0.3%; 8-lane/128 thr -0.0/-2.3/-1.2/+0.0/+0.2%; 4-lane/192 thr (48-row token tile) +0.7/-1.7/-1.0/-0.1/+0.3% [probe_b200]
+- [r11-fi4lane-m-disp] probe (evict_first x matched, 7 reps, vs r6ef at S / r6 at M): 2x128 tok 4-lane +2.4%, 8-lane +1.2%; 1x256 tok 4-lane -1.1%, 8-lane -2.6% (the same size disagrees by about 4%, so this is noise); 586 tok 4-lane +4.0%, 8-lane/128 +1.4%, 8-lane/256 +2.5%; 1024 tok 4-lane -4.3% vs r6, -1.8% vs r6ef; 2048 tok all within +-1.4% [probe_b200]
+- [r11-fi4lane-m-disp] copy lag: plain copies with evict_last stores run 2-5% under the kernels at S and within 0-2% at M/L. 4/8-lane copies are no faster than the 16-lane copy (586 tok +7..15% slower, 1024 +1..3%, 8192 +1.2..1.7%). The lane layout does not change DRAM efficiency [probe_b200]
+- [r11-fi4lane-m-disp] evict_first x loads at 586 tokens: -8% (r6 9.44 -> r6ef 8.65 us) again, and evict_first helps 1024 by -2.5% in this run; it also helps the 4/8-lane layouts at 586 (8-lane 9.20 -> 8.77) [probe_b200]
+- [r11-fi4lane-m-disp] regs: 4-lane path 72-75 regs (32 x + 32 w floats), no spills, 6 CTAs/SM at 128 threads; 8-lane 44 regs; copies cp4 40 / cp8 26 / cp16 16 [probe_b200, compile_b200]
+- [r11-fi4lane-m-disp] run_tests vs r10-rtok-m-disp: 16/16 pass; S +0.7%, M -1.4%, L -0.0%; 1024-token rows -1.8/-2.0/+0.3%, so the 4-lane path ties R=3. The 2048-token rows run identical code and still moved -3.6%/0.0%, so band differences of about 1% are noise. Predicted portal 0.6106 +- 0.006 [run_tests]
+
+=== PORTAL RESULTS (best first) ===
+- c2-cluster2-s-only: portal 0.6125, S/M/L 6.2/20.7/75.8 µs
+- r10-rtok-m-disp: portal 0.6111, S/M/L 6.3/20.6/75.8 µs
+- c1-control-r6: portal 0.6105, S/M/L 6.3/20.8/75.8 µs
+- r6-s-ldef-nc-disp: portal 0.6099, S/M/L 6.4/20.8/75.7 µs
+- r5-ldg256-os-r16-stel: portal 0.6089, S/M/L 6.4/20.8/75.7 µs
+- r10-ldef-real-stel-disp: portal 0.6086, S/M/L 6.4/20.8/75.9 µs
+- r7-ldg256-l2pf-mdisp: portal 0.6084, S/M/L 6.2/20.7/77.6 µs
+- r11-e3-cluster2-rtok-disp: portal 0.6055, S/M/L 6.2/21.3/77.3 µs
+- r9-xo-spf-l2mode-disp: portal 0.5995, S/M/L 6.3/21.6/78.2 µs
+- r8-ldg256-l2mode-disp: portal 0.5986, S/M/L 6.4/21.6/78.2 µs
+- r3-cute-ldg256-os-r16: portal 0.5882, S/M/L 6.6/22.7/78.4 µs
+- d1-os-r8w4-nohint: portal 0.5822, S/M/L 6.7/23.3/79.3 µs
+- g2-os-r8w4: portal 0.5768, S/M/L 6.6/23.4/82.1 µs
+- g2-os-r16w8: portal 0.5767, S/M/L 6.7/23.3/82.0 µs
+- r2-ldg256-os-r16: portal 0.5756, S/M/L 6.7/23.4/82.0 µs
+- g2-ws-hb16w8s3: portal 0.5369, S/M/L 7.0/26.1/93.7 µs
+- g2-tmaws-hb8s4: portal 0.5368, S/M/L 7.7/25.9/89.4 µs
+- v039: portal 0.5311, S/M/L 7.7/26.5/90.9 µs
+- g2-tma-r8s3: portal 0.5096, S/M/L 8.6/27.8/93.6 µs
+- v028: portal 0.4508, S/M/L 9.0/34.0/118.8 µs
+- v050: portal 0.4335, S/M/L 14.6/34.4/96.5 µs
+- v040: portal 0.3466, S/M/L 11.3/49.9/185.4 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the r5/r6 medium-large path | small (128 tok) | medium (1024) | large (8192) |
+|---|---|---|---|
+| x: ef | +1.3% ± 1.2 | +1.1% ± 3.8 | +1.2% ± 2.4 |
+| w: nc | -1.3% ± 1.9 | +1.7% ± 4.0 | +1.1% ± 2.4 |
+| w: el | -0.4% ± 2.5 | +2.3% ± 3.9 | +1.5% ± 2.6 |
+| st: ef | -2.2% ± 2.7 | +0.7% ± 3.6 | +0.7% ± 2.7 |
+| st: none (vs el) | -1.7% ± 2.1 | -0.0% ± 3.3 | +0.2% ± 2.2 |
+| width 128 | -0.1% ± 2.5 | +1.5% ± 3.9 | +0.6% ± 2.6 |
+| threads 512, rows 32 | +0.3% ± 2.1 | +1.5% ± 3.8 | +1.0% ± 1.8 |
+| threads 128, rows 8 | -0.1% ± 2.0 | +0.4% ± 3.8 | -0.3% ± 1.9 |
+| grid persistent | +1.3% ± 2.6 | +3.0% ± 4.0 | +1.8% ± 2.7 |
+| prefetch L2 | -0.6% ± 2.2 | +1.6% ± 4.1 | +0.3% ± 2.8 |
+| mem tma | +0.9% ± 2.6 | +2.6% ± 4.0 | +1.5% ± 2.7 |
+| lang triton | -0.1% ± 2.5 | +1.5% ± 3.9 | +0.6% ± 2.6 |
+| lang cute | -1.0% ± 2.2 | +0.3% ± 3.5 | -0.2% ± 2.3 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| c2-cluster2-s-only | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/18.8/75.4 | -/-/- | -/-/- | -/-/- | 6.2/20.7/75.8 | 0.612457 | 30/0/None; 48/0/None | passed |
+| r10-rtok-m-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.7/75.4 | -/-/- | -/-/- | -/-/- | 6.3/20.6/75.8 | 0.611104 | 30/0/None; 48/0/None | passed |
+| c1-control-r6 | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/19.0/75.5 | -/-/- | -/-/- | -/-/- | 6.3/20.8/75.8 | 0.61048 | - | passed |
+| r6-s-ldef-nc-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/19.0/75.4 | -/-/- | -/-/- | -/-/- | 6.4/20.8/75.7 | 0.609882 | 31/0/None; 31/0/None | passed |
+| r5-ldg256-os-r16-stel | ldg256/oneshot/all | cuda_cpp | 5.5/19.0/75.4 | -/-/- | -/-/- | -/-/- | 6.4/20.8/75.7 | 0.608914 | 31/0/None | passed |
+| r10-ldef-real-stel-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.9/75.5 | -/-/- | -/-/- | -/-/- | 6.4/20.8/75.9 | 0.608635 | 31/0/None; 31/0/None | passed |
+| r7-ldg256-l2pf-mdisp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.7/75.8 | -/-/- | -/-/- | -/-/- | 6.2/20.7/77.6 | 0.608428 | 28/0/None; 28/0/None | failed on B200r2: ['PASSED', 'RUNTIME_ERROR'] |
+| r11-e3-cluster2-rtok-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/18.8/74.9 | -/-/- | -/-/- | -/-/- | 6.2/21.3/77.3 | 0.605464 | 30/0/None; 48/0/None | passed |
+| r9-xo-spf-l2mode-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.3/18.9/75.1 | -/-/- | -/-/- | -/-/- | 6.3/21.6/78.2 | 0.599501 | 31/0/None; 31/0/None | failed on B200r2: ['PASSED', 'RUNTIME_ERROR'] |
+| r8-ldg256-l2mode-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.8/74.9 | -/-/- | -/-/- | -/-/- | 6.4/21.6/78.2 | 0.598615 | 31/0/None; 31/0/None | failed on B200r2: ['PASSED', 'RUNTIME_ERROR'] |
+| r3-cute-ldg256-os-r16 | ldg256/oneshot/all | cute_dsl | 6.0/22.3/78.9 | -/-/- | 17.4/79.2/313.8 | -/-/- | 6.6/22.7/78.4 | 0.58818 | 32/0/8 | passed |
+| d1-os-r8w4-nohint | ldg128/oneshot/all | triton | 6.0/22.5/78.9 | -/-/- | -/-/- | -/-/- | 6.7/23.3/79.3 | 0.582207 | 32/0/16 | passed |
+| g2-os-r8w4 | ldg128/oneshot/S | triton | 6.0/22.6/80.5 | 7.4/34.4/131.4 | 15.4/79.0/322.8 | -/-/- | 6.6/23.4/82.1 | 0.576828 | 32/0/16 | failed on B200r2: ['PASSED', 'RUNTIME_ERROR'] |
+| g2-os-r16w8 | ldg128/oneshot/S | triton | 6.0/22.5/80.2 | 7.5/35.1/134.6 | 15.5/78.8/323.1 | -/-/- | 6.7/23.3/82.0 | 0.576663 | 32/0/8 | passed |
+| r2-ldg256-os-r16 | ldg256/oneshot/all | cuda_cpp | 6.1/22.6/84.2 | -/-/- | 17.4/83.0/339.9 | -/-/- | 6.7/23.4/82.0 | 0.575609 | 31/0/None | failed on B200r: ['PASSED', 'RUNTIME_ERROR']; failed on B200r2: ['PASSED', 'RUNTIME_ERROR'] |
+| g2-ws-hb16w8s3 | cpasync/persistent-wstat/L | triton | 6.1/24.6/88.7 | 7.5/35.5/136.8 | 17.2/83.0/327.0 | -/-/- | 7.0/26.1/93.7 | 0.536856 | 32/16384/8; 32/16384/8 | passed |
+| g2-tmaws-hb8s4 | tma-tensor/persistent-wstat/L | triton | 6.5/24.6/87.8 | 7.9/36.7/139.5 | 20.4/86.7/349.0 | -/-/- | 7.7/25.9/89.4 | 0.536804 | 32/32824/6; 32/32824/6 | passed |
+| v039 | ldg128/persistent/all | triton | 6.8/24.7/87.7 | 8.0/36.3/139.7 | 16.3/82.8/337.9 | 37.8/238.5/912.2 | 7.7/26.5/90.9 | 0.531119 | 32/0/8; 32/0/8 | passed |
+| g2-tma-r8s3 | tma-tensor/persistent/L | triton | 7.1/24.0/82.3 | 8.6/36.9/136.9 | 23.0/95.3/358.0 | -/-/- | 8.6/27.8/93.6 | 0.509579 | 32/36896/6 | passed |
+| v028 | ldg128/persistent/all | triton | 7.6/29.3/102.8 | 8.3/34.5/131.0 | 16.5/81.0/322.1 | 37.2/223.0/860.3 | 9.0/34.0/118.8 | 0.450775 | 149/0/6; 149/0/6 | passed |
+| v050 | ldg128/oneshot/all | triton | 12.5/30.6/88.2 | 13.7/40.5/133.3 | 38.2/84.7/318.8 | 36.1/209.5/820.4 | 14.6/34.4/96.5 | 0.433525 | 68/0/28; 68/0/28 | passed |
+| v040 | ldg128/oneshot/all | triton | 9.2/41.0/150.8 | 9.4/44.2/167.2 | 17.0/81.1/327.5 | 38.0/210.0/806.7 | 11.3/49.9/185.4 | 0.346612 | 28/16/16 | passed |
+| r3-os-l2pf-r8w4 | ldg128/oneshot/L | cuda_cpp | -/-/- | -/-/- | 15.8/79.5/323.5 | -/-/- | -/-/- | pending | 31/0/None | passed |
+| r3-tokblk-s-disp | ldg128/oneshot/dispatch:size | triton | -/-/- | -/-/- | 16.0/79.0/323.0 | -/-/- | -/-/- | pending | 64/0/8; 64/0/8 | passed |
+| g2-os-r8w2 | ldg128/oneshot/S | triton | -/-/- | 7.4/35.1/133.4 | 16.3/80.3/325.5 | -/-/- | -/-/- | pending | 40/0/25 | passed |
+| g2-os-r16w4 | ldg128/oneshot/S | triton | -/-/- | 7.4/35.0/132.6 | 16.3/80.4/326.1 | -/-/- | -/-/- | pending | 40/0/12 | passed |
+| g2-ws-hb16w8 | ldg128/persistent-wstat/L | triton | -/-/- | 7.6/36.6/143.3 | 16.7/84.7/340.0 | -/-/- | -/-/- | pending | 32/0/8 | passed |
+| r1-bulk1d-ring-r16s16 | bulk1d/persistent/L | cuda_cpp | -/-/- | 8.1/36.5/141.9 | 17.4/86.6/342.6 | -/-/- | -/-/- | pending | 30/1024/None | passed |
+| g2-tmaws-hb16s3 | tma-tensor/persistent-wstat/L | triton | -/-/- | 8.2/36.2/135.5 | 21.0/87.7/348.2 | -/-/- | -/-/- | pending | 40/49184/4 | passed |
+| r2-ldg256-tokblk | ldg256/oneshot/dispatch:size | cuda_cpp | -/-/- | -/-/- | 17.4/108.9/429.1 | -/-/- | -/-/- | pending | 63/0/None; 40/0/None | passed |
+| g2-tma-r16s4 | tma-tensor/persistent/L | triton | -/-/- | 9.2/37.8/139.3 | 34.0/139.5/525.0 | -/-/- | -/-/- | pending | 46/106552/2 | passed |
+| r10-bulk1d-ring-stel | bulk1d/persistent/all | cuda_cpp | 6.4/20.5/76.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/33824/None | passed |
+| r10-onewave-gs-sdisp | ldg256/persistent/dispatch:size | cuda_cpp | 5.4/19.0/75.0 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 29/0/None; 31/0/None | passed |
+| r10-ws-l-steal-disp | ldg256/persistent/dispatch:size | cuda_cpp | 5.3/19.1/76.6 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/0/None; 31/0/None | passed |
+| r11-consol-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.7/75.5 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/0/None; 48/0/None | passed |
+| r11-e1-h12-control | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/19.1/75.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/0/None; 31/0/None | passed |
+| r11-fi4lane-m-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/18.5/75.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/0/None; 75/0/None | passed |
+| r12-c2-natural-order | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/18.8/75.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/0/None; 48/0/None | passed |
+| r12-c3-c2-no-prefetch | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/18.8/75.5 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/0/None; 48/0/None | passed |
+| r12-e1-h18-efcurve-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/18.8/75.5 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/0/None; 48/0/None | passed |
+| r12-e2-h17-cl2-frontend | ldg256/oneshot/dispatch:size | cuda_cpp | 5.3/18.8/75.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/0/None; 48/0/None | passed |
+| r4-cuda-ldg256-token-r2 | ldg256/oneshot/all | cuda_cpp | 5.9/22.4/79.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 40/0/None | passed |
+| r4-cute-ldg256-sw2-disp | ldg256/persistent/dispatch:size | cute_dsl | 9.1/22.3/78.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/0/5; 32/0/8 | passed |
+| r4-ldg256-wstat-pf2 | ldg256/persistent-wstat/all | cuda_cpp | 6.2/24.0/88.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 40/0/None | passed |
+| r6-gluon-cpasync-os-r16w8-stel | cpasync/oneshot/all | gluon | 7.3/26.7/95.1 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 30/16384/8; 30/16384/8 | passed |
+| r6-ldg256-qkpair-r16 | ldg256/oneshot/dispatch:size | cuda_cpp | 5.5/19.9/75.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 39/0/None; 31/0/None | passed |
+| r7-cap4-qkcat | ldg256/persistent/dispatch:size | cuda_cpp | 5.8/19.9/75.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 64/0/None; 31/0/None | passed |
+| r7-s-r8w4-cta128-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.5/19.1/75.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/0/None; 31/0/None | passed |
+| r8-fat512-l-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.4/19.1/75.1 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 29/0/None; 29/0/None | passed |
+| r8-s-pf256-disp | ldg256/oneshot/dispatch:size | cuda_cpp | 5.3/18.9/75.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 28/0/None; 28/0/None | passed |

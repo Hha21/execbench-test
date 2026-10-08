@@ -1,0 +1,94 @@
+id: r13-e4-bulkld-t2-disp
+parents:
+  - c2-cluster2-s-only
+  - r10-bulk1d-ring-stel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests:
+  - H23
+hypothesis: >-
+  E4 / H23 (load half): async-proxy bulk loads (cp.async.bulk with no hint, evict_first or evict_last L2 hint) allocate
+  in L2 differently from LDG.256 and pay less of the dirty-flush cost at 586-2048 tokens. REFUTED on the rented B200.
+  Bulk loads are 4-13% slower than LDG.256 after a clean flush at 128-1024 tokens. Their dirty-minus-clean cost drops
+  only when the clean time rises (a slower kernel hides some write-backs; none are avoided). The evict_first bulk hint
+  recycles no better than evict_first LDG, and evict_last is the worst. The only competitive variant (2 x 8 KB tiles
+  per CTA, no hint) ties c2 at 2048-8192 tokens. This candidate puts it on the 1100-2100 token band (the two 2048-token
+  workloads) and keeps c2 everywhere else, as an exploration record. Expected portal result: a tie with c2.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 38
+  smem_per_cta_bytes: 17424
+  threads_per_cta: 256
+  ctas_per_sm: 6
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  TPC: 2
+  TILE_BYTES: 8192
+  bulk_policy: none
+  bulk_band_tokens: "1100 < B*S <= 2100"
+dispatch:
+  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}
+  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}
+  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3}}
+  - {max_tokens: 2100, kernel: qk_rms_bulk2, meta: {TPC: 2, policy: none}}
+  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1}}
+findings:
+  - "probe E4, 586 tok, 7 interleaved reps, harness CUPTI, dirty/clean/d-c us: c2 R=1 EF-LDG 8.74/8.23/0.51; R=1 plain LDG 9.40/8.24/1.16; bulk T=1 none/EF/EL 10.44/8.93/1.51, 9.71/8.91/0.80, 10.50/8.91/1.59; bulk T=2 none/EF/EL 9.92/8.81/1.12, 9.58/8.83/0.74, 9.79/8.80/0.99. Bulk loads +7-8% clean; the EF bulk hint recycles about like EF LDG (0.74-0.80 vs 0.51 us) and is not better [probe_b200]"
+  - "probe E4, 1024 tok (base c2 R=3 14.34/12.74/1.61): c2 R=1 +2.4% dirty (d-c 2.11); R=1 EF-LDG +0.0% (1.80); bulk T=1 none/EF/EL +13.5/+6.6/+14.9% dirty, +5-6% clean; bulk T=2 none/EF/EL +1.7/+2.2/+6.4% dirty, +3.8% clean, d-c 1.36/1.43/2.03. Repeat (9 reps): T=2 none +1.8% dirty, +3.5% clean, d-c 1.33 vs 1.52; T=4 none/EF +10.5/+7.8% [probe_b200]"
+  - "probe E4, 2048 tok (base c2 R=1 28.77/24.07/4.70): R=1 EF-LDG +1.3% dirty, -2.1% clean (d-c 5.57); bulk T=1 none/EF/EL +4.2/+3.7/+5.1% dirty, +11.8/+4.5/+11.9% clean (d-c 3.05/4.70/3.29); bulk T=2 none/EF/EL -0.6/+1.2/+4.3% dirty, -0.5/-2.3/-0.4% clean (d-c 4.66/5.60/6.02). Repeat (9 reps): T=2 none +0.6% dirty, -0.6% clean; T=4 none +1.7%, T=4 EF +4.8% [probe_b200]"
+  - "probe E4, 4096 tok (9 reps; c2 R=1 58.08/50.29/7.79): bulk T=2 none +0.3%/+0.9% (d-c 7.54); T=4 none +0.7/+1.5% (7.41); T=4 EF +1.6/+5.5% (5.93). 8192 tok dirty only: c2 116.11, T=2 116.56 (+0.4%), T=4 116.86 (+0.6%) [probe_b200]"
+  - "probe E4, 128 tok (5 reps; c2 S path 4.19/3.55/0.64): every bulk variant is +5.4..+7.7% dirty and +12.6..+13.5% clean, which confirms the ~0.45 us mbarrier/bulk setup penalty at one wave; keep c2's S path [probe_b200]"
+  - "H23 load-half verdict: refuted. No bulk variant cuts the dirty cost by >= 3% of total at 1024 or 2048 tokens without a larger clean-time loss. Lower d-c values appear only in variants that are slower after a clean flush: slowness hides write-backs, it does not avoid them. The evict_first bulk hint behaves like evict_first LDG (good at 586 tokens, a loss at 2048 dirty), and the evict_last bulk hint is the worst at every size. Close the load half of H23 and do not revisit async-proxy loads for #38 [probe_b200]"
+  - "more tiles per CTA help the bulk path (T=1 -> T=2 cuts clean time by 4-11% at 1024-2048 tokens), but T=4 (32 KB) is worse again at every size. T=2 no-hint is the best bulk configuration and only ties LDG.256 at >= 2048 tokens [probe_b200]"
+  - "compile sm_100a: bulk2 kernel 38 regs, 17,424 B static smem, 0 local, UBLKCP x2; c2 paths unchanged (30/48/30 regs) [compile_b200]"
+  - "run_tests: first run 14/16 (1x131 and 1x256 hit the known CUPTI 'No timing results' flake on unchanged c2 paths); rerun 16/16. vs c2 on the same GPU: S +0.3%, M -0.3%, L +0.3%; 2048-token workloads -0.1% / -0.7%; predicted portal 0.6125 +- 0.006, P(beats c2) = 50%: a tie [run_tests]"
+  - "tooling: a clean flush in probes = monkey-patch sol_execbench.core.bench.timing._clear_cache with zero_() then .view(torch.int64).max() over the same buffer; /tmp/e4lib.py (kernels plus a bench/report helper) persisted between probes in this session [probe_b200]"
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: 2100, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: tma, w: nc, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "bulk path runs on sm_90 but STG.256 falls back to 128-bit; smaller L2 changes the dirty-flush behaviour"
+  A100:
+    runs: true
+    representative: false
+    note: "sm_80 falls back to plain loads on the bulk path; correctness only"
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Ties c2 on the bench; it does not deserve a portal slot except as an A/B of the bulk path at 2048 tokens"
+  - "At the portal's 1500 MHz SM clock the mbarrier setup (~0.45 us at one wave) could cost slightly more at 2048 tokens"
+  - "38 regs on the bulk path limits it to 6 CTAs/SM (96 KB in flight); still enough at 2048 tokens on the bench"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,0 +1,65 @@
+id: r13-e3-bulkstore-off
+parents:
+  - c2-cluster2-s-only
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  H23 test: a cp.async.bulk store (8 KB smem tile per CTA, fence.proxy.async, one elected thread, wait_group.read 0)
+  would shorten the 0.67 us store/exit tail at 128-256 tokens, or pay less of the dirty-flush cost at 586-2048
+  tokens. Result: refuted. Bulk stores are slower than STG.256 with evict_last at every size, and pay the same
+  dirty-flush cost. The shipped kernel keeps the bulk path behind a template flag that is off everywhere, so it is
+  functionally c2 (identical regs and SASS in compile_b200).
+tests: [H23]
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {THREADS: 256, R_S: 1, R_1024: 3, BULK: false, cluster_max_tokens: 300}
+dispatch:
+  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}
+  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}
+  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3}}
+  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1}}
+findings:
+  - "probe (R=1 S path, cluster 2 at <=300 tok, 10 interleaved reps, harness CUPTI, medians, us), bulk_EL = bulk store with evict_last policy: 128 tok STG-EL 4.031, bulk_EL 4.382 (+8.7%), bulk no hint +8.0%, bulk EF +8.8%, bulk EL with full wait_group 0 +8.7%. 131 tok 4.161: bulk_EL +4.6%, no hint +5.3%, EF +5.4%. 256 tok 5.246: bulk_EL +7.4%, no hint +20.0%, EF +20.1%, wg0 +9.5%. 586 tok 8.721: bulk_EL +7.0%, no hint +24.2%, EF +24.5%, wg0 +9.7%. The 0.67 us store tail does not get shorter; the smem staging, fence and barrier cost more than they save [probe_b200]"
+  - "probe, 1024 and 2048 tok, R=1 default loads, 8 reps, dirty (harness zero flush) vs clean (zero then read of the same buffer), us: 1024 STG-EL 15.32/12.86 (d-c 2.47); bulk_EL 16.12/13.62 (d-c 2.50); bulk no hint 17.40/13.63 (d-c 3.77); bulk_EL wg0 16.51/14.19 (d-c 2.32). 2048 STG-EL 28.53/25.59 (2.93); bulk_EL 30.00/27.08 (2.92); bulk no hint 31.33/26.98 (4.35); bulk_EL wg0 30.80/28.09 (2.72). Bulk EL pays the same dirty cost as STG EL and is 0.8-1.5 us slower in absolute terms [probe_b200]"
+  - "H23 store half closed: the async proxy honours the evict_last policy the same way STG does. Without evict_last the bulk store avoids some of STG's dirty cost (3.77 vs about 5.0 us at 1024, 4.35 vs about 6.4-7.7 at 2048, the STG numbers being from the r12 E1 R=1 curve, not a same-run control), but it is still 2-3 us worse than STG with evict_last. No bulk variant wins at any size [probe_b200]"
+  - "LDG/STG add-ons for E1's sweep (S path, same sizes): st.global.L2::evict_last qualifier form equals the createpolicy evict_last store within noise (-0.2/0.0/+0.5/-0.4% at 128/131/256/586 tok). st.global.wt is worse (+3.2/+6.9/+15.9/+24.0%), so the write-through qualifier is not an alternative to evict_last [probe_b200]"
+  - "dead end: a bulk store of the whole 8 KB CTA tile needs __syncthreads plus a single issuing thread; the S path is latency-bound, so this serialises the store behind the slowest warp (and wait_group.read keeps the CTA resident until the smem has been read). Do not revisit bulk stores for this problem [probe_b200]"
+  - "tooling: harness_time raised 'No timing results' once in the first draft, probably the known CUPTI flake or a variant that failed to launch; retrying each timing up to 3 times fixed it. b200probe.cuda_kernel accepts __cluster_dims__(CL,1,1) compiled into the kernel, so cluster-2 variants need no launch attribute [probe_b200]"
+  - "run_tests returned 'Error executing tool run_tests' on both attempts (before any result), so 16/16 correctness and the projected portal score for this exact file are NOT verified. compile_b200 gave 30/48/30 regs, 0 B smem, 0 B local and the same LDG.256 x7, LDG.CONSTANT.256 x1, STG.256 x5 mix as c2 [compile_b200]"
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "256-bit loads fall back to 2x128-bit on sm_90"}
+  A100: {runs: false, representative: false, note: "cluster launch needs sm_90+"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "run_tests did not complete, so correctness on all 16 workloads is untested for this exact build; it relies on the generated code being identical to c2"
+  - "Dead BULK code could be flagged on review; it is compiled out for every instantiation"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

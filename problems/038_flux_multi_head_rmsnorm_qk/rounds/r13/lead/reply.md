@@ -1,3 +1,12 @@
+### Assessment
+
+The gap to #1 is 0.015, i.e. 0.24 summed workload score. Taken from one band it would need: S alone, about 0.9 µs off every S workload (4.6 to 3.7 µs at 128 tokens); M alone, 10% (1.6 µs at 1024, 3 µs at 2048); L alone, 8% (9 µs at 8192, a 7.5 TB/s effective rate, above the public dirty-L2 copy ceiling); or 3.5% uniform (predict_score: 0.6274). S alone is implausible: on the bench our fixed cost already equals CAKE's floor, and the portal's extra 0.6 µs is clock-bound launch hardware that every kernel pays. L alone is implausible: the read ceiling is DRAM-side (H11).
+
+The one pool of the right size is the harness's dirty-flush cost, measured in r12 as dirty minus clean: 0.5 µs at 128 tokens (10%), 1.2 at 586 (13%), 2.0 at 1024 (14%), 4.6 at 2048 (16%), roughly 5 µs at L (4-5%). Avoiding half of it predicts 0.634; all of it 0.656. The most parsimonious leader model is therefore a kernel that pays about half the dirty cost at 586 to 8192 tokens, with S equal to ours. r12 also showed that evict_last's whole gain is a dirty-flush effect, not parking, so the mechanism is still not understood and the policy sweep on plain LDG/STG is exhausted.
+
+This round therefore attacks the mechanism from four outside-family angles: a synthetic known-size dirty residue to model the cost, a cross-call test of whether our own evict_last lines survive the reset+flush and are written back in the next window (with a legitimate demotion fix), and the async proxy's store and load paths, whose L2 allocation behaviour against a dirty residue has never been measured.
+
+```yaml ledger
 # Hypothesis ledger for #38, maintained by the research lead (round.py lead) and read by every design session.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 # Seeded 8 October from rounds r1-r10 and the portal results; updated by the research lead for r11, r12 and r13 (8 October).
@@ -275,3 +284,57 @@ hypotheses:
   - 'arithmetic r13: the gap is 0.24 summed score; from S alone it needs 0.9 us on each of five S workloads (implausible: H10);
     from L alone 8% (7.5 TB/s effective, above the dirty-L2 copy ceiling, H11); uniform 3.5% gives 0.6274'
   - 'predict_score: S -5 / M -7.5 / L -3 -> 0.634; M -10 alone -> 0.627; the dirty pool (H7) is the only identified cost of that size'
+```
+
+```json tasks
+[
+  {
+    "id": "E1",
+    "hypothesis": "H22",
+    "title": "Synthetic dirty residue: model the flush cost as residue bytes evicted, per policy",
+    "operation": "new_design",
+    "parents": ["c2-cluster2-s-only"],
+    "band": "M",
+    "instructions": "Probe-only session on the rented B200 with b200probe (reuse the /tmp/e1lib.py pattern: monkey-patch sol_execbench.core.bench.timing._clear_cache). Build a flush variant 'clean+residue(X)': zero the 2xL2 buffer, read it back entirely (clean), then write X MB of a PRIVATE scratch buffer with plain stores (fresh addresses every call) for X in {0, 10, 20, 30, 40, 60, 90, 120}. Step 1: time the c2 paths (586 R=1+EF, 1024 R=3, 2048 R=1, 8192 R=1) and the read-only and write-only decompositions under each X, 5 interleaved reps, medians. Fit cost(X) per size; report the X that reproduces the harness's dirty flush (gives the real residue size) and whether cost saturates (residue fully evicted) or keeps rising. Step 2: under X = harness-equivalent and X = 120, measure dirty minus clean for these untested policy combinations at 586/1024/2048: (a) x loads evict_last via createpolicy + EL stores; (b) st.global.wt stores; (c) qualifier-form st.global.L2::evict_last instead of createpolicy; (d) EF loads + EL stores + applypriority.global.L2::evict_normal issued by each CTA over its OWN output tile 8 KB after the store (so the oldest outputs become normal and later EL stores can victimise them instead of residue); (e) same as (d) but applypriority on the input tile just read. Step 3: write the mechanism statement (one paragraph) that predicts every r12 E1 number within 10%, and the best combination's gain under the real harness flush. Record findings for the notebook.",
+    "success": "A cost(X) curve that reproduces the harness dirty cost within 10% at three sizes, plus at least one policy combination that cuts dirty-minus-clean by >= 0.5 us at 1024 or >= 1.0 us at 2048 tokens (>= 3%) under the real harness flush, confirmed by run_tests 16/16.",
+    "refuted_if": "cost is independent of X (then the penalty is not residue write-back and H22 is wrong), or no combination in step 2 moves the dirty cost by more than 1% at 1024-2048 tokens.",
+    "model": "opus"
+  },
+  {
+    "id": "E2",
+    "hypothesis": "H21",
+    "title": "Do our evict_last outputs survive the reset+flush and get written back in the next window?",
+    "operation": "new_design",
+    "parents": ["c2-cluster2-s-only"],
+    "band": "all",
+    "instructions": "Probe session. Step 1 (survival test): write 30 MB of a private buffer with createpolicy evict_last stores; then run exactly the harness sequence (cudaCtxResetPersistingL2Cache, 252 MB zero_); then time a read of the 30 MB with clock64 per-line latency and total time. Compare with (i) the same buffer written with plain stores and (ii) the EL write without the reset. L2-hit latency (~250-325 cycles) or bandwidth far above 8 TB/s means the lines survived. Step 2 (cost test): in harness_time at 1024/2048/8192 tokens, 7 interleaved reps, compare c2 against c2-demote: identical kernel plus, after its stores, each CTA issues applypriority.global.L2::evict_normal over its own 8 KB output tile (R=3 path: all three tiles); and against c2-demote-last (only CTAs with blockIdx in the last resident wave demote, so parking within the window is kept but the leftovers are released). Also test the inverse ordering: demote issued by the SAME CTA before its EL store of the next tile. Step 3: if step 1 shows survival and step 2 gains >= 2% at any M/L size, ship a dispatch candidate (demotion only where it gains), compile_b200 (check regs unchanged, no spills), run_tests 16/16, and flag it in the card for the operator's legitimacy check before a portal slot. Either outcome is a finding: if the reset demotes EL lines, record that the 3-4 us EL parking is genuinely outside the window and close H21.",
+    "success": "Step 1 shows EL lines surviving the reset+flush AND step 2 gains >= 2% at 2048 or 8192 tokens (>= 0.6 / 2.3 us) with run_tests 16/16 and predicted portal >= 0.618.",
+    "refuted_if": "The 30 MB reads at DRAM speed after the reset+flush (lines did not survive), or demotion changes the timed kernel by < 1% at every size.",
+    "model": "opus"
+  },
+  {
+    "id": "E3",
+    "hypothesis": "H23",
+    "title": "One-shot bulk-store path (st:bulk) at S and M: L2 allocation and exit-drain behaviour",
+    "operation": "structural_mutation",
+    "parents": ["c2-cluster2-s-only"],
+    "band": "S",
+    "instructions": "Build a CUDA C++ variant of the c2 R=1 path that keeps the LDG.256 loads, half-warp reduction and register maths, but writes each thread's 8 outputs to a static shared tile (16 rows x 512 B = 8 KB per CTA), then fence.proxy.async.shared::cta, __syncthreads, and one elected thread issues cp.async.bulk.global.shared::cta.bulk_group [gmem], [smem], 8192 with .L2::cache_hint and the evict_last policy, then cp.async.bulk.commit_group and cp.async.bulk.wait_group.read 0 before the CTA exits. No mbarrier, no ring, no TMA loads. Keep __launch_bounds__(256, 8) and the cluster-2 launch at <= 300 tokens. Probes (b200probe, harness timing, 10 interleaved reps): (1) 128/131/256 tokens vs c2: CUPTI span and in-kernel globaltimer span (is the 0.67 us store tail shorter?); (2) 586/1024/2048 tokens dirty vs clean flush vs c2 (does the bulk store pay less of the dirty cost?); (3) variants: bulk store with no hint, with evict_first hint, and wait_group 0 (full completion) instead of .read. Also run two cheap LDG/STG add-ons at the same sizes for E1's sweep: st.global.wt and the qualifier form st.global.L2::evict_last. Then compile_b200 (regs, smem 8 KB, no spills), run_tests 16/16, dispatch the bulk store only where it wins.",
+    "success": ">= 0.15 us (3%) at 128-256 tokens or >= 3% dirty-flush reduction at 1024-2048 tokens vs c2 on the same GPU, 16/16 pass, predicted portal >= 0.617.",
+    "refuted_if": "Bulk stores are within +-1% of STG.256 at S and pay the same dirty cost at M (then the async proxy allocates like STG and H23's store half is closed; the r10 27% L loss stands).",
+    "model": "sonnet"
+  },
+  {
+    "id": "E4",
+    "hypothesis": "H23",
+    "title": "One-shot bulk-load path with an evict_first L2 cache hint at 586-2048 tokens",
+    "operation": "structural_mutation",
+    "parents": ["c2-cluster2-s-only", "r10-bulk1d-ring-stel"],
+    "band": "M",
+    "instructions": "Build a CUDA C++ one-shot kernel for 586-2048 tokens: each 256-thread CTA owns 2 tiles of 16 rows (16 KB), thread 0 inits two mbarriers and issues two cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes 8 KB copies with .L2::cache_hint (policy variants: none, createpolicy evict_first, evict_last) at kernel start; warps wait on the parity, read a row's 8 floats per lane from shared memory, reduce in the half-warp, multiply by the weight (ld.global.nc as in c2) and store with STG.256 evict_last exactly as c2. 4 CTAs/SM by smem (16 KB + barriers) is fine; also try 1 tile per CTA (8 KB, 8 CTAs/SM). No ring, no persistence. Probes (harness timing, 7 interleaved reps, dirty AND clean flush): 586/1024/2048 tokens vs the c2 paths; report dirty-minus-clean per variant so the L2-allocation question is answered separately from raw speed; also 128 tokens once to confirm the known ~0.8 us setup penalty and keep c2's S path. If any variant cuts dirty-minus-clean by >= 3% at 1024 or 2048 under the real harness flush, build the dispatch candidate (c2 everywhere else), compile_b200, run_tests 16/16.",
+    "success": "Dirty-flush cost reduced by >= 3% at 1024 or 2048 tokens relative to c2's R=3 / R=1 paths, with total time no worse than c2, 16/16 pass, predicted portal >= 0.617.",
+    "refuted_if": "Bulk loads with any hint pay the same dirty cost as LDG.256 (within 1%) at 1024-2048 tokens, or are slower by > 2% in the clean case; then close H23's load half and leave the async proxy for good.",
+    "model": "opus"
+  }
+]
+```

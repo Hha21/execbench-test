@@ -120,6 +120,8 @@ hypotheses:
   - 'CAKE: 2.53 us for a 2.1 MB kernel, so about 1 us of our fixed cost is above the public floor'
   - 'portal r11-e3-cluster2-rtok-disp (#62670) vs r10-rtok: 128 tok -6.2%, 131 -4.2%, 256 -1.6/-3.1% (bench -3.8/-4.6/-1.5/-2.7%):
     the S gain is real and larger on the portal'
+  - 'portal c2-cluster2-s-only (#62679, clusters at <= 300 tokens only): 0.6125, new best; S band -1.6% vs r10-rtok (128 tok
+    -4.2%), M/L unchanged'
 - id: H15
   statement: L2 protects at most ~25-30 MB of evict_last lines (and holds a similar amount of dirty flush lines), a hardware
     cap; the store-side end state cannot be improved further.
@@ -129,11 +131,16 @@ hypotheses:
     0.5/0.75 variants are within +-1% or worse'
   - 'probe r10: H7''s cost is also ~30-40 MB worth at M/L'
 - id: H16
-  status: open
-  statement: Cluster launches cost at medium/large sizes on the portal, either directly (clusters at >= 2048 tokens) or by
-    slowing later plain launches in the same process at the portal's clock.
+  status: supported
+  statement: 'Cluster launches of large grids cost on the portal: directly at the clustered sizes, and they seem to slow later
+    plain launches in the same harness process; small-grid clusters do not.'
   evidence:
   - 'portal r11-e3-cluster2-rtok-disp: +1.6..+5.0% at 2048-8192 tokens (clustered there; bench -0.7..+1.9%) and +2.5..+2.9%
     at 586-1024 tokens where code and launch equal r10-rtok (bench +0.3..+0.6%)'
   - 'bench probe: one cluster launch does not slow later plain launches in the same process (within 1%)'
   - 'test: c2-cluster2-s-only (clusters at <= 300 tokens only), predicted 0.6136 +- 0.0045'
+  - 'portal c2 (clusters only <= 300 tokens): 586-8192 tokens back to r10-rtok within +-0.4% (8,128 +1.2%), so r11''s M/L
+    loss came from clustering >= 2048 tokens'
+  - 'harness workload order: r11''s clustered 4,1657 / 4,1024 / 8,773 run at positions 2-4, before the plain 586/1024-token
+    workloads (positions 5-9) that slowed 2.5-2.9%; in c2 the only cluster launches are small grids and nothing after them
+    slowed (single observation)'

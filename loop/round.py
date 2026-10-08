@@ -324,7 +324,11 @@ def cmd_plan(a):
 
 
 def cmd_auto(a):
-    p = cmd_lead(a) if a.lead else make_plan(a)
+    if a.use_plan:                                 # run a plan already written (e.g. by `round.py lead`)
+        p = json.loads((rdir(a.round) / "plan.json").read_text())
+        print(f"using the saved plan: {len(p['tasks'])} task(s)")
+    else:
+        p = cmd_lead(a) if a.lead else make_plan(a)
     propose_tasks(a.round, p["tasks"], a)
     if not a.dry_run and any((rdir(a.round) / "candidates").glob("*.json")):
         a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" or a.backend == "claude" else "A100,H200")
@@ -469,7 +473,7 @@ def main():
     llm_args.add_argument("--session-model", default="opus", help="claude backend: model for design sessions")
     llm_args.add_argument("--lead-model", default="fable", help="claude backend: model for the research lead")
     llm_args.add_argument("--session-timeout", type=int, default=60, help="claude backend: minutes per session")
-    llm_args.add_argument("--parallel", type=int, default=2, help="claude backend: sessions at once (each runs a "
+    llm_args.add_argument("--parallel", type=int, default=4, help="claude backend: sessions at once (each runs a "
                           "claude process and an MCP server; keep low on a laptop)")
     llm_args.add_argument("--interactive", action="store_true",
                           help="design sessions with tools (compile, test, score model) on a CSF3 GPU tool server")
@@ -498,6 +502,7 @@ def main():
         q.add_argument("--round", required=True)
         q.add_argument("--max-tasks", type=int, default=3)
         q.add_argument("--last-round", help="round whose failures get repair tasks")
+        q.add_argument("--use-plan", action="store_true", help="auto: run rounds/<round>/plan.json as it is")
         q.add_argument("--lead", action="store_true", help="auto: let the research lead (claude backend) update "
                        "the hypothesis ledger and choose the experiments instead of the planner")
         q.add_argument("--mode", choices=("exploit", "explore"), default="exploit",

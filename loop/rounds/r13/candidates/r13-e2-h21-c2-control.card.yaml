@@ -1,0 +1,82 @@
+id: r13-e2-h21-c2-control
+parents:
+  - c2-cluster2-s-only
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests:
+  - H21
+hypothesis: >-
+  H21 (refuted): our evict_last outputs survive cudaCtxResetPersistingL2Cache plus the 252 MB zero flush,
+  so each call writes back the previous call's outputs inside its own window. Measured: the reset demotes
+  createpolicy evict_last lines, and the zero flush then evicts them before the timed window starts. Demoting
+  our own outputs with applypriority.L2::evict_normal only throws away the evict_last benefit inside the window.
+  The candidate is c2 unchanged (comments only), returned as the control.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  S_max_tokens: 600
+  cluster2_max_tokens: 300
+  R3_max_tokens: 1100
+dispatch:
+  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}
+  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}
+  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3, LOAD_S: false, MINB: 5}}
+  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: false}}
+findings:
+  - "probe step 1 (first-load latency of each line, clock64, median of 5): a 16/30 MB buffer written with evict_last, then the 252 MB zero flush WITHOUT the reset: median 841/890 cycles, 90th percentile 1868/2770, against 664/527 for a hot hit. Most evict_last lines survive a 2xL2 zero flush when there is no reset [probe_b200]"
+  - "probe step 1: evict_last write, then cudaCtxResetPersistingL2Cache, then the zero flush: median 2263/1872 cycles at 16/30 MB, the same as plain stores (2227/1847) and as a never-written buffer (2226/1856). The reset demotes createpolicy evict_last lines and the flush evicts them, outside the timed window. H21's premise is false [probe_b200]"
+  - "probe step 1: the reset alone (no flush) leaves a 16 MB evict_last set hot (681 cycles) but at 30 MB the median rises to 1264 cycles (90th percentile 3494). The reset may evict or write back part of a large evict_last set itself; not investigated [probe_b200]"
+  - "probe step 2 (harness_time, 7 interleaved reps, c2 code paths): applypriority.global.L2::evict_normal on every output line after the store costs +30.4% (1024 tokens, R=3), +22.4% (1024, R=1), +12.8% (2048), +2.6% (8192). Demoting only in the last 1184 CTAs costs +19.8/+2.0/+1.5/+0.4%. The plain kernel won 7/7 everywhere. Demotion releases evict_last protection inside the window and brings back the dirty-flush write-backs (consistent with the H1/H7 mechanism) [probe_b200]"
+  - "dead end: H21 refuted on both counts. The evict_last gain is not paid back in the next window, and no demotion variant gains. Close H21; nothing evict_last-related remains to be recovered across calls [probe_b200]"
+  - "side fact for later work: the harness reset is what clears evict_last lines; without it they survive a 252 MB zero_. Do not try to exploit this (it would carry state across calls) [probe_b200]"
+  - "run_tests of the final code (c2 with comments changed): 16/16 pass; vs c2 S -0.6%, M -0.2%, L +0.3% (noise); predicted portal 0.6123 +- 0.006 [run_tests]"
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 fallback uses 128-bit accesses"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "identical to c2; no new risk. No applypriority in the shipped code, so no legitimacy check is needed"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

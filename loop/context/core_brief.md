@@ -15,7 +15,7 @@ Maximise the **portal SOL score** for the problem, not the speed on any GPU we c
 - If any workload fails correctness or trips a reward-hack check, that workload scores 0. Submissions can also be
   disqualified on review (the public API carries an `is_disqualified` flag). [PAPER]
 - Rule of thumb for #38: a 10% cut in any one workload's time adds about 0.002 to the score, and 10% on all of them adds
-  about 0.04. [INFERRED: model in problem_038.md]
+  about 0.04. [INFERRED: model in the problem card]
 
 ## 2. How you are timed (harness v1.1)
 

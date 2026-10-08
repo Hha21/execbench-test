@@ -21,6 +21,7 @@ Portal results arrive through poc/ingest_portal.py and are picked up by collect,
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -32,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import archive  # noqa: E402
 import planner  # noqa: E402
+import problem  # noqa: E402
 import prompts  # noqa: E402
 import reply  # noqa: E402
 
@@ -43,7 +45,7 @@ MODEL = "anthropic/claude-opus-5.5"
 
 
 def rdir(r):
-    return ROOT / "loop" / "rounds" / r
+    return problem.current().rounds / r
 
 
 def ssh(cmd):
@@ -141,7 +143,7 @@ def claude_sessions(round_id, jobs, static, a, sdir):
         return dict(pool.map(one, jobs))
 
 
-LEDGER = ROOT / "loop" / "ledger.yaml"
+
 LEAD_PROTOCOL = """=== RESEARCH LEAD PROTOCOL ===
 You are the research lead of this project. You do not write kernels. Each round you:
 1. Read the evidence below: the lab notebook (portal vs bench outcomes and findings recorded by design sessions),
@@ -190,7 +192,9 @@ def cmd_lead(a):
     prompt = "\n\n".join([
         f"=== TASK ===\nRound {a.round}: update the hypothesis ledger and design {a.max_tasks} experiments."
         + (f"\n\nBRIEF FROM THE OPERATOR FOR THIS ROUND:\n{a.brief}" if getattr(a, "brief", None) else ""),
-        f"=== HYPOTHESIS LEDGER (loop/ledger.yaml) ===\n{LEDGER.read_text()}",
+        f"=== PROBLEM ===\n{problem.current().summary()}",
+        f"=== HYPOTHESIS LEDGER ({problem.current().ledger.relative_to(ROOT)}) ===\n"
+        f"{problem.current().ledger.read_text() if problem.current().ledger.exists() else '(none yet)'}",
         f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=80)}",
         f"=== PORTAL RESULTS (best first) ===\n{calib}",
         f"=== EMULATOR: portal minus bench, by design feature ===\n{effects}",
@@ -210,17 +214,18 @@ def cmd_lead(a):
         raise SystemExit(f"lead reply had no ledger or tasks block; see {sdir / 'reply.md'}")
     import yaml
     yaml.safe_load(ledger)                                  # must parse before it replaces the ledger
-    LEDGER.write_text(ledger)
+    problem.current().ledger.write_text(ledger)
     tasks = []
     for e in json.loads(tasks_js)[:a.max_tasks]:
-        parents = [p for p in (e.get("parents") or []) if p in arc] or [planner.best_kernel(arc)["id"]]
+        best0 = planner.best_kernel(arc)
+        parents = [p for p in (e.get("parents") or []) if p in arc] or ([best0["id"]] if best0 else [])
         tasks.append(dict(operation=e.get("operation") or "new_design", parents=parents, band=e.get("band") or "all",
                           niche=f"exp:{e.get('id', '?')}:{e.get('hypothesis', '-')}", model=e.get("model"),
                           instructions=(f"Experiment {e.get('id')} (tests {e.get('hypothesis')}): {e.get('title', '')}. "
                                         f"{e.get('instructions', '')} Success: {e.get('success', '')} Refuted if: "
                                         f"{e.get('refuted_if', '')}" + planner.EXPLORE_COMMON +
                                         " Set the card's tests: field to the hypothesis id(s).")))
-    best = planner.best_kernel(arc)
+    best = planner.best_kernel(arc) or {"id": None, "b200": {"score": None}}
     (d / "plan.json").write_text(json.dumps(dict(best=best["id"], best_score=best["b200"]["score"], tasks=tasks,
                                                  lead=dict(model=a.lead_model, cost_usd=out.get("total_cost_usd"))),
                                             indent=1))
@@ -230,6 +235,95 @@ def cmd_lead(a):
     u = out.get("usage") or {}
     print(f"lead: {out.get('num_turns')} turns, {out.get('seconds')} s, API-equivalent ${out.get('total_cost_usd') or 0:.2f}")
     return dict(tasks=tasks)
+
+
+def register(arc, round_id, text, t):
+    """Parse a reply's candidates, lint them, and file them under the round (candidates/ or rejected/)."""
+    d = rdir(round_id)
+    for sub in ("candidates", "rejected"):
+        (d / sub).mkdir(parents=True, exist_ok=True)
+    cands = reply.candidates(text)
+    if not cands:
+        print("  no parseable candidate in the reply")
+    for c in cands:
+        cid, sol, card, problems = reply.build(c, round_id, set(arc))
+        if sol is None:
+            print(f"  rejected: {problems}")
+            continue
+        hits = reply.lint(sol)
+        ok = not (problems or hits)
+        where = d / ("candidates" if ok else "rejected")
+        (where / f"{cid}.json").write_text(json.dumps(sol, indent=1))
+        (where / f"{cid}.card.yaml").write_text(card)
+        pc = archive.parse_card(card)
+        arc[cid] = dict(id=cid, round=round_id, parents=pc.get("parents") or t.get("parents") or [],
+                        operation=pc.get("operation") or t.get("operation"), language=pc.get("language", "triton"),
+                        niche=pc.get("niche") or {}, card=card, task=t,
+                        solution=str((where / f"{cid}.json").relative_to(ROOT)),
+                        status="proposed" if ok else "rejected: " + "; ".join(problems + hits), timings={})
+        print(f"  {cid}: {arc[cid]['status']}")
+
+
+def cmd_research(a):
+    """Research phase for a problem: B200 measurements, then a research agent writes the problem card, the first
+    hypothesis ledger and a simple, correct first kernel (round r0)."""
+    import research
+    p = problem.current()
+    p.dir.mkdir(parents=True, exist_ok=True)
+    rows_file = p.b200 / "reference_times.json"
+    if a.remeasure or not rows_file.exists():
+        print(f"measuring {p.level}/{p.name} on the rented B200 (copy floor and PyTorch reference per workload)...",
+              flush=True)
+        rows = research.measure()
+    else:
+        rows = json.loads(rows_file.read_text())
+    table = research.measurements_table(rows)
+    print(table, flush=True)
+    d = rdir("r0") / "research"
+    d.mkdir(parents=True, exist_ok=True)
+    example = problem.get("L1/038_flux_multi_head_rmsnorm_qk")
+    example_card = example.card.read_text() if example.card.exists() else ""
+    example_ledger = example.ledger.read_text() if example.ledger.exists() else ""
+    system_file = d / "briefing.txt"
+    system_file.write_text(prompts.static_prompt() + "\n\n" + research.RESEARCH_PROTOCOL + "\n\n" + CLAUDE_NOTE)
+    prompt = "\n\n".join([
+        f"=== TASK ===\nResearch phase for {p.level}/{p.name}.",
+        f"=== PROBLEM ===\n{p.summary()}",
+        f"=== definition.json ===\n{(p.data / 'definition.json').read_text()}",
+        f"=== reference.py ===\n{(p.data / 'reference.py').read_text()}",
+        f"=== workload.jsonl (first 3 lines) ===\n" + "\n".join((p.data / "workload.jsonl").read_text().splitlines()[:3]),
+        f"=== MEASUREMENTS ON THE RENTED B200 (unlocked clocks; the portal locks SM 1500 MHz) ===\n{table}",
+        f"=== EXAMPLE: the finished problem card of another problem (format and depth to aim for) ===\n"
+        f"{example_card[:12000]}",
+        f"=== EXAMPLE: that problem's ledger (copy its constraints; write your own hypotheses) ===\n{example_ledger[:6000]}",
+    ])
+    (d / "prompt.txt").write_text(prompt)
+    out = run_claude(prompt, system_file, a.lead_model, a.effort,
+                     ["--name", "research", "--round", "r0", "--dir", str(d), "--gpu-calls", str(a.gpu_calls),
+                      "--probes", str(a.probes), "--b200-minutes", str(a.b200_minutes)], d, "research",
+                     a.session_timeout * 60)
+    text = out.get("result") or ""
+    (d / "reply.md").write_text(text)
+    (d / "research.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+    blocks = {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
+    card = next((v for k, v in blocks.items() if k.startswith("markdown") and "card" in k), None)
+    ledger = next((v for k, v in blocks.items() if k.startswith("yaml") and "ledger" in k), None)
+    if card:
+        p.card.write_text(card)
+    if ledger:
+        import yaml
+        yaml.safe_load(ledger)
+        p.ledger.write_text(ledger)
+    arc = get_archive()
+    register(arc, "r0", text, dict(operation="new_design", parents=[], band="all", niche="research:first-kernel"))
+    archive.save(arc)
+    print(f"research: {out.get('num_turns')} turns, {out.get('seconds')} s, API-equivalent "
+          f"${out.get('total_cost_usd') or 0:.2f}; card {'written' if card else 'MISSING'}, ledger "
+          f"{'written' if ledger else 'MISSING'}; see {d.relative_to(ROOT)}/reply.md")
+    if any((rdir("r0") / "candidates").glob("*.json")):
+        b200_test("r0")
+        print(f"next: submit {rdir('r0').relative_to(ROOT)}/candidates/<first kernel>.json to the portal (its result gives "
+              f"the per-workload anchors), ingest the page, then: round.py lead --problem {p.level}/{p.name} --round r1")
 
 
 def propose_tasks(round_id, tasks, a):
@@ -275,26 +369,7 @@ def propose_tasks(round_id, tasks, a):
         print(f"{name}: {info['prompt_tokens']} in ({info['cached_tokens']} cached), {info['completion_tokens']} out "
               f"({info['reasoning_tokens']} reasoning), ${info['cost_usd']}, {info['seconds']} s, "
               f"finish={info.get('finish')}{extra}")
-        cands = reply.candidates(text)
-        if not cands:
-            print("  no parseable candidate in the reply")
-        for c in cands:
-            cid, sol, card, problems = reply.build(c, round_id, set(arc))
-            if sol is None:
-                print(f"  rejected: {problems}")
-                continue
-            hits = reply.lint(sol)
-            ok = not (problems or hits)
-            where = d / ("candidates" if ok else "rejected")
-            (where / f"{cid}.json").write_text(json.dumps(sol, indent=1))
-            (where / f"{cid}.card.yaml").write_text(card)
-            pc = archive.parse_card(card)
-            arc[cid] = dict(id=cid, round=round_id, parents=pc.get("parents") or t["parents"],
-                            operation=pc.get("operation") or t["operation"], language=pc.get("language", "triton"),
-                            niche=pc.get("niche") or {}, card=card, task=t,
-                            solution=str((where / f"{cid}.json").relative_to(ROOT)),
-                            status="proposed" if ok else "rejected: " + "; ".join(problems + hits), timings={})
-            print(f"  {cid}: {arc[cid]['status']}")
+        register(arc, round_id, text, t)
     archive.save(arc)
     print(f"round {round_id}: {len(jobs)} calls, ${total:.2f}")
 
@@ -374,14 +449,17 @@ def b200_test(round_id):
         with b200_modal.app.run():
             for sol_path, sol, m, need_test in ran:
                 if not need_test:                     # timing reused; only the compile statistics are missing
-                    comp = b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile", solution=sol))
+                    comp = b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile", solution=sol,
+                                                                         problem=b200_modal.problem_ref()))
                     statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [],
                                         error=comp.get("error") or ""))
                     continue
-                res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol))
+                res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol,
+                                                    problem=b200_modal.problem_ref()))
                 b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
                 wl = res.get("workloads") or []
                 comp = m.get("compile") or b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile",
+                                                                         problem=b200_modal.problem_ref(),
                                                                          solution=sol))
                 statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [], error=comp.get("error") or ""))
                 print(f"B200r {sol_path.stem}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed", flush=True)
@@ -463,7 +541,10 @@ def cmd_table(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    llm_args = argparse.ArgumentParser(add_help=False)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--problem", default=None, help="problem name, e.g. L1/038 or 038_flux_multi_head_rmsnorm_qk "
+                        "(default: $SOLX_PROBLEM or #38)")
+    llm_args = argparse.ArgumentParser(add_help=False, parents=[common])
     llm_args.add_argument("--model", default=MODEL)
     llm_args.add_argument("--effort", default="high")
     llm_args.add_argument("--max-tokens", type=int, default=64000)
@@ -511,16 +592,20 @@ def main():
                        help="exploit: improve the best kernel band by band; explore: one big idea per session")
         q.add_argument("--gpus", help="where to test the final candidates: B200 (rented, Modal) and/or CSF3 GPUs; "
                        "default B200 with --tool-gpu B200, else A100,H200")
+    q = sub.add_parser("research", parents=[llm_args], help="research phase for a new problem")
+    q.add_argument("--remeasure", action="store_true", help="redo the B200 copy-floor and reference measurements")
     for name in ("test", "status", "collect", "shortlist"):
-        q = sub.add_parser(name)
+        q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)
         if name == "test":
             q.add_argument("--gpus", default="A100,H200", help="B200 (rented, Modal) and/or CSF3 GPU types")
-    sub.add_parser("table")
+    sub.add_parser("table", parents=[common])
     a = ap.parse_args()
+    if a.problem:                                   # every module and subprocess reads the problem from here
+        os.environ["SOLX_PROBLEM"] = f"{problem.get(a.problem).level}/{problem.get(a.problem).name}"
     if getattr(a, "round", None) and not re.fullmatch(r"[a-z0-9-]+", a.round):
         sys.exit("--round must be lowercase letters, digits and dashes")
-    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, test=cmd_test, status=cmd_status, collect=cmd_collect,
+    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, research=cmd_research, test=cmd_test, status=cmd_status, collect=cmd_collect,
          shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
 
 

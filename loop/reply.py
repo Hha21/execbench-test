@@ -56,7 +56,8 @@ def build(c, round_id, taken):
         problems.append(f"entry point {entry!r} is not one of the files")
     spec.setdefault("target_hardware", ["B200", "LOCAL"])
     spec.setdefault("destination_passing_style", True)
-    sol = {"name": cid, "definition": "038_flux_multi_head_rmsnorm_qk", "author": "solx-loop",
+    import problem
+    sol = {"name": cid, "definition": problem.current().name, "author": "solx-loop",
            "description": str(card.get("hypothesis") or "")[:500], "spec": spec,
            "sources": [{"path": p, "content": body} for p, body in c["files"]]}
     return cid, sol, c["card"], problems

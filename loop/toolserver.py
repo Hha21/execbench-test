@@ -6,7 +6,7 @@ Polls <queue>/req/*.json and handles one request at a time (so timings never ove
 At start it times the reference solution (--ref) once and writes <queue>/ref.json, so tests compare on one GPU.
 It touches <queue>/alive on every poll, and exits when <queue>/stop appears or after --idle seconds without requests.
 
-  python loop/toolserver.py --queue $SOLX/toolq/<name> --ref loop/rounds/r3/candidates/<best>.json --problem $PROBLEM038
+  python loop/toolserver.py --queue $SOLX/toolq/<name> --ref <best solution json> --problem <problem data dir>
   python loop/toolserver.py --once req.json --out res.json --problem <dir>      (one request; loop/b200_modal.py)
 """
 
@@ -28,6 +28,11 @@ def write_json(path, obj):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(obj))
     os.replace(tmp, path)
+
+
+def wkey(axes):
+    """Workload key: the variable-axis values in the workload's order ('2,128' for #38); clients get the axes too."""
+    return ",".join(str(v) for v in axes.values())
 
 
 FLAKE = "Expected kernel activity sequence not found"   # CUPTI dropped a whole iteration's records (seen on Modal)
@@ -54,7 +59,7 @@ def harness(problem, sol_path, trace, retries=2):
             for line in src:
                 if line.strip():
                     a = json.loads(line)["axes"]
-                    if f"{a['batch_size']},{a['seq_len']}" in flaky:
+                    if wkey(a) in flaky:
                         dst.write(line)
         again, _ = harness_once(sub, sol_path, trace.parent / f"retry{attempt}.jsonl")
         fixed = {r["workload"]: dict(r, retried=attempt + 1) for r in again if r["status"] == "PASSED"}
@@ -74,7 +79,7 @@ def harness_once(problem, sol_path, trace):
                 ev, a = t.get("evaluation") or {}, t["workload"]["axes"]
                 lat = (ev.get("performance") or {}).get("latency_ms")
                 corr = ev.get("correctness") or {}
-                recs.append(dict(workload=f"{a['batch_size']},{a['seq_len']}", status=ev.get("status"),
+                recs.append(dict(workload=wkey(a), axes=a, status=ev.get("status"),
                                  latency_us=round(lat * 1e3, 2) if lat else None,
                                  max_abs_err=corr.get("max_absolute_error"), max_rel_err=corr.get("max_relative_error"),
                                  log=(ev.get("log") or "")[-1500:]))

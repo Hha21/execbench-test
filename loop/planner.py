@@ -9,15 +9,19 @@ the per-workload scores, so a predicted set of B200 times can be turned into a p
                       cannot predict (exploration slots).
 """
 
-import csv
 import math
-import re
+import statistics
 from collections import defaultdict
 
 import archive
+import problem
 from archive import ROOT
 
-S_MAX, M_MAX = 600, 2100            # band edges in B*S tokens (S = 12.6-57.6 MB, M = 101-201 MB)
+
+def P():
+    return problem.current()
+
+
 FIXED_TARGET_US = 2.0               # public B200 floor for a tiny streaming kernel is ~2.2-2.5 µs in total (b200_sota.md)
 BW_TARGET_TBS = 7.1                 # best public B200 read+write streams fit 7.05-7.10 TB/s marginal (b200_sota.md)
 EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order until one is missing from the archive
@@ -30,7 +34,7 @@ EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order un
                         "grid capped at 4 CTAs per SM, each thread keeping 2-4 rows' 256-bit loads in flight and issuing "
                         "the next row's loads before the current row's reduction; parent's kernel for large sizes."),
     ("tile", "fat", "Cut the CTA count 4-16x: an empty grid of 49,152 CTAs already spans 26 us on B200 "
-                    "(problem_038.md section 7). Give each thread several rows (loads for all of them issued first, then "
+                    "(the problem card). Give each thread several rows (loads for all of them issued first, then "
                     "the reductions), or larger CTAs, keeping registers low enough for full occupancy. Measure the "
                     "CTA-count effect with probe_b200 before writing the full kernel."),
     ("st", "l2order", "Order the work so that the outputs written last (the ones still in L2 when the kernel ends) are "
@@ -39,52 +43,45 @@ EXPLORE_NICHES = [                  # (axis, tag, instruction) tried in order un
 ]
 
 
-def bs_of(workload):
-    b, s = (int(x) for x in re.findall(r"=(\d+)", workload)[:2])
-    return b * s
-
-
 def anchors():
-    """Per B*S: (Tb, Tsol) in µs, recovered from every ingested portal page."""
-    path = ROOT / "poc" / "results" / "b200_portal_workloads.csv"
+    """Per workload key: (Tb, Tsol) in µs for the current problem, recovered from every ingested portal page.
+
+    Tb is shown on the page; Tsol follows from the per-workload score S = (Tb - Tsol) / ((T - Tsol) + (Tb - Tsol)).
+    Workloads with no well-conditioned score get the problem's median Tsol per MB times their size."""
     tb, ts = {}, defaultdict(list)
-    for r in csv.DictReader(open(path)):
-        bs, t, b, s = bs_of(r["workload"]), float(r["latency_ms"]), float(r["baseline_ms"]), float(r["sol_score"])
-        tb[bs] = b * 1e3
+    for r in archive.portal_rows(archive.PORTAL_WL):
+        k = P().key_from_label(r["workload"])
+        t, b, s = float(r["latency_ms"]), float(r["baseline_ms"]), float(r["sol_score"])
+        tb[k] = b * 1e3
         if abs(1 - 2 * s) > 0.1:
-            ts[bs].append((b - s * t - s * b) / (1 - 2 * s) * 1e3)
-    # Sizes without a well-conditioned score: Tsol measured at about 0.53x the 8 TB/s floor (problem card).
-    return {bs: (tb[bs], sorted(ts[bs])[len(ts[bs]) // 2] if ts.get(bs) else 0.53 * mb(bs) / 8) for bs in tb}
+            ts[k].append((b - s * t - s * b) / (1 - 2 * s) * 1e3)
+    per_mb = [statistics.median(v) / mb(k) for k, v in ts.items() if v]
+    fallback = statistics.median(per_mb) if per_mb else 0.0
+    return {k: (tb[k], statistics.median(ts[k]) if ts.get(k) else fallback * mb(k)) for k in tb}
 
 
-def score(times_by_bs, anc):
-    """Mean per-workload score; times_by_bs maps B*S -> µs (shapes with equal B*S time identically)."""
-    wl = [r for r in csv.DictReader(open(ROOT / "poc" / "results" / "b200_portal_workloads.csv"))]
-    shapes = sorted({r["workload"] for r in wl})
-    vals = []
-    for w in shapes:
-        bs = bs_of(w)
-        tb, ts = anc[bs]
-        t = times_by_bs[bs]
-        vals.append((tb - ts) / ((t - ts) + (tb - ts)))
+def score(times, anc):
+    """Mean per-workload portal score for times {workload key: µs} (every anchored workload must be present)."""
+    vals = [(tb - ts) / ((times[k] - ts) + (tb - ts)) for k, (tb, ts) in anc.items()]
     return sum(vals) / len(vals)
 
 
 def b200_times(rec):
-    """B200 µs per B*S for an archive record."""
-    out = {}
-    for k, v in ((rec.get("b200") or {}).get("timings") or {}).items():
-        out[archive.tokens(k)] = v
-    return out
+    """Portal µs per workload key for an archive record."""
+    return dict((rec.get("b200") or {}).get("timings") or {})
 
 
-def mb(bs):
-    return bs * 98304 / 1e6
+def mb(key):
+    return P().mbytes(key)
+
+
+def band_of(key):
+    return P().band(key)
 
 
 def fit_fixed_bw(times):
     """Least-squares t = a + bytes/bw over S and M sizes; returns (fixed µs, TB/s)."""
-    pts = [(mb(bs), t) for bs, t in times.items() if bs <= M_MAX]
+    pts = [(mb(k), t) for k, t in times.items() if band_of(k) in "SM"]
     n = len(pts)
     mx, my = sum(x for x, _ in pts) / n, sum(y for _, y in pts) / n
     slope = sum((x - mx) * (y - my) for x, y in pts) / sum((x - mx) ** 2 for x, _ in pts)
@@ -92,12 +89,13 @@ def fit_fixed_bw(times):
 
 
 def best_kernel(arc):
+    """The kernel with the best portal score, or None before the problem's first portal result."""
     measured = [r for r in arc.values() if r.get("b200")]
-    return max(measured, key=lambda r: r["b200"]["score"])
+    return max(measured, key=lambda r: r["b200"]["score"]) if measured else None
 
 
-def band_tbs(times, lo, hi):
-    xs = [mb(bs) / t for bs, t in times.items() if lo < bs <= hi]
+def band_tbs(times, band):
+    xs = [mb(k) / t for k, t in times.items() if band_of(k) == band]
     return math.exp(sum(map(math.log, xs)) / len(xs)) if xs else None
 
 
@@ -105,24 +103,24 @@ def gains(best, anc):
     t = b200_times(best)
     base = score(t, anc)
     fixed, bw = fit_fixed_bw(t)
-    s_t = {bs: (min(v, FIXED_TARGET_US + mb(bs) / bw) if bs <= S_MAX else v) for bs, v in t.items()}
+    s_t = {k: (min(v, FIXED_TARGET_US + mb(k) / bw) if band_of(k) == "S" else v) for k, v in t.items()}
     # M/L: the best kernel already beats the physical read+write rate (outputs left in L2 at kernel end are written
     # back after the timed window), so a bandwidth target no longer fits; value a further 5% instead.
-    l_t = {bs: (min(v, fixed + mb(bs) / BW_TARGET_TBS, 0.95 * v) if bw < BW_TARGET_TBS else 0.95 * v)
-           if bs > S_MAX else v for bs, v in t.items()}
+    l_t = {k: (min(v, fixed + mb(k) / BW_TARGET_TBS, 0.95 * v) if bw < BW_TARGET_TBS else 0.95 * v)
+           if band_of(k) != "S" else v for k, v in t.items()}
     return dict(base=base, fixed=fixed, bw=bw, S=score(s_t, anc) - base, ML=score(l_t, anc) - base,
-                tbs_M=band_tbs(t, S_MAX, M_MAX), tbs_L=band_tbs(t, M_MAX, 1 << 30))
+                tbs_M=band_tbs(t, "M"), tbs_L=band_tbs(t, "L"))
 
 
-def worse_in_band(arc, best, lo, hi):
-    """Kernels already measured on B200 that are slower than the best in this band (what not to repeat)."""
+def worse_in_band(arc, best, bands):
+    """Kernels already measured on B200 that are slower than the best in these bands (what not to repeat)."""
     bt = b200_times(best)
     out = []
     for r in arc.values():
         t = b200_times(r)
         if not t or r["id"] == best["id"]:
             continue
-        rel = [t[bs] / bt[bs] for bs in t if lo < bs <= hi and bs in bt]
+        rel = [t[k] / bt[k] for k in t if band_of(k) in bands and k in bt]
         if rel and sum(rel) / len(rel) > 1.02:
             n = r.get("niche") or {}
             out.append(f"{r['id']} ({n.get('mem', '?')}/{n.get('grid', '?')}): {100 * (sum(rel) / len(rel) - 1):+.0f}%")
@@ -146,11 +144,11 @@ EXPLORE_COMMON = (
     "out, still return your best version of it as the candidate and record what you learned in the card's findings: "
     "negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like "
     "(memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte "
-    "(problem card section 7). CUDA C++ uses the two-file layout.")
+    "(the problem card). CUDA C++ uses the two-file layout.")
 
 EXPLORE_IDEAS = [
     ("explore:one-wave-fat", "One wave of fat CTAs. Launching and retiring CTAs is not free on B200: an empty grid of "
-     "49,152 CTAs spans 26 us and 768 CTAs 1.6 us (problem card section 7). Design a kernel whose grid is exactly one "
+     "49,152 CTAs spans 26 us and 768 CTAs 1.6 us (the problem card). Design a kernel whose grid is exactly one "
      "resident wave (148 SMs x the CTAs that fit) at every size, each CTA streaming a contiguous chunk of rows with "
      "several rows' 256-bit loads in flight per thread (issue all loads, then reduce), keeping evict_last stores. "
      "First probe a plain copy: one wave of fat CTAs vs many small CTAs, at 12.6, 101 and 805 MB."),
@@ -203,22 +201,22 @@ def plan(arc, max_tasks=3, last_round=None, mode="exploit"):
                               instructions="Fix this candidate so it passes the harness; keep its design.",
                               feedback=r["failure_log"]))
     s_task = dict(operation="specialisation", parents=[best["id"]], band="S", gain=g["S"], instructions=(
-        f"Goal: cut the fixed cost on small inputs (B*S <= {S_MAX}). On B200 the parent fits {g['fixed']:.1f} us fixed "
+        f"Goal: cut the fixed cost on small inputs (the S band, <= {P().s_max:.0f} MB). On B200 the parent fits {g['fixed']:.1f} us fixed "
         f"+ bytes / {g['bw']:.1f} TB/s on small and medium sizes; reaching {FIXED_TARGET_US} us fixed would add about "
         f"{g['S']:+.3f} to the score. Write a small-input kernel behind a dispatch:size wrapper that routes every larger "
         f"size to the parent's kernel with the parent's exact configuration, so the B200 result isolates the change. "
         f"The best public B200 streaming kernels take about 2.2-2.5 us in total at the smallest sizes, so about 1 us is "
         f"recoverable; see b200_sota.md section 4 for what they do. "
         f"Keep the answer focused: one candidate, and say in the card what you think the fixed cost consists of. "
-        f"Slower on B200 than the parent in this band already: {'; '.join(worse_in_band(arc, best, 0, S_MAX)) or 'none'}." + note))
+        f"Slower on B200 than the parent in this band already: {'; '.join(worse_in_band(arc, best, "S")) or 'none'}." + note))
     l_task = dict(operation="structural_mutation", parents=[best["id"]], band="M,L", gain=g["ML"], instructions=(
-        f"Goal: cut medium and large input latency (B*S > {S_MAX}) on B200. The parent reaches {g['tbs_M']:.2f} TB/s (M) "
+        f"Goal: cut medium and large input latency (the M and L bands) on B200. The parent reaches {g['tbs_M']:.2f} TB/s (M) "
         f"and {g['tbs_L']:.2f} TB/s (L) effective; a further 5% would add about {g['ML']:+.3f} to the score. Its fit is "
         f"{g['bw']:.1f} TB/s, above the physical read+write rate: outputs still in L2 when the kernel ends are written "
-        f"back after the timed window (see problem_038.md section 7), so think about what occupies L2 at the end, not "
+        f"back after the timed window (see the problem card), so think about what occupies L2 at the end, not "
         f"only bandwidth. Propose the single change most likely to help, correct for every shape, one launch. "
         f"Slower on B200 than the parent in these bands already: "
-        f"{'; '.join(worse_in_band(arc, best, S_MAX, 1 << 30)) or 'none'}." + note))
+        f"{'; '.join(worse_in_band(arc, best, "ML")) or 'none'}." + note))
     for t in sorted([s_task, l_task], key=lambda t: -t["gain"]):
         if len(tasks) < max_tasks:
             tasks.append(t)
@@ -236,10 +234,6 @@ def plan(arc, max_tasks=3, last_round=None, mode="exploit"):
     return dict(best=best["id"], best_score=best["b200"]["score"], gains=g, tasks=tasks)
 
 
-def band_of(bs):
-    return "S" if bs <= S_MAX else "M" if bs <= M_MAX else "L"
-
-
 def rented_exponents(arc, best=None):
     """Per size band, k such that (portal time ratio) ~ (rented-B200 time ratio) ** k, both relative to the best kernel.
 
@@ -247,17 +241,18 @@ def rented_exponents(arc, best=None):
     clocks, which exaggerated S/M differences about 1.5-2x in the 7 October calibration (k < 1); L matched (k ~ 1).
     """
     best = best or best_kernel(arc)
-    toks = lambda t: {archive.tokens(k): v for k, v in t.items()}
-    bp, br = b200_times(best), toks((best.get("timings") or {}).get("B200r", {}))
+    bp, br = b200_times(best), dict((best.get("timings") or {}).get("B200r", {}))
     num, den = defaultdict(float), defaultdict(float)
     for r in arc.values():
         if r["id"] == best["id"]:
             continue
-        p, q = b200_times(r), toks((r.get("timings") or {}).get("B200r", {}))
-        for bs in set(p) & set(q) & set(bp) & set(br):
-            x, y = math.log(q[bs] / br[bs]), math.log(p[bs] / bp[bs])
-            num[band_of(bs)] += x * y
-            den[band_of(bs)] += x * x
+        p, q = b200_times(r), dict((r.get("timings") or {}).get("B200r", {}))
+        for k in set(p) & set(q) & set(bp) & set(br):
+            if not (p[k] and q[k] and bp[k] and br[k]):
+                continue
+            x, y = math.log(q[k] / br[k]), math.log(p[k] / bp[k])
+            num[band_of(k)] += x * y
+            den[band_of(k)] += x * x
     return {b: min(1.5, max(0.3, num[b] / den[b])) if den[b] > 1e-6 else 1.0 for b in "SML"}
 
 
@@ -301,25 +296,17 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
             parent = next((pp for pp in (r.get("parents") or []) if pp in emu.feats), best["id"])
             pred = emu.predict(paths or emu.feats.get(parent) or [{}], emulator.rented_times(r),
                                best_score=best["b200"]["score"])
-            rel = defaultdict(list)
-            for key, v in r["timings"]["B200r"].items():
-                if v and ref.get(key):
-                    rel[archive.tokens(key)].append(v / ref[key])
+            rel = {k: v / ref[k] for k, v in r["timings"]["B200r"].items() if v and ref.get(k)}
             ranked.append(dict(id=r["id"], gpu="B200r (emulator)" + ("" if paths else ", parent's features"),
                                predicted_score=pred["score"], sd=pred["sd"], p_better=pred["p_better"],
-                               rel=f"{fmt_rel(rel, 0, S_MAX)}/{fmt_rel(rel, S_MAX, M_MAX)}/{fmt_rel(rel, M_MAX, 1 << 30)}"))
+                               rel="/".join(fmt_rel(rel, b) for b in "SML")))
             continue
         if gpu and ref:
-            ct = r["timings"][gpu]
-            rel = defaultdict(list)
-            for key, v in ct.items():
-                if v and ref.get(key):
-                    rel[archive.tokens(key)].append(v / ref[key])
-            k = rented_exponents(arc, best) if gpu == "B200r" else {"S": 1.0, "M": 1.0, "L": 1.0}
-            pred = {bs: bt[bs] * ((sum(rel[bs]) / len(rel[bs])) ** k[band_of(bs)] if rel.get(bs) else 1.0)
-                    for bs in bt}
+            rel = {k: v / ref[k] for k, v in r["timings"][gpu].items() if v and ref.get(k)}
+            kx = rented_exponents(arc, best) if gpu == "B200r" else {"S": 1.0, "M": 1.0, "L": 1.0}
+            pred = {k: t * (rel[k] ** kx[band_of(k)] if k in rel else 1.0) for k, t in bt.items()}
             ranked.append(dict(id=r["id"], gpu=gpu, predicted_score=score(pred, anc),
-                               rel=f"{fmt_rel(rel, 0, S_MAX)}/{fmt_rel(rel, S_MAX, M_MAX)}/{fmt_rel(rel, M_MAX, 1 << 30)}"))
+                               rel="/".join(fmt_rel(rel, b) for b in "SML")))
         else:
             explore.append(dict(id=r["id"], gpu=None, predicted_score=None,
                                 rel="no representative cheap GPU (B200-only features)"))
@@ -328,6 +315,6 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
                 picks=ranked[:k_predicted] + explore[:k_explore], ranked=ranked, explore=explore)
 
 
-def fmt_rel(rel, lo, hi):
-    xs = [x for bs, v in rel.items() if lo < bs <= hi for x in v]
+def fmt_rel(rel, band):
+    xs = [v for k, v in rel.items() if band_of(k) == band]
     return f"{100 * (math.exp(sum(map(math.log, xs)) / len(xs)) - 1):+.0f}%" if xs else "-"

@@ -2,7 +2,7 @@
 
 Tools offered to the model:
   compile_b200  compile a draft for sm_100a (B200): registers, shared memory, spills, CTAs per SM, load/store widths
-  run_tests     NVIDIA's harness on a cheap GPU: correctness on all 16 workloads, timing against the current best
+  run_tests     NVIDIA's harness on a cheap GPU: correctness on every workload, timing against the current best
                 kernel on the same GPU, and the B200 score that timing projects to (the emulator)
   predict_score the planner's maths model: per-band latency changes -> B200 score
   get_kernel    any archive kernel's source, design card and measurements
@@ -21,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import archive
 import llm
 import planner
+import problem
 import prompts
 import reply
 
@@ -31,7 +32,7 @@ EXAMPLES = archive.ROOT / "loop" / "context" / "examples"
 PROTOCOL = """=== DESIGN SESSION PROTOCOL (interactive) ===
 This is an interactive design session. Use the tools to check and improve your design before you commit to it:
 1. Draft. 2. compile_b200: fix compile errors; check registers, CTAs per SM, spills, and that the B200 SASS uses the
-memory instructions you intended (e.g. LDG.256 / STG.256). 3. run_tests: correctness on all 16 workloads, timing on a
+memory instructions you intended (e.g. LDG.256 / STG.256). 3. run_tests: correctness on every workload, timing on a
 cheap GPU against the current best kernel, and the projected B200 score. 4. Revise while it pays. 5. Final answer.
 - Local timing runs on {gpu}. Unless that is a B200, it cannot run B200-only paths (256-bit loads, sm_100-only
   instructions) or show B200's 126 MB L2; those run a fallback there, so judge them from compile_b200 output and
@@ -76,7 +77,7 @@ TOOLS = [
         "CTAs per SM when known, and the count of global load/store instructions by width (LDG.256, LDG.128, ...). "
         "Returns compiler errors if it does not build. Under a minute."}},
     {"type": "function", "function": {"name": "run_tests", "parameters": DRAFT, "description":
-        "Run NVIDIA's harness on the session GPU: correctness on all 16 workloads (with errors and logs on failure) "
+        "Run NVIDIA's harness on the session GPU: correctness on every workload (with errors and logs on failure) "
         "and latency per workload, compared with the current best kernel timed on the same GPU, plus the projected "
         "B200 score. 1-4 minutes."}},
     {"type": "function", "function": {"name": "probe_b200", "description":
@@ -195,6 +196,7 @@ class ModalB200:
         import b200_modal
         b200_modal.load_token()
         self.name, self.ref_solution, self.budget_s = f"{round_id}-modal", ref_solution, budget_minutes * 60
+        self.problem = b200_modal.problem_ref()
         self._ctx = b200_modal.app.run()
         self._ctx.__enter__()
         self.fn, self.gpu, self.ref = b200_modal.handle, "B200 (Modal)", None
@@ -210,7 +212,7 @@ class ModalB200:
             rid = f"{kind}-{self.n:03d}"
         t0 = time.time()
         try:
-            res = self.fn.remote(dict(id=rid, kind=kind, solution=sol, **extra))
+            res = self.fn.remote(dict(id=rid, kind=kind, solution=sol, problem=self.problem, **extra))
         except Exception as e:
             res = dict(id=rid, kind=kind, error=f"Modal call failed: {type(e).__name__}: {e}")
         with self.lock:      # container time for this call (+5 s overhead); queueing behind other sessions is free
@@ -221,6 +223,8 @@ class ModalB200:
 
     def wait_alive(self, timeout_s):
         """Time the reference kernel (this also starts and warms the container); returns the GPU name."""
+        if not self.ref_solution:                     # new problem: nothing on the portal yet, no reference kernel
+            return self.gpu
         sol = json.loads((archive.ROOT / self.ref_solution).read_text())
         res = self.call("test", sol)
         if not res.get("workloads"):
@@ -263,7 +267,7 @@ def make_solution(args, name):
         problems.append(f"entry_point {entry!r} is not one of the files")
     spec.setdefault("target_hardware", ["B200", "LOCAL"])
     spec.setdefault("destination_passing_style", True)
-    sol = {"name": name, "definition": "038_flux_multi_head_rmsnorm_qk", "author": "solx-loop",
+    sol = {"name": name, "definition": problem.current().name, "author": "solx-loop",
            "description": str(args.get("note") or "")[:500], "spec": spec,
            "sources": [{"path": f["path"], "content": f.get("content", "")} for f in files]}
     return sol, problems + reply.lint(sol)
@@ -300,10 +304,20 @@ def emulator_line(emu, paths, wl, ref, best):
                                                          "pass `paths` for a sharper prediction." if guessed else ""))
 
 
+def copy_lag_line(wl):
+    """Each workload's time against a plain read+write copy of the same bytes on the rented B200 (if measured)."""
+    import emulator
+    copy = emulator.copy_reference()
+    cells = [f"{w['workload']} {w['latency_us']:.1f} us ({w['latency_us'] / copy[w['workload']]:.2f}x copy)"
+             if copy.get(w["workload"]) else f"{w['workload']} {w['latency_us']:.1f} us"
+             for w in sorted(wl, key=lambda w: problem.current().mbytes(w["workload"])) if w.get("latency_us")]
+    return "times (µs; x copy = against a plain copy of the same bytes): " + "; ".join(cells)
+
+
 def fmt_test(res, ref, best, anc, k=None, emu=None, paths=None):
     wl = res.get("workloads") or []
     passed = sum(w["status"] == "PASSED" for w in wl)
-    lines = [f"run_tests on {res.get('gpu', '?')} ({res.get('seconds', '?')} s): {passed}/{len(wl) or 16} workloads "
+    lines = [f"run_tests on {res.get('gpu', '?')} ({res.get('seconds', '?')} s): {passed}/{len(wl) or '?'} workloads "
              "PASSED"]
     for w in wl:
         if w["status"] != "PASSED":
@@ -315,19 +329,20 @@ def fmt_test(res, ref, best, anc, k=None, emu=None, paths=None):
         lines.append(f"error: {res['error']}")
     if not wl or passed < len(wl):
         return "\n".join(lines)
-    if not ref or not ref.get("workloads"):
-        lines.append("(reference timing not available yet)")
-        return "\n".join(lines)
+    if not ref or not ref.get("workloads") or best is None:
+        return "\n".join(lines + [copy_lag_line(wl), "No portal result for this problem yet, so there is no reference "
+                                   "kernel or score model: compare designs by these times and their lag behind a "
+                                   "plain copy. The first portal submission unlocks predicted portal scores."])
     rt = {w["workload"]: w["latency_us"] for w in ref["workloads"] if w.get("latency_us")}
     rel = {}
     rows = []
     for w in wl:
         if w["latency_us"] and rt.get(w["workload"]):
             r = w["latency_us"] / rt[w["workload"]]
-            rel.setdefault(archive.tokens(w["workload"]), []).append(r)
+            rel[w["workload"]] = r
             rows.append(f"{w['workload']} {w['latency_us']:.1f} vs {rt[w['workload']]:.1f} ({100 * (r - 1):+.1f}%)")
     lines.append(f"latency vs reference {ref['ref']} on the same GPU (µs, this vs reference):\n  " + "; ".join(rows))
-    by_band = {b: gmean([x for bs, v in rel.items() if band_of(bs) == b for x in v]) for b in "SML"}
+    by_band = {b: gmean([v for k, v in rel.items() if band_of(k) == b]) for b in "SML"}
     lines.append("change by band (geomean): " + ", ".join(f"{b} {100 * (v - 1):+.1f}%" for b, v in by_band.items() if v))
     on_b200 = "B200" in str(res.get("gpu"))
     if on_b200 and emu is not None:
@@ -335,7 +350,7 @@ def fmt_test(res, ref, best, anc, k=None, emu=None, paths=None):
         return "\n".join(lines)
     bt = planner.b200_times(best)
     k = (k or {}) if on_b200 else {}
-    pred = {bs: t * (gmean(rel[bs]) ** k.get(band_of(bs), 1.0) if rel.get(bs) else 1.0) for bs, t in bt.items()}
+    pred = {key: t * (rel[key] ** k.get(band_of(key), 1.0) if key in rel else 1.0) for key, t in bt.items()}
     if on_b200:
         lines.append(f"projected portal score: {planner.score(pred, anc):.4f} (current best {best['b200']['score']:.4f}). "
                      f"This is a real B200 with unlocked clocks; differences at S/M come out larger than on the portal, "
@@ -349,6 +364,9 @@ def fmt_test(res, ref, best, anc, k=None, emu=None, paths=None):
 
 
 def predict(args, best, anc):
+    if best is None or not anc:
+        return ("No portal result for this problem yet, so the score model has no anchors (hidden baseline and SOL "
+                "time per workload). The first portal submission provides them.")
     bt = planner.b200_times(best)
     if args.get("fixed_us") is not None and args.get("tbs"):
         pred = {bs: args["fixed_us"] + planner.mb(bs) / args["tbs"] for bs in bt}
@@ -383,7 +401,7 @@ class Session:
         self.messages = [llm.system_message(static),
                          {"role": "user", "content": [{"type": "text", "text": dyn, "cache_control": CACHE}]}]
         self.gpu_calls, self.drafts, self.probes = 0, 0, 0
-        self.k = planner.rented_exponents(arc, best)
+        self.k = planner.rented_exponents(arc, best) if best else {}
         self.emu = emu
         self.totals = dict(prompt_tokens=0, completion_tokens=0, cached_tokens=0, reasoning_tokens=0, cost_usd=0.0,
                            seconds=0.0)
@@ -500,7 +518,7 @@ def run_sessions(round_id, jobs, static, a, slurm, sessions_dir):
     best, anc = planner.best_kernel(arc), planner.anchors()
     sessions_dir.mkdir(parents=True, exist_ok=True)
     if a.tool_gpu == "B200":
-        server = ModalB200(round_id, best["solution"], budget_minutes=a.b200_minutes)
+        server = ModalB200(round_id, best["solution"] if best else None, budget_minutes=a.b200_minutes)
     else:
         server = ToolServer(round_id, a.tool_gpu, slurm, best["solution"])
     try:

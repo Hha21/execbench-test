@@ -86,7 +86,7 @@ documented the same effect: a zero-fill flush leaves dirty lines whose write-bac
 kernel" [LITERATURE: ascend-l2]. NVIDIA exposes no way to flush dirty L2 lines [LITERATURE: nv-forum-l2]. Because
 S-band times do not move with hints, the dirty L2 is not visibly on the critical path at ≤ 25 MB.
 
-**Update (portal, 7 October): `evict_last` on output stores scored 0.609 vs 0.588 without hints (`problem_038.md` §7); it supersedes the store rule below.** **Rule for #38: default policy on stores, no evict_last on weights. evict_first on x loads only is optional (CAKE's
+**Update (portal, 7 October): `evict_last` on output stores scored 0.609 vs 0.588 without hints (the problem card (`problems/<name>/card.md`) §7); it supersedes the store rule below.** **Rule for #38: default policy on stores, no evict_last on weights. evict_first on x loads only is optional (CAKE's
 choice; expect ±1%).** Never touch memory we do not own (e.g. `discard.global.L2` on harness buffers): that is
 manipulating the environment.
 
@@ -111,7 +111,7 @@ manipulating the environment.
   **TMEM at 420 cycles vs Hopper's 1000-cycle global memory**, not B200 DRAM latency. v3 drops the claim. It is not
   evidence about DRAM latency.
 - arXiv 2507.10789 ("Dissecting the NVIDIA Blackwell Architecture") studies the **RTX 5080 (GB203)**, not B200.
-- `problem_038.md` §7 credits r3's M/L gain to 256-bit width, and `playbook_membound.md` §6 recommends `cache:stream`
+- the problem card (`problems/<name>/card.md`) §7 credits r3's M/L gain to 256-bit width, and `playbook_membound.md` §6 recommends `cache:stream`
   (evict_first stores). On B200 the evidence in §3 points the other way: evict_first stores cost 2–5% at M/L, and width
   alone gains about 0.
 - `b200_arch.md` §7: add the 256-bit-only rule for `.L2::evict_first` on loads (§3.5).
@@ -124,7 +124,7 @@ manipulating the environment.
 contiguous 512 B row, which is quack's fastest coalescing class (four separate 128 B pieces cost about 8% on H100 loads, and
 fragmented stores cost more) [LITERATURE: quack-notes]; x and w loads issued before first use; default cache policy; marginal
 bandwidth already at the public ceiling (7.03 vs 7.06–7.10 TB/s). **The remaining lever is mostly the fixed cost:**
-1 µs off at every size ≈ +0.02–0.03 in score (`problem_038.md` §6 sensitivities) [INFERRED].
+1 µs off at every size ≈ +0.02–0.03 in score (the problem card (`problems/<name>/card.md`) §6 sensitivities) [INFERRED].
 
 Ideas ranked by expected score gain:
 

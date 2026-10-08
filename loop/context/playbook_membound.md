@@ -367,4 +367,4 @@ VERIFIED-CSF3 where marked; the rest are INFERRED from the harness code or the B
 The same axes apply. Recompute: bytes per workload (inputs read once plus outputs written once; count broadcast
 operands once), the floor per workload at 8 TB/s, the S/M/L bands, the row length (D) for the reduction pattern, and
 which tensors are reused (weights, cos/sin tables → `evict_last`, or stationary). Then copy the structure of
-`problem_038.md` into a new problem card.
+the problem card (`problems/<name>/card.md`) into a new problem card.

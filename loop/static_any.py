@@ -6,7 +6,7 @@ TRITON_OVERRIDE_ARCH knob only changes the last stage and breaks TMA kernels on 
 intrinsic elect.sync"). Loading the B200 code on this GPU then fails, which is expected and caught. The cubins left in the cache give registers, shared memory, spills and the
 load/store mix of the code B200 would run, whatever kernels the candidate defines.
 
-  python loop/static_any.py --candidates loop/rounds/<r>/candidates --problem $PROBLEM038 --out <file.jsonl>
+  python loop/static_any.py --candidates <dir> --problem <problem data dir> --out <file.jsonl>
 """
 
 import argparse
@@ -27,30 +27,31 @@ import triton
 from triton.backends.compiler import GPUTarget
 # Make every compiler pass see a B200 (sm_100), not the GPU this job runs on. Launches then fail, as intended.
 triton.runtime.driver.active.get_current_target = lambda: GPUTarget("cuda", 100, 32)
+from sol_execbench.core.data import Definition, Workload
+from sol_execbench.core.bench.io import gen_inputs, allocate_outputs
+prob = sys.argv[3]
+d = Definition.model_validate(json.load(open(f"{prob}/definition.json")))
+rs = importlib.util.spec_from_file_location("ref", f"{prob}/reference.py"); ref = importlib.util.module_from_spec(rs)
+rs.loader.exec_module(ref)
+custom = getattr(ref, d.custom_inputs_entrypoint) if d.custom_inputs_entrypoint else None
 spec = importlib.util.spec_from_file_location("cand", sys.argv[1]); mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
-entry = sys.argv[2]
-fn = getattr(mod, entry)
-sizes = json.loads(sys.argv[3])
-for b, s in sizes:
-    q = torch.randn(b, s, 48, 128, device="cuda"); k = torch.randn_like(q)
-    wq = torch.randn(48, 128, device="cuda"); wk = torch.randn_like(wq)
+fn = getattr(mod, sys.argv[2])
+wls = [Workload.model_validate(json.loads(l)) for l in open(f"{prob}/workload.jsonl") if l.strip()]
+seen, picks = set(), []                     # one workload per distinct shape, so every dispatch path compiles
+for w in wls:
+    k = tuple(sorted(w.axes.items()))
+    if k not in seen:
+        seen.add(k); picks.append(w)
+for w in picks:
     try:
-        fn(q, k, wq, wk, 1e-6, torch.empty_like(q), torch.empty_like(k))
+        inputs = gen_inputs(d, w, "cuda", custom_inputs_fn=custom)
+        outputs = allocate_outputs(d, d.get_resolved_axes_values(w.axes), "cuda")
+        fn(*inputs, *outputs)
         torch.cuda.synchronize()
     except Exception as e:
-        print(f"{b},{s}: {type(e).__name__}", file=sys.stderr)
+        print(f"{dict(w.axes)}: {type(e).__name__}", file=sys.stderr)
 """
-
-
-def sizes(problem):
-    seen, out = set(), []
-    for line in open(Path(problem) / "workload.jsonl"):
-        a = json.loads(line)["axes"]
-        if a["batch_size"] * a["seq_len"] not in seen:
-            seen.add(a["batch_size"] * a["seq_len"])
-            out.append((a["batch_size"], a["seq_len"]))
-    return out
 
 
 def tools():
@@ -119,7 +120,7 @@ def main():
     ap.add_argument("--problem", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
-    sz = json.dumps(sizes(args.problem))
+    prob = str(args.problem)
     recs = []
     for sol_path in sorted(args.candidates.glob("*.json")):
         sol = json.loads(sol_path.read_text())
@@ -143,7 +144,7 @@ def main():
                "CUTE_DSL_ARCH": "sm_100a", "CUTE_DSL_KEEP_CUBIN": "1", "CUTE_DSL_KEEP_PTX": "1",
                "CUTE_DSL_DUMP_DIR": str(dump), "CUTE_DSL_NO_CACHE": "1", "CUTE_DSL_CACHE_DIR": str(work / "cute_cache")}
         dump.mkdir()
-        p = subprocess.run([sys.executable, "-c", RUNNER, str(work / file), func, sz], env=env, cwd=work,
+        p = subprocess.run([sys.executable, "-c", RUNNER, str(work / file), func, prob], env=env, cwd=work,
                            capture_output=True, text=True, timeout=900)
         kernels = []
         for cubin in cache.rglob("*.cubin"):

@@ -41,7 +41,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "c1",
-  "solution": "loop/rounds/c1/portal/c1-control-r6.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/c1/portal/c1-control-r6.json",
   "status": "passed",
   "timings": {
    "B200r": {
@@ -125,7 +125,7 @@
    "r11-e3-cluster2-rtok-disp"
   ],
   "round": "c2",
-  "solution": "loop/rounds/c2/candidates/c2-cluster2-s-only.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/c2/candidates/c2-cluster2-s-only.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__41b41c10_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
@@ -231,7 +231,7 @@
    "g2-os-r8w4"
   ],
   "round": "d1",
-  "solution": "loop/rounds/d1/candidates/d1-os-r8w4-nohint.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/d1/candidates/d1-os-r8w4-nohint.json",
   "static_sm100": [
    {
     "kernel": "_qk_oneshot",
@@ -305,7 +305,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-os-r16w4.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-os-r16w4.json",
   "static_sm100": [
    {
     "kernel": "oneshot",
@@ -401,7 +401,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-os-r16w8.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-os-r16w8.json",
   "static_sm100": [
    {
     "kernel": "_qk_oneshot",
@@ -512,7 +512,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-os-r8w2.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-os-r8w2.json",
   "static_sm100": [
    {
     "kernel": "oneshot",
@@ -609,7 +609,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-os-r8w4.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-os-r8w4.json",
   "static_sm100": [
    {
     "kernel": "_qk_oneshot",
@@ -720,7 +720,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-tma-r16s4.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-tma-r16s4.json",
   "static_sm100": [
    {
     "kernel": "tma",
@@ -821,7 +821,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-tma-r8s3.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-tma-r8s3.json",
   "static_sm100": [
    {
     "kernel": "_qk_tma",
@@ -934,7 +934,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-tmaws-hb16s3.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-tmaws-hb16s3.json",
   "static_sm100": [
    {
     "kernel": "tma_wstat",
@@ -1034,7 +1034,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-tmaws-hb8s4.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-tmaws-hb8s4.json",
   "static_sm100": [
    {
     "kernel": "_qk_tma_wstat",
@@ -1160,7 +1160,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-ws-hb16w8.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-ws-hb16w8.json",
   "static_sm100": [
    {
     "kernel": "wstat",
@@ -1256,7 +1256,7 @@
    "v039"
   ],
   "round": "gen2-r1",
-  "solution": "loop/gen2/candidates/g2-ws-hb16w8s3.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/gen2/candidates/g2-ws-hb16w8s3.json",
   "static_sm100": [
    {
     "kernel": "_qk_wstat",
@@ -1396,7 +1396,7 @@
    "v039"
   ],
   "round": "r1",
-  "solution": "loop/rounds/r1/candidates/r1-bulk1d-ring-r16s16.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r1/candidates/r1-bulk1d-ring-r16s16.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__3f46b6a9_9_kernel_cu_a02f06f811qk_rms_bulkEPKfS1_S1_S1_PfS2_if",
@@ -1470,7 +1470,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r10",
-  "solution": "loop/rounds/r10/candidates/r10-bulk1d-ring-stel.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r10/candidates/r10-bulk1d-ring-stel.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__59d48836_9_kernel_cu_b059d53711qk_rms_bulkEPKfS1_S1_S1_PfS2_if",
@@ -1560,7 +1560,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r10",
-  "solution": "loop/rounds/r10/candidates/r10-ldef-real-stel-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r10/candidates/r10-ldef-real-stel-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__43046e82_9_kernel_cu_b059d53713qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
@@ -1638,7 +1638,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r10",
-  "solution": "loop/rounds/r10/candidates/r10-onewave-gs-sdisp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r10/candidates/r10-onewave-gs-sdisp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__30dd1653_9_kernel_cu_b059d53714qk_rms_oneshotEPKfS1_S1_S1_PfS2_if",
@@ -1741,7 +1741,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r10",
-  "solution": "loop/rounds/r10/candidates/r10-rtok-m-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r10/candidates/r10-rtok-m-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__d27b1ed0_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
@@ -1834,7 +1834,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r10",
-  "solution": "loop/rounds/r10/candidates/r10-ws-l-steal-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r10/candidates/r10-ws-l-steal-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__bb136c19_9_kernel_cu_ba37c84a13qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
@@ -1928,7 +1928,7 @@
    "r10-ldef-real-stel-disp"
   ],
   "round": "r11",
-  "solution": "loop/rounds/r11/candidates/r11-consol-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r11/candidates/r11-consol-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__bbec72f3_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELi0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
@@ -2022,7 +2022,7 @@
    "c1-control-r6"
   ],
   "round": "r11",
-  "solution": "loop/rounds/r11/candidates/r11-e1-h12-control.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r11/candidates/r11-e1-h12-control.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__d73532db_9_kernel_cu_ba37c84a13qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
@@ -2126,7 +2126,7 @@
    "c1-control-r6"
   ],
   "round": "r11",
-  "solution": "loop/rounds/r11/candidates/r11-e3-cluster2-rtok-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r11/candidates/r11-e3-cluster2-rtok-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__34c5193d_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
@@ -2219,7 +2219,7 @@
    "c1-control-r6"
   ],
   "round": "r11",
-  "solution": "loop/rounds/r11/candidates/r11-fi4lane-m-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r11/candidates/r11-fi4lane-m-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__86c9cf08_9_kernel_cu_ba37c84a13qk_rms_kernelILi16ELi256ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
@@ -2312,7 +2312,7 @@
    "c2-cluster2-s-only"
   ],
   "round": "r12",
-  "solution": "loop/rounds/r12/candidates/r12-c2-natural-order.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r12/candidates/r12-c2-natural-order.json",
   "status": "proposed",
   "task": {
    "band": "L",
@@ -2345,7 +2345,7 @@
    "c2-cluster2-s-only"
   ],
   "round": "r12",
-  "solution": "loop/rounds/r12/candidates/r12-c3-c2-no-prefetch.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r12/candidates/r12-c3-c2-no-prefetch.json",
   "status": "proposed",
   "task": {
    "band": "all",
@@ -2379,7 +2379,7 @@
    "c2-cluster2-s-only"
   ],
   "round": "r12",
-  "solution": "loop/rounds/r12/candidates/r12-e1-h18-efcurve-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r12/candidates/r12-e1-h18-efcurve-disp.json",
   "status": "proposed",
   "task": {
    "band": "M",
@@ -2412,7 +2412,7 @@
    "c2-cluster2-s-only"
   ],
   "round": "r12",
-  "solution": "loop/rounds/r12/candidates/r12-e2-h17-cl2-frontend.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r12/candidates/r12-e2-h17-cl2-frontend.json",
   "status": "proposed",
   "task": {
    "band": "S",
@@ -2469,7 +2469,7 @@
    "g2-os-r16w8"
   ],
   "round": "r2",
-  "solution": "loop/rounds/r2/candidates/r2-ldg256-os-r16.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r2/candidates/r2-ldg256-os-r16.json",
   "static_error": "ptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 88; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079b8_00000000-6_kernel.ptx, line 91; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tm",
   "static_sm100": [
    {
@@ -2564,7 +2564,7 @@
    "g2-os-r16w8"
   ],
   "round": "r2",
-  "solution": "loop/rounds/r2/candidates/r2-ldg256-tokblk.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r2/candidates/r2-ldg256-tokblk.json",
   "static_error": "xceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 463; error   : Vector type too large, exceeds 128 bit limit\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Illegal vector size: 8\nptxas /tmp/slurm.22250500/tmpxft_002079c2_00000000-6_kernel.ptx, line 482; error   : Vector type too large, exceeds 128 bit limit\nptx",
   "static_sm100": [
    {
@@ -2671,7 +2671,7 @@
    "g2-os-r8w4"
   ],
   "round": "r3",
-  "solution": "loop/rounds/r3/candidates/r3-cute-ldg256-os-r16.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r3/candidates/r3-cute-ldg256-os-r16.json",
   "static_error": "no sm_100 cubin produced: ",
   "static_sm100": [
    {
@@ -2773,7 +2773,7 @@
    "g2-os-r8w4"
   ],
   "round": "r3",
-  "solution": "loop/rounds/r3/candidates/r3-os-l2pf-r8w4.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r3/candidates/r3-os-l2pf-r8w4.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__06ff8336_9_kernel_cu_a02f06f816qk_rms_pf_kernelEPKfS1_S1_S1_PfS2_iif",
@@ -2838,7 +2838,7 @@
    "g2-os-r8w4"
   ],
   "round": "r3",
-  "solution": "loop/rounds/r3/candidates/r3-tokblk-s-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r3/candidates/r3-tokblk-s-disp.json",
   "static_sm100": [
    {
     "kernel": "_qk_tokblk",
@@ -2939,7 +2939,7 @@
    "r3-cute-ldg256-os-r16"
   ],
   "round": "r4",
-  "solution": "loop/rounds/r4/candidates/r4-cuda-ldg256-token-r2.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r4/candidates/r4-cuda-ldg256-token-r2.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__61beed88_9_kernel_cu_a02f06f819qk_rms_token_kernelEPKfS1_S1_S1_PfS2_if",
@@ -3005,7 +3005,7 @@
    "r3-cute-ldg256-os-r16"
   ],
   "round": "r4",
-  "solution": "loop/rounds/r4/candidates/r4-cute-ldg256-sw2-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r4/candidates/r4-cute-ldg256-sw2-disp.json",
   "static_sm100": [
    {
     "kernel": "kernel_cutlass_kernel_cand_QKRMSNormS_object_at__tensorptrf32gmemalign32o241281128130720_tensorptrf32gmemalign32o241281128130720_tensorptrf32gmemalign32o2412821128130720_tensorptrf32gmema_0",
@@ -3082,7 +3082,7 @@
    "r3-cute-ldg256-os-r16"
   ],
   "round": "r4",
-  "solution": "loop/rounds/r4/candidates/r4-ldg256-wstat-pf2.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r4/candidates/r4-ldg256-wstat-pf2.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__b4dbea38_9_kernel_cu_a02f06f819qk_rms_wstat_ldg256EPKfS1_S1_S1_PfS2_iif",
@@ -3171,7 +3171,7 @@
    "r2-ldg256-os-r16"
   ],
   "round": "r5",
-  "solution": "loop/rounds/r5/candidates/r5-ldg256-os-r16-stel.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r5/candidates/r5-ldg256-os-r16-stel.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__65185b59_9_kernel_cu_a02f06f813qk_rms_kernelEPKfS1_S1_S1_PfS2_if",
@@ -3254,7 +3254,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r6",
-  "solution": "loop/rounds/r6/candidates/r6-gluon-cpasync-os-r16w8-stel.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r6/candidates/r6-gluon-cpasync-os-r16w8-stel.json",
   "static_sm100": [
    {
     "kernel": "_qk_rms",
@@ -3333,7 +3333,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r6",
-  "solution": "loop/rounds/r6/candidates/r6-ldg256-qkpair-r16.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r6/candidates/r6-ldg256-qkpair-r16.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__5c394726_9_kernel_cu_a02f06f811qk_rms_pairEPKfS1_S1_S1_PfS2_f",
@@ -3433,7 +3433,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r6",
-  "solution": "loop/rounds/r6/candidates/r6-s-ldef-nc-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r6/candidates/r6-s-ldef-nc-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__c238b791_9_kernel_cu_a02f06f813qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
@@ -3530,7 +3530,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r7",
-  "solution": "loop/rounds/r7/candidates/r7-cap4-qkcat.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r7/candidates/r7-cap4-qkcat.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__b0eecb41_9_kernel_cu_a02f06f814qk_rms_persistEPKfS1_S1_S1_PfS2_iif",
@@ -3631,7 +3631,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r7",
-  "solution": "loop/rounds/r7/candidates/r7-ldg256-l2pf-mdisp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r7/candidates/r7-ldg256-l2pf-mdisp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__252892c3_9_kernel_cu_a02f06f813qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_iif",
@@ -3728,7 +3728,7 @@
    "r5-ldg256-os-r16-stel"
   ],
   "round": "r7",
-  "solution": "loop/rounds/r7/candidates/r7-s-r8w4-cta128-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r7/candidates/r7-s-r8w4-cta128-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__c1b02701_9_kernel_cu_a02f06f813qk_rms_kernelILi16ELi8EEEvPKfS2_S2_S2_PfS3_if",
@@ -3805,7 +3805,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r8",
-  "solution": "loop/rounds/r8/candidates/r8-fat512-l-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r8/candidates/r8-fat512-l-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__504356e6_9_kernel_cu_ba37c84a13qk_rms_kernelILi256ELb1EEEvPKfS2_S2_S2_PfS3_if",
@@ -3921,7 +3921,7 @@
    "r6-s-ldef-nc-disp"
   ],
   "round": "r8",
-  "solution": "loop/rounds/r8/candidates/r8-ldg256-l2mode-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r8/candidates/r8-ldg256-l2mode-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__3554f9d0_9_kernel_cu_ba37c84a13qk_rms_kernelILi512ELi0ELb0EEEvPKfS2_S2_S2_PfS3_if",
@@ -4045,7 +4045,7 @@
    "r7-ldg256-l2pf-mdisp"
   ],
   "round": "r8",
-  "solution": "loop/rounds/r8/candidates/r8-s-pf256-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r8/candidates/r8-s-pf256-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__17badcc3_9_kernel_cu_ba37c84a13qk_rms_kernelILi0EEEvPKfS2_S2_S2_PfS3_iif",
@@ -4162,7 +4162,7 @@
    "r8-ldg256-l2mode-disp"
   ],
   "round": "r9",
-  "solution": "loop/rounds/r9/candidates/r9-xo-spf-l2mode-disp.json",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r9/candidates/r9-xo-spf-l2mode-disp.json",
   "static_sm100": [
    {
     "kernel": "_ZN41_GLOBAL__N__9c956726_9_kernel_cu_ba37c84a16qk_rms_ml_kernelILi512ELi0ELb0EEEvPKfS2_S2_S2_PfS3_if",

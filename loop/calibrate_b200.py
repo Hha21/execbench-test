@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import archive  # noqa: E402
 import b200_modal  # noqa: E402
+import problem  # noqa: E402
 
 DEFAULT = ["r5-ldg256-os-r16-stel", "r3-cute-ldg256-os-r16", "d1-os-r8w4-nohint", "g2-os-r8w4", "r2-ldg256-os-r16"]
 
@@ -35,15 +36,15 @@ def main():
         for cid in ids:
             sol = json.loads((archive.ROOT / arc[cid]["solution"]).read_text())
             t0 = time.time()
-            res = b200_modal.handle.remote(dict(id=cid, kind="test", solution=sol))
+            res = b200_modal.handle.remote(dict(id=cid, kind="test", solution=sol, problem=b200_modal.problem_ref()))
             wl = res.get("workloads") or []
             ok = wl and all(w["status"] == "PASSED" for w in wl)
             print(f"{cid}: {sum(w['status'] == 'PASSED' for w in wl)}/{len(wl)} passed in {time.time() - t0:.0f} s"
                   + ("" if ok else f"\n{str(res.get('error') or res.get('console_tail'))[-2000:]}"), flush=True)
-            b200_modal.write_trace(archive.ROOT / "loop" / "b200" / "timing" / "B200r" / f"{cid}.jsonl", res)
+            b200_modal.write_trace(problem.current().b200 / "timing" / "B200r" / f"{cid}.jsonl", res)
             out["kernels"][cid] = dict(rented={w["workload"]: w["latency_us"] for w in wl if w.get("latency_us")},
                                        portal=arc[cid]["b200"]["timings"], gpu=res.get("gpu"))
-    d = archive.ROOT / "loop" / "b200"
+    d = problem.current().b200
     d.mkdir(exist_ok=True)
     path = d / f"calibration_{time.strftime('%Y%m%d-%H%M%S')}.json"
     path.write_text(json.dumps(out, indent=1))
@@ -53,7 +54,7 @@ def main():
         if not keys:
             continue
         ratio = {x: k["rented"][x] / k["portal"][x] for x in keys}
-        bands = {b: [ratio[x] for x in keys if lo < archive.tokens(x) <= hi] for b, lo, hi in archive.BANDS}
+        bands = {b: [ratio[x] for x in keys if problem.current().band(x) == b] for b in "SML"}
         rows.append((cid, gmean([k["portal"][x] for x in keys]), gmean([k["rented"][x] for x in keys]),
                      {b: gmean(v) for b, v in bands.items() if v}))
     print(f"\n{'kernel':26} {'portal µs':>9} {'rented µs':>9}   rented/portal by band S/M/L")

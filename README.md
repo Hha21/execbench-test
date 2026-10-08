@@ -41,6 +41,11 @@ flowchart TB
         ING["ingest_portal.py<br/>per-size latency, hidden baseline, score"]
         SL --> SUB --> ING
     end
+    subgraph research["Research phase (once per problem)"]
+        MEAS["B200 measurements<br/>copy floor + PyTorch reference per workload"]
+        RES["research agent · Fable<br/>studies definition + reference,<br/>probes the B200"]
+        MEAS --> RES
+    end
     subgraph knowledge["Shared knowledge (per problem)"]
         LEDGER[("hypothesis ledger<br/>open / supported / refuted, with evidence")]
         NOTE[("archive + lab notebook<br/>every kernel; portal vs bench outcomes;<br/>findings and dead ends")]
@@ -55,6 +60,8 @@ flowchart TB
         LEAD -->|"experiments"| S1
         S1 <-->|"tool calls"| TOOLS
     end
+    RES -->|"problem card + first ledger"| LEDGER
+    RES -->|"first kernel (portal anchors)"| SL
     LEDGER --> LEAD
     NOTE --> LEAD
     LEAD -->|"updated ledger"| LEDGER
@@ -66,6 +73,11 @@ flowchart TB
     ING -->|"training pair"| EMU
 ```
 
+- **Research phase.** For a new problem, `round.py research` first measures, on the rented B200, a plain stream over
+  each workload's bytes (the memory floor) and NVIDIA's PyTorch reference. A research agent then studies the
+  definition, the reference code and those numbers, and writes the problem card (the problem part of every agent's
+  briefing), the first hypothesis ledger, and a simple, correct first kernel. That kernel's portal result supplies
+  the hidden baseline and SOL time per workload, which the score model and the emulator need.
 - **Research lead.** Once per round, a Fable agent reads the lab notebook (every portal result next to its bench
   result, and every finding recorded by earlier sessions, dead ends included), the archive, the hypothesis ledger and
   the emulator's learned portal-vs-bench effects. It rewrites the ledger and designs the round's experiments: each
@@ -82,35 +94,39 @@ flowchart TB
 - **Portal.** The shortlist ranks candidates by their chance of beating the best. Slots also go to deliberate
   experiments (A/B pairs, controls) because every portal result trains the emulator and settles hypotheses.
 
-## Running a round
+## Running
 
 ```bash
-.venv/bin/python loop/round.py lead      --round r12 --backend claude --lead-model fable   # ledger + experiments
-.venv/bin/python loop/round.py auto      --round r12 --use-plan --backend claude           # sessions + B200 test
-.venv/bin/python loop/round.py shortlist --round r12                                        # -> rounds/r12/portal/
+P=L1/038                                    # any problem: L1/038, FlashInfer-Bench/021, 038_flux_multi_head_rmsnorm_qk ...
+# a new problem: measurements, problem card, first ledger, first kernel (round r0)
+.venv/bin/python loop/round.py research  --problem $P --backend claude --lead-model fable
+# each round
+.venv/bin/python loop/round.py lead      --problem $P --round r12 --backend claude --lead-model fable [--brief "..."]
+.venv/bin/python loop/round.py auto      --problem $P --round r12 --use-plan --backend claude
+.venv/bin/python loop/round.py shortlist --problem $P --round r12          # -> problems/<name>/rounds/r12/portal/
 # after uploading: save each result page into html_results/, then
 python3 poc/ingest_portal.py html_results/<page>.html
-.venv/bin/python loop/emulator.py                                                           # refit + validation
+SOLX_PROBLEM=$P .venv/bin/python loop/emulator.py                            # refit + validation
 ```
 
-`auto --lead` runs the lead and the sessions in one go; `--mode explore` uses the built-in idea list instead of the
-lead; `--backend openrouter --interactive` runs the same sessions through OpenRouter. A round of four sessions takes
-about 10-15 minutes, uses a few dollars of API-equivalent usage on the Claude plan and about $1-2 of B200 time.
+`auto --lead` runs the lead and the sessions in one go; `--mode explore` uses a built-in idea list instead of the lead;
+`--backend openrouter --interactive` runs the same sessions through OpenRouter. A round of four sessions takes about
+10-15 minutes, uses a few dollars of API-equivalent usage on the Claude plan and about $1-2 of B200 time.
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
-| `loop/round.py` | the loop driver: lead, plan, propose, auto, test, collect, shortlist, table |
-| `loop/ledger.yaml` | the hypothesis ledger (constraints, hypotheses with status and evidence) |
+| `loop/round.py` | the loop driver: research, lead, plan, propose, auto, test, collect, shortlist, table |
+| `loop/problem.py`, `loop/research.py` | problem definitions, workload sizes and bands; the research phase |
+| `problems/<name>/` | one folder per problem: `card.md` (briefing), `ledger.yaml` (hypotheses), `features.yaml` (emulator), `archive.json`, `rounds/`, `b200/` (rented-B200 pairs, copy floor) |
 | `loop/mcp_tools.py`, `loop/designer.py` | the session tools (MCP server for headless Claude; OpenRouter tool loop) |
 | `loop/b200_modal.py`, `loop/b200probe.py` | the rented B200 on Modal (NVIDIA's software stack) and the probe helpers |
-| `loop/emulator.py`, `loop/emulator_features.yaml` | the multi-fidelity emulator and per-path design features |
+| `loop/emulator.py` | the multi-fidelity emulator (per problem) |
 | `loop/pair_timings.py`, `loop/calibrate_b200.py` | timing portal-measured kernels on the rented B200 |
 | `loop/planner.py` | score model, task planning, explore ideas, shortlist |
-| `loop/context/` | the agents' briefing: B200 architecture, public SOTA kernels, harness rules, problem card, playbook, protocol |
-| `loop/archive.py`, `loop/archive/` | every kernel: card, timings per GPU, compile statistics, portal results |
-| `loop/rounds/<r>/` | each round: plan, lead reply, session transcripts and tool logs, candidates, results, portal files |
+| `loop/context/` | the shared briefing: B200 architecture, public SOTA kernels, harness rules, playbook, protocol |
+| `loop/archive.py` | the per-problem archive: every kernel's card, timings, compile statistics, portal results |
 | `loop/toolserver.py`, `loop/jobs/` | GPU tool server and Slurm jobs for CSF3 (A100/L40S/H200; optional now) |
 | `poc/` | proof of concept: 72 variants, multi-GPU timing, the first emulator rehearsal, portal ingestion |
 | `poc/results/b200_portal*.csv` | every B200 portal result, per submission and per size |

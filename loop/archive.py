@@ -1,11 +1,11 @@
-"""The loop's archive: one record per kernel, with its design card, measurements and B200 results.
-
-Stored as loop/archive/archive.json (id -> record). Standard library only, so it runs anywhere.
+"""The loop's archive for the current problem: one record per kernel, with its design card, measurements and portal
+results. Stored as problems/<name>/archive.json (id -> record); see loop/problem.py.
 
 Record fields
   id, round, parents, operation, language, niche {mem, grid, spec, ...}, card (raw YAML), solution (repo path),
-  status (proposed | rejected: ... | failed: ... | passed), timings {gpu: {"B,S": latency_us}},
-  static_sm100 [ {kernel, regs, smem, local, resident_per_sm, ops} ], b200 {score, geomean_us, timings {"B,S": us}}
+  status (proposed | rejected: ... | failed: ... | passed), timings {gpu: {workload key: latency_us}},
+  static_sm100 [ {kernel, regs, smem, local, resident_per_sm, ops} ], b200 {score, geomean_us, timings {key: us}}
+Workload keys are the variable-axis values joined by commas ("2,128" for #38's batch_size=2, seq_len=128).
 """
 
 import csv
@@ -14,22 +14,30 @@ import math
 import re
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-PATH = ROOT / "loop" / "archive" / "archive.json"
-BANDS = (("S", 0, 600), ("M", 600, 2100), ("L", 2100, 1 << 30))   # by B*S tokens; S = 12.6-57.6 MB, M = 101-201 MB
+import problem
+
+ROOT = problem.ROOT
 GPUS = ("B200r", "H200", "A100", "L40S")    # B200r: rented B200 (Modal), unlocked clocks
+PORTAL = ROOT / "poc" / "results" / "b200_portal.csv"
+PORTAL_WL = ROOT / "poc" / "results" / "b200_portal_workloads.csv"
+
+
+def P():
+    return problem.current()
 
 
 def load():
-    return refresh(json.loads(PATH.read_text())) if PATH.exists() else {}
+    path = P().archive
+    return refresh(json.loads(path.read_text())) if path.exists() else {}
 
 
 def save(arc):
     """Write the archive, keeping records another process added since this copy was loaded (records are never
     deleted, so a long-running round must not drop kernels registered while it ran)."""
-    PATH.parent.mkdir(parents=True, exist_ok=True)
-    disk = json.loads(PATH.read_text()) if PATH.exists() else {}
-    PATH.write_text(json.dumps({**disk, **arc}, indent=1, sort_keys=True))
+    path = P().archive
+    path.parent.mkdir(parents=True, exist_ok=True)
+    disk = json.loads(path.read_text()) if path.exists() else {}
+    path.write_text(json.dumps({**disk, **arc}, indent=1, sort_keys=True))
 
 
 def parse_card(text):
@@ -79,14 +87,14 @@ def _parse_card_simple(text):
 
 
 def tokens(key):
-    b, s = (int(x) for x in key.split(","))
-    return b * s
+    """Product of the variable axes of a workload key (B*S for #38)."""
+    return P().tokens(key)
 
 
 def band_geomeans(timings):
     out = {}
-    for name, lo, hi in BANDS:
-        xs = [v for k, v in timings.items() if lo < tokens(k) <= hi and v]
+    for name in "SML":
+        xs = [v for k, v in timings.items() if v and P().band(k) == name]
         out[name] = math.exp(sum(map(math.log, xs)) / len(xs)) if xs else None
     xs = [v for v in timings.values() if v]
     out["all"] = math.exp(sum(map(math.log, xs)) / len(xs)) if xs else None
@@ -94,30 +102,33 @@ def band_geomeans(timings):
 
 
 def read_traces(path):
-    """Harness JSONL trace -> ({"B,S": latency_us}, set of statuses)."""
+    """Harness JSONL trace -> ({workload key: latency_us}, set of statuses)."""
     times, statuses = {}, set()
     for line in open(path):
+        if not line.strip():
+            continue
         t = json.loads(line)
         ev = t.get("evaluation") or {}
         statuses.add(ev.get("status"))
-        a = t["workload"]["axes"]
         lat = (ev.get("performance") or {}).get("latency_ms")
-        times[f"{a['batch_size']},{a['seq_len']}"] = lat * 1e3 if lat else None
+        times[P().key(t["workload"]["axes"])] = lat * 1e3 if lat else None
     return times, statuses
 
 
+def portal_rows(path):
+    """Rows of a portal CSV that belong to the current problem."""
+    if not path.exists():
+        return []
+    name = P().name
+    return [r for r in csv.DictReader(open(path)) if r.get("definition", name) == name]
+
+
 def ingest_portal(arc):
-    """Attach B200 portal results (poc/results/b200_portal*.csv) to matching archive ids."""
-    summ = ROOT / "poc" / "results" / "b200_portal.csv"
-    wl = ROOT / "poc" / "results" / "b200_portal_workloads.csv"
-    if not summ.exists():
-        return
+    """Attach portal results (poc/results/b200_portal*.csv, current problem only) to matching archive ids."""
     per = {}
-    if wl.exists():
-        for r in csv.DictReader(open(wl)):
-            b, s = re.findall(r"=(\d+)", r["workload"])[:2]
-            per.setdefault(r["vid"], {})[f"{b},{s}"] = float(r["latency_ms"]) * 1e3
-    for r in csv.DictReader(open(summ)):
+    for r in portal_rows(PORTAL_WL):
+        per.setdefault(r["vid"], {})[P().key_from_label(r["workload"])] = float(r["latency_ms"]) * 1e3
+    for r in portal_rows(PORTAL):
         vid = r["vid"]
         if vid in arc:
             arc[vid]["b200"] = dict(score=float(r["sol_score"]), geomean_us=float(r["latency_ms"]) * 1e3,
@@ -130,8 +141,9 @@ def refresh(arc):
     Timings, statuses, failure logs, sm_100a statistics and portal results are derived data, so they are re-read on
     every load. Concurrent writers (e.g. a background proposal round) can then never lose them by saving an older copy.
     """
-    timing_dirs = [ROOT / "loop" / "gen2" / "results" / "timing", ROOT / "loop" / "b200" / "timing"] + \
-                  sorted((ROOT / "loop" / "rounds").glob("*/results/timing"))
+    d = P().dir
+    timing_dirs = [d / "gen2" / "results" / "timing", d / "b200" / "timing"] + \
+                  sorted(P().rounds.glob("*/results/timing"))
     verdicts = {}                                     # id -> {gpu: None (passed) or failure text}
     for tdir in timing_dirs:
         for gdir in sorted(p for p in tdir.glob("*") if p.is_dir()):
@@ -155,8 +167,7 @@ def refresh(arc):
     for cid, v in verdicts.items():                   # a failure on any GPU (above all the B200) beats a pass elsewhere
         fails = [x for x in v.values() if x]
         arc[cid]["status"] = "; ".join(fails) if fails else "passed"
-    for sf in sorted((ROOT / "loop" / "rounds").glob("*/results/static_*.jsonl")) + \
-            sorted((ROOT / "loop" / "b200").glob("static_*.jsonl")):
+    for sf in sorted(P().rounds.glob("*/results/static_*.jsonl")) + sorted((d / "b200").glob("static_*.jsonl")):
         for line in open(sf):
             s = json.loads(line)
             if s["id"] in arc and s.get("kernels"):
@@ -196,7 +207,7 @@ def table(arc, limit=40):
 
 
 def seed():
-    """Build the archive from the proof of concept and generation 2 (idempotent)."""
+    """#38 only, historical: build the archive from the proof of concept and generation 2 (idempotent)."""
     arc = load()
     # Generation 1: kernels that reached the B200 portal, with their CSF3 timings.
     table_csv = ROOT / "poc" / "results" / "rehearsal_with_h200" / "table.csv"
@@ -220,7 +231,7 @@ def seed():
             card=f"gen-1 knob variant: {', '.join(f'{a}={b}' for a, b in k.items() if a != 'vid')}",
             solution=f"poc/variants/{vid}.json", status="passed", timings=gen1[vid], static_sm100=static1.get(vid, []))
     # Generation 2.
-    g2 = ROOT / "loop" / "gen2"
+    g2 = P().dir / "gen2"
     static2 = {}
     sp = g2 / "results" / "static.jsonl"
     if sp.exists():

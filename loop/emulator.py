@@ -25,14 +25,22 @@ import planner  # noqa: E402
 
 FEATS = ["width256", "threads", "rows", "persistent", "tma", "cpasync", "wstat", "launches2", "x_ef", "w_el", "w_nc",
          "st_ef", "st_el", "prefetch", "triton", "cute", "cluster"]
-FEATURES_FILE = archive.ROOT / "loop" / "emulator_features.yaml"
-COPY_FILE = archive.ROOT / "loop" / "b200" / "copy_reference.json"     # plain read+write copy, rented B200, per workload
+import problem
+
+
+def features_file():
+    return problem.current().features
+
+
+def copy_file():
+    return problem.current().b200 / "copy_reference.json"   # plain read+write copy, rented B200, per workload
 LAG_SCALE = 0.2
 
 
 def copy_reference():
     import json
-    return json.loads(COPY_FILE.read_text()) if COPY_FILE.exists() else {}
+    f = copy_file()
+    return json.loads(f.read_text()) if f.exists() else {}
 
 
 def encode(path):
@@ -59,20 +67,23 @@ def encode(path):
 
 
 def path_for(paths, tokens):
+    """The path serving a workload; max_tokens bounds the product of the variable axes (B*S for #38)."""
     for p in paths:
         if p.get("max_tokens") is None or tokens <= p["max_tokens"]:
             return p
     return paths[-1]
 
 
-def size_x(tokens):
-    return (math.log2(tokens) - 10) / 3
+def size_x(mb):
+    """Workload size feature: log2 of its MB of compulsory traffic, centred at 100 MB (1024 tokens for #38)."""
+    return (math.log2(mb) - math.log2(100)) / 3
 
 
 def load_features(arc=None):
     """Curated features file, plus `paths:` blocks from design cards of archive kernels not in the file."""
     import yaml
-    feats = yaml.safe_load(FEATURES_FILE.read_text()) or {}
+    f = features_file()
+    feats = (yaml.safe_load(f.read_text()) or {}) if f.exists() else {}
     for cid, rec in (arc or {}).items():
         if cid not in feats:
             card = archive.parse_card(rec.get("card", "")) if rec.get("card") else {}
@@ -101,7 +112,7 @@ def design_rows(paths, keys, rented):
     rows = []
     for k in keys:
         lag = math.log(rented[k] / copy[k]) / LAG_SCALE if k in copy else 0.0
-        rows.append(np.concatenate([encode(path_for(paths, archive.tokens(k))), [lag, size_x(archive.tokens(k))]]))
+        rows.append(np.concatenate([encode(path_for(paths, archive.tokens(k))), [lag, size_x(problem.current().mbytes(k))]]))
     return np.array(rows)
 
 
@@ -117,7 +128,7 @@ class Emulator:
     def __init__(self, arc=None, feats=None, exclude=()):
         self.arc = arc if arc is not None else archive.load()
         self.feats = feats if feats is not None else load_features(self.arc)
-        ids, X, y = [], [], []
+        ids, X, y, wkeys = [], [], [], []
         for cid, paths in self.feats.items():
             rec = self.arc.get(cid) or {}
             portal = (rec.get("b200") or {}).get("timings") or {}
@@ -128,7 +139,10 @@ class Emulator:
             X.append(design_rows(paths, keys, rented))
             y.extend(math.log(portal[k] / rented[k]) for k in keys)
             ids.extend([cid] * len(keys))
-        self.ids, self.X, self.y = np.array(ids), np.vstack(X), np.array(y)
+            wkeys.extend(keys)
+        if not ids:
+            raise ValueError("no kernel has both portal and rented-B200 timings yet for this problem")
+        self.ids, self.X, self.y, self.keys = np.array(ids), np.vstack(X), np.array(y), wkeys
         self.kernels = sorted(set(ids))
         B = mean_basis(self.X)
         self.beta = np.linalg.lstsq(B, self.y, rcond=None)[0]
@@ -177,19 +191,19 @@ class Emulator:
 
     def predict(self, paths, rented, n=2000, best_score=None, seed=0):
         """Portal score distribution for a kernel given its rented per-workload µs (all 16 workloads)."""
-        keys = sorted(rented, key=archive.tokens)
+        keys = sorted(rented, key=problem.current().mbytes)
         mean, cov = self.predict_log_ratio(paths, keys, rented)
-        t_mean = {archive.tokens(k): rented[k] * math.exp(m) for k, m in zip(keys, mean)}
+        t_mean = {k: rented[k] * math.exp(m) for k, m in zip(keys, mean)}
         anc = planner.anchors()
         L = np.linalg.cholesky(cov + 1e-12 * np.eye(len(keys)))
         z = np.random.default_rng(seed).standard_normal((n, len(keys)))
         scores = []
         for draw in z @ L.T + mean:
-            scores.append(planner.score({archive.tokens(k): rented[k] * math.exp(v) for k, v in zip(keys, draw)}, anc))
+            scores.append(planner.score({k: rented[k] * math.exp(v) for k, v in zip(keys, draw)}, anc))
         scores = np.array(scores)
         out = dict(score=float(scores.mean()), sd=float(scores.std()), times=t_mean,
                    band_sd={b: float(np.sqrt(np.mean([cov[i, i] for i, k in enumerate(keys)
-                                                      if planner.band_of(archive.tokens(k)) == b]))) for b in "SML"})
+                                                      if planner.band_of(k) == b]))) for b in "SML"})
         if best_score is not None:
             out["p_better"] = float((scores > best_score).mean())
         return out
@@ -202,11 +216,19 @@ TOGGLES = [("x: ef", {"x": "ef"}), ("w: nc", {"w": "nc"}), ("w: el", {"w": "el"}
            ("lang triton", {"lang": "triton"}), ("lang cute", {"lang": "cute"})]
 
 
-def feature_effects(emu, base=None, sizes=(128, 1024, 8192)):
+def effect_keys():
+    ks = sorted(problem.current().keys(), key=problem.current().mbytes)
+    return [ks[0], ks[len(ks) // 2], ks[-1]]
+
+
+def feature_effects(emu, base=None):
     """How the portal shifts each feature's effect relative to the rented B200: the emulator's change in
-    log(portal/rented) when one feature of a base path is toggled, at small / medium / large sizes (% and ±1 sd)."""
-    base = base or {"lang": "cuda", "width": 256, "threads": 256, "rows": 16, "grid": "oneshot", "st": "el"}
-    keys = [f"1,{t}" for t in sizes]
+    log(portal/rented) when one feature of a base path is toggled, at the smallest / middle / largest workload."""
+    if base is None:                                  # the best kernel's main (last) code path
+        best = planner.best_kernel(emu.arc)
+        base = dict((emu.feats.get(best["id"]) or [{}])[-1])
+        base.pop("max_tokens", None)
+    keys = effect_keys()
     copy = copy_reference()
     rented = {k: copy.get(k, 1.0) for k in keys}          # effects at copy-like speed (lag 0)
     m0, c0 = emu.predict_log_ratio([base], keys, rented)
@@ -220,7 +242,8 @@ def feature_effects(emu, base=None, sizes=(128, 1024, 8192)):
 
 
 def effects_markdown(emu):
-    lines = ["| change from the r5/r6 medium-large path | small (128 tok) | medium (1024) | large (8192) |",
+    k = effect_keys()
+    lines = [f"| change from the best kernel's main path | smallest ({k[0]}) | middle ({k[1]}) | largest ({k[2]}) |",
              "|---|---|---|---|"]
     for name, vals in feature_effects(emu):
         lines.append(f"| {name} | " + " | ".join(f"{d:+.1f}% ± {s:.1f}" for d, s in vals) + " |")
@@ -234,10 +257,12 @@ def validate(arc=None):
     full = Emulator(arc, feats)
     print(f"fit on {len(full.kernels)} kernels, {len(full.y)} workloads; hyperparameters {full.hp}")
     print(f"mean log(portal/rented) by band: " + ", ".join(
-        f"{b} {np.mean([y for y, x in zip(full.y, full.X) if planner.band_of(2 ** (x[-1] * 3 + 10)) == b]):+.3f}"
+        f"{b} {np.mean([y for y, k in zip(full.y, full.keys) if planner.band_of(k) == b]):+.3f}"
         for b in "SML"))
     print(f"\n{'held-out kernel':26} {'portal':>7} {'predicted':>16} {'z':>5}   naive (k-correction)")
-    groups = [[c] for c in full.kernels] + [["r8-ldg256-l2mode-disp", "r9-xo-spf-l2mode-disp"]]
+    groups = [[c] for c in full.kernels]
+    if {"r8-ldg256-l2mode-disp", "r9-xo-spf-l2mode-disp"} <= set(full.kernels):   # #38: proposed before either had a result
+        groups.append(["r8-ldg256-l2mode-disp", "r9-xo-spf-l2mode-disp"])
     for held in groups:
         em = Emulator(arc, feats, exclude=held)
         for cid in held:

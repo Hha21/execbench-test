@@ -21,7 +21,7 @@ import modal
 
 ROOT = Path(__file__).resolve().parents[1]
 SOLX = ROOT / "SOL-ExecBench"
-PROBLEM = SOLX / "data" / "benchmark" / "L1" / "038_flux_multi_head_rmsnorm_qk"
+DATA = SOLX / "data" / "benchmark"           # every problem (7.7 MB), mounted at /problems/<level>/<name>
 GPU = "B200"                         # exactly B200 (sm_100); B300/GB300 are a different chip
 
 RUNTIME_ENV = {
@@ -67,9 +67,11 @@ def write_trace(path, res):
     """A Modal test result -> a harness-style JSONL trace (read by archive.read_traces), plus a .log on failure."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
+    import problem
+    var_axes = problem.current().var_axes
     for w in res.get("workloads") or []:
-        b, s = (int(x) for x in w["workload"].split(","))
-        lines.append(json.dumps({"workload": {"axes": {"batch_size": b, "seq_len": s}}, "evaluation": {
+        axes = w.get("axes") or dict(zip(var_axes, (int(x) for x in w["workload"].split(","))))
+        lines.append(json.dumps({"workload": {"axes": axes}, "evaluation": {
             "status": w["status"], "log": w.get("log", ""),
             "performance": {"latency_ms": w["latency_us"] / 1e3 if w.get("latency_us") else None}}}))
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -103,13 +105,21 @@ image = (
     .run_commands("python3 /solx/patch_harness_timing.py /sol-execbench/src/sol_execbench/core/bench/timing.py "
                   "/venv/lib/python3.12/site-packages/sol_execbench/core/bench/timing.py")
     .env({"SOLX_IMAGE": "sol-execbench-v1.1"})
-    .add_local_dir(PROBLEM, "/problem")
+    .add_local_dir(DATA, "/problems")
     .add_local_file(ROOT / "loop" / "toolserver.py", "/solx/loop/toolserver.py")
     .add_local_file(ROOT / "loop" / "static_any.py", "/solx/loop/static_any.py")
     .add_local_file(ROOT / "loop" / "b200probe.py", "/solx/loop/b200probe.py")
 )
 
 app = modal.App("solx-b200", image=image)
+DEFAULT_PROBLEM = "L1/038_flux_multi_head_rmsnorm_qk"
+
+
+def problem_ref():
+    """'<level>/<name>' of the current problem, for requests (local side only)."""
+    import problem
+    p = problem.current()
+    return f"{p.level}/{p.name}"
 cache = modal.Volume.from_name("solx-b200-cache", create_if_missing=True)
 
 
@@ -137,7 +147,7 @@ def handle(req: dict) -> dict:
                     stdout=out[-6000:], stderr=err[-3000:])
     (d / "req.json").write_text(json.dumps(req))
     p = subprocess.run(["/venv/bin/python", "/solx/loop/toolserver.py", "--once", str(d / "req.json"),
-                        "--out", str(d / "res.json"), "--problem", "/problem"],
+                        "--out", str(d / "res.json"), "--problem", f"/problems/{req.get('problem', DEFAULT_PROBLEM)}"],
                        env={**os.environ, **RUNTIME_ENV}, capture_output=True, text=True, timeout=1700)
     cache.commit()                                  # keep new Triton cache entries for the next container
     if (d / "res.json").exists():

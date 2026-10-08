@@ -4,3 +4,5 @@ csf3-slurm-manual.md
 html_results/
 .env
 .venv/
+SOL-ExecBench
+.venv

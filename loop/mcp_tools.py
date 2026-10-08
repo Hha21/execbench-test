@@ -58,7 +58,7 @@ LOG = A.dir / f"{A.name}.tools.jsonl"
 def gpu_server():
     """Open the Modal B200 on first use and time the reference kernel there (once per session)."""
     if SESSION.server is None:
-        srv = designer.ModalB200(A.round, BEST["solution"], budget_minutes=A.b200_minutes)
+        srv = designer.ModalB200(A.round, BEST["solution"] if BEST else None, budget_minutes=A.b200_minutes)
         atexit.register(srv.stop)
         srv.wait_alive(0)
         SESSION.server = srv

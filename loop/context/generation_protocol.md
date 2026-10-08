@@ -12,7 +12,7 @@ The loop assembles the prompt in this order (template in §6):
 |---|---|---|
 | `core_brief.md` | objective, timing, rules, B200 facts, contract | yes |
 | task header | call type, operation, target niche and size band, number of candidates, round id | yes |
-| problem card | `problem_038.md`, or its §1–3 + §6 only for knob mutations | yes |
+| problem card | the problem card (`problems/<name>/card.md`), or its §1–3 + §6 only for knob mutations | yes |
 | reference docs | chosen per call type (README table): `playbook_membound.md`, `b200_arch.md`, `harness_scoring.md` | per call type |
 | archive summary | one row per niche: best kernel, measured and predicted results with uncertainty (format §4) | yes |
 | parents | 1–2 kernels: full source, design card, per-band measurements, sm_100a static features | for mutation, crossover, port, repair |
@@ -188,7 +188,7 @@ Return {{n_candidates}} candidate(s). Each must follow OUTPUT CONTRACT exactly.
 {{extra_instructions, e.g. "Port parent g2-tma-host-r16s4 to CUDA C++ using a 1-D bulk ring (mem:bulk1d)."}}
 
 === PROBLEM CARD ===
-{{problem_038.md or its sections 1-3,6}}
+{{the problem card or its sections 1-3,6}}
 
 === REFERENCE ===
 {{selected docs per README table}}

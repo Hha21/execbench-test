@@ -129,7 +129,7 @@ were executed.
 
 ### Disagreements found 2026-10-07
 
-7. **Why r3 beat r2/g2 on B200**: `problem_038.md` §7 credits 256-bit width. Our per-workload data show r2 (256-bit,
+7. **Why r3 beat r2/g2 on B200**: the problem card (`problems/<name>/card.md`) §7 credits 256-bit width. Our per-workload data show r2 (256-bit,
    hinted) ≈ g2 (128-bit, hinted), and r3 (256-bit, unhinted) is 2–5% faster at M/L, which points to the cache hints (see
    `b200_sota.md` §3). This is unconfirmed until one A/B isolates it.
 8. **evict_first on stores**: `playbook_membound.md` §6 recommends it (`cache:stream`). On B200, quack (GEMM), CAKE

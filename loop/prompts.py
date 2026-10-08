@@ -12,8 +12,8 @@ from pathlib import Path
 from archive import ROOT, band_geomeans, fmt, table
 
 CTX = ROOT / "loop" / "context"
-STATIC_DOCS = ["core_brief.md", "problem_038.md", "harness_scoring.md", "b200_arch.md", "b200_sota.md",
-               "playbook_membound.md", "generation_protocol.md"]
+STATIC_DOCS = ["core_brief.md", "PROBLEM_CARD", "harness_scoring.md", "b200_arch.md", "b200_sota.md",
+               "playbook_membound.md", "generation_protocol.md"]      # PROBLEM_CARD = problems/<name>/card.md
 CONTRACT = """=== OUTPUT CONTRACT ===
 Optional "### Rationale" (<=150 words). Then, per candidate:
 1) ```json solution-spec``` (the solution JSON without "sources")
@@ -25,23 +25,27 @@ No other fenced code blocks. Never use a forbidden behaviour; if the task needs 
 def static_prompt():
     parts = ["You are the kernel-design step of an automated optimisation loop for NVIDIA's SOL-ExecBench B200 "
              "leaderboard. The documents below are your briefing; follow the output contract exactly."]
+    import problem
+    p = problem.current()
     for name in STATIC_DOCS:
-        parts.append(f"=== {name} ===\n{(CTX / name).read_text()}")
+        if name == "PROBLEM_CARD":
+            card = p.card.read_text() if p.card.exists() else "(no problem card yet: run round.py research first)"
+            parts.append(f"=== problem card: {p.level}/{p.name} ===\n{card}")
+        else:
+            parts.append(f"=== {name} ===\n{(CTX / name).read_text()}")
     parts.append(CONTRACT)
     return "\n\n".join(parts)
 
 
 def b200_workload_table(vid):
     """Per-workload B200 results for a parent, with the hidden baseline, from the ingested portal pages."""
-    path = ROOT / "poc" / "results" / "b200_portal_workloads.csv"
-    if not path.exists():
-        return ""
-    rows = [r for r in csv.DictReader(open(path)) if r["vid"] == vid]
+    import archive
+    import problem
+    rows = [r for r in archive.portal_rows(archive.PORTAL_WL) if r["vid"] == vid]
     if not rows:
         return ""
     out = ["| workload | latency µs | baseline µs | score |", "|---|---|---|---|"]
-    for r in sorted(rows, key=lambda r: [int(x) for x in re.findall(r"=(\d+)", r["workload"])][0] *
-                    [int(x) for x in re.findall(r"=(\d+)", r["workload"])][1]):
+    for r in sorted(rows, key=lambda r: problem.current().mbytes(problem.current().key_from_label(r["workload"]))):
         out.append(f"| {r['workload']} | {float(r['latency_ms']) * 1e3:.1f} | {float(r['baseline_ms']) * 1e3:.1f} | "
                    f"{float(r['sol_score']):.3f} |")
     return "\n".join(out)
@@ -66,21 +70,21 @@ def lab_notebook(arc, limit=40):
     """What earlier rounds learned: portal outcomes against the bench, and findings recorded in design cards."""
     import math
     import planner
-    from archive import BANDS, parse_card, tokens
+    from archive import parse_card
     lines = []
     best = planner.best_kernel(arc)
-    bp, br = best["b200"]["timings"], (best.get("timings") or {}).get("B200r", {})
+    bp, br = (best["b200"]["timings"], (best.get("timings") or {}).get("B200r", {})) if best else ({}, {})
 
-    def rel(t, ref, lo, hi):
-        ks = [k for k in t if lo < tokens(k) <= hi and k in ref and t[k] and ref[k]]
+    def rel(t, ref, band):
+        ks = [k for k in t if planner.band_of(k) == band and k in ref and t[k] and ref[k]]
         return 100 * (math.exp(sum(math.log(t[k] / ref[k]) for k in ks) / len(ks)) - 1) if ks else None
     out = []
     for r in arc.values():
         p_t, r_t = (r.get("b200") or {}).get("timings"), (r.get("timings") or {}).get("B200r")
-        if p_t and r_t and r["id"] != best["id"] and str(r.get("round", "")).startswith(("r", "d")):
+        if best and p_t and r_t and r["id"] != best["id"] and str(r.get("round", "")).startswith(("r", "d", "c")):
             cells = []
-            for b, lo, hi in BANDS:
-                a, c = rel(p_t, bp, lo, hi), rel(r_t, br, lo, hi)
+            for b in "SML":
+                a, c = rel(p_t, bp, b), rel(r_t, br, b)
                 if a is not None and c is not None:
                     cells.append(f"{b} bench {c:+.1f}% / portal {a:+.1f}%")
             out.append(f"- {r['id']} (portal {r['b200']['score']:.4f}) vs {best['id']}: " + "; ".join(cells))
@@ -100,16 +104,18 @@ def lab_notebook(arc, limit=40):
 
 def dynamic_prompt(arc, round_id, operation, parents, n=1, band="all", niche="any empty niche", extra="",
                    feedback="none"):
+    import problem
     measured = [r for r in arc.values() if r.get("b200")]
     calib = "\n".join(f"- {r['id']}: B200 score {r['b200']['score']:.3f}, geomean {r['b200']['geomean_us']:.1f} µs, "
                       f"B200 S/M/L {fmt(band_geomeans(r['b200'].get('timings', {})))} µs" for r in measured)
     return "\n\n".join([
-        f"=== TASK ===\nRound: {round_id}   Operation: {operation}\nProblem: #38 038_flux_multi_head_rmsnorm_qk   "
+        f"=== TASK ===\nRound: {round_id}   Operation: {operation}\nProblem: {problem.current().level}/"
+        f"{problem.current().name}   "
         f"Target niche: {niche}   Target band: {band}\nReturn {n} candidate(s). Each must follow OUTPUT CONTRACT "
         f"exactly. Give every candidate a new unique id starting with '{round_id}-'.\n{extra}",
         "=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) "
         f"===\n{table(arc)}\nB200 results so far:\n{calib or 'none'}",
-        f"=== HYPOTHESIS LEDGER ===\n{(CTX.parent / 'ledger.yaml').read_text() if (CTX.parent / 'ledger.yaml').exists() else 'none'}",
+        f"=== HYPOTHESIS LEDGER ===\n{problem.current().ledger.read_text() if problem.current().ledger.exists() else 'none'}",
         f"=== LAB NOTEBOOK ===\n{lab_notebook(arc)}",
         "=== PARENTS ===\n" + ("\n".join(parent_block(arc[p]) for p in parents) if parents else "none"),
         f"=== FEEDBACK FROM LAST ATTEMPT ===\n{feedback}",

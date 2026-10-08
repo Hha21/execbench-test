@@ -1,0 +1,110 @@
+id: r11-e1-h12-control
+parents:
+  - c1-control-r6
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E1 tested H12: if each B200 die homes half the memory, a CTA reading only lines homed on its own die
+  might get more bandwidth. The two dies are real: a cold DRAM miss costs about 790 cycles near and about
+  1160 cycles far. SMs split 72/76 into fixed 8-SM blocks, and memory is homed in 4 KB blocks by a hash
+  that is not linear in address bits 7..20. But die-affine placement gives no bandwidth gain: near-only
+  vs mixed is within 1% for reads and for copies, at 148, 74 or 37 active SMs. H12 is refuted and H11 is
+  supported: the read ceiling is DRAM/L2-side. The candidate is the parent kernel, unchanged and split
+  into the two-file layout, so the portal should match c1-control-r6.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  S_MAX_TOKENS: 600
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_kernel<true>
+    meta:
+      loads: "x evict_first (policy constant), w nc"
+  - max_tokens: 1000000000
+    kernel: qk_rms_kernel<false>
+    meta:
+      loads: default
+tests:
+  - H12
+  - H11
+findings:
+  - "probe: read-only grid-stride over 400 MB (LDG.256, 8 CTAs/SM, clean L2), active SMs gated by %smid: 148 SMs 83.9 us (5.00 TB/s); 74 SMs odd smids 84.1, smid<74 83.6, smid>=74 81.5, hashed half 82.5; 37 SMs 91.3 us (4.60 TB/s). Half the SMs reach 100% of full read bandwidth: the ceiling is DRAM/L2-side (H11 supported) [probe_b200]"
+  - "probe: one-shot grid of 1184 CTAs is dispatched round-robin over GPCs in TPC pairs (blockIdx 0.. -> smid 142..147,0,1,16,17,32,33,48,49,64,65,2,3,...); every SM gets exactly 8 CTAs [probe_b200]"
+  - "probe: L2-hit latency (warm, every SM touching every line) is 241-325 cycles and not bimodal; a ~30-cycle split tracks SM position within a GPC, not the die. Far lines seem served at near-L2 speed once warmed by all SMs [probe_b200]"
+  - "probe: cold DRAM-miss latency per 128 B line from a single SM is bimodal: ~790 cycles (near home) vs ~1160 (far), plus a ~1450+ tail (row conflicts). Fast-line sets correlate 0.87 within an SM group and -0.16 across [probe_b200]"
+  - "probe: die map from cold latency. Group A (72 SMs) = smids 0-1, 10-17, 26-33, 42-49, 58-65, 74-79, 88-93, 102-107, 116-121, 130-143; group B (76) = the rest (2-9, 18-25, 34-41, 50-57, 66-73, 80-87, 94-101, 108-115, 122-129, 144-147) [probe_b200]"
+  - "probe: home granularity is exactly 4 KB (100% agreement within 4 KB blocks, 71% at 8 KB, ~52% at 2 MB). Walsh-Hadamard search finds no XOR mask of bits 7..20 with correlation above 0.08: the hash uses physical bits above the 2 MB page, so a kernel cannot know which die homes a block [probe_b200]"
+  - "probe: read 350 MB of classified lines: affine (each die reads its own homed lines) 77.4 us, mixed 77.8, address-sorted 78.2, anti-affine (every SM reads only far lines) 96.9 us (+25%, cross-die cap ~3.8 TB/s). Near-only vs mixed within 0.5%: H12 refuted [probe_b200]"
+  - "probe: copy of 265+265 MB in 4 KB blocks, persistent grid-stride (4 CTAs/SM): dirty flush affine 106.7, mixed 107.9, sorted 107.2, read-only-affine 106.6, write-only-affine 106.0, anti 106.7 us; clean flush 96.6-98.9 for all. No affinity effect for read+write [probe_b200]"
+  - "probe: one-shot copy, one 4 KB block per 128-thread CTA, block taken from a per-die queue (one atomic per CTA): dirty flush affine 103.2, mixed 102.7, anti 102.3 us; the same kernel indexed by blockIdx (no atomic) 95.6-96.5 us. The atomic costs 6-7% at L and affinity gains nothing; clean-flush queue runs were noisy (101-132 us) [probe_b200]"
+  - "dead end: die-affine tile assignment for #38. No bandwidth gain, the home hash cannot be computed from virtual addresses, and choosing tiles by smid needs an atomic per CTA (+6-7%). Close H12 [inferred from probes]"
+  - "tooling: dependent clock64 timing needs a real data dependence. clock reads after a load with only an asm register input do not wait (gave 2 cycles); a chain of ld.shared on the loaded value before the second clock works [probe_b200]"
+  - "tooling: 32-float register arrays plus long long offsets under __launch_bounds__(256,8) spill (STACK 264); a grid-stride copy then ran at 2.2 TB/s. Check resources before trusting probe bandwidths [probe_b200]"
+  - "run_tests: this control 16/16 pass; vs r10-rtok-m-disp S +0.6%, M +1.6% (r10 uses R=3 at 1024 tokens), L +1.0%; predicted portal 0.6070 +- 0.006 [run_tests]"
+paths:
+  - max_tokens: 600
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    mem: ldg
+    x: ef
+    w: nc
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    mem: ldg
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback path; single-die GPU, so it cannot show the B200 die effects measured here"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "None new: the kernel is identical to c1-control-r6 (portal 0.6105). Only the build layout changed (two files, extern C launcher)."
+  - "The E1 findings come from the rented B200 at unlocked SM clocks; at the portal's 1500 MHz the near/far cycle counts shift, but no bandwidth effect at 1940 MHz implies none at 1500."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

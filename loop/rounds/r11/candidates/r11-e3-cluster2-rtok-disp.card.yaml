@@ -1,0 +1,96 @@
+id: r11-e3-cluster2-rtok-disp
+parents:
+  - r10-rtok-m-disp
+  - c1-control-r6
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: token
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Experiment E3 (H14), measurement first. Empty kernels span 1.4-1.5 us at 768x256 and do not change with
+  param count, launch API, dynamic smem, memory-sync domain, launch priority or cluster dims, so the launch
+  front-end is hardware. Two attributes do change the real kernel. Preferred shared-memory carveout 100 is
+  harmful: +0.73 us at 128 tokens and +7.4 us at 1024 tokens, and carveouts 0..64 and the default are
+  identical. Cluster dims 2 cut the r6 S kernel by 3-4% (0.13-0.17 us) at 128/131/256 tokens and by about 1%
+  at 2048-8192 tokens. The cause is not a faster launch, since the empty kernel is unchanged; pairing
+  adjacent CTAs changes how CTAs are placed or how their traffic is spread. This candidate adds the cluster-of-2 launch
+  attribute to r10-rtok-m-disp for B*S <= 300 and B*S >= 2048. The 586-1024 token sizes keep the plain launch.
+expected_effect:
+  S:
+    pct: -2.2
+    confidence: medium
+  M:
+    pct: -0.5
+    confidence: low
+  L:
+    pct: -1.3
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  CLUSTER: 2
+  CLUSTER_TOKENS: "tok <= 300 or tok >= 2048"
+  R_M: 3
+  S_MAX_TOKENS: 600
+dispatch:
+  - {max_tokens: 300, kernel: "qk_rms_rtok<1,true,8> + cluster 2", meta: {R: 1}}
+  - {max_tokens: 600, kernel: "qk_rms_rtok<1,true,8>", meta: {R: 1}}
+  - {max_tokens: 1100, kernel: "qk_rms_rtok<3,false,5>", meta: {R: 3}}
+  - {max_tokens: 2047, kernel: "qk_rms_rtok<1,false,8>", meta: {R: 1}}
+  - {max_tokens: null, kernel: "qk_rms_rtok<1,false,8> + cluster 2", meta: {R: 1}}
+tests: [H14]
+findings:
+  - "probe E3(1), empty kernel CUPTI span (us, medians of 3 interleaved, rep 30), grid rows x block cols 64/128/256/512/1024: 1 CTA 1.52/1.38/1.39/1.38/1.42; 148 1.26/1.47/1.53/1.52/1.38; 768 1.25/1.44/1.63/1.53/2.17; 1536 1.86/1.70/1.90/2.08/3.04; 12288 7.30/7.45/7.44/8.70/16.79. The floor is about 1.4 us at any block size, and the span grows with total thread count [probe_b200]"
+  - "probe E3(2), empty 768x256, 16 interleaved repeats: 1 param vs 7 params, <<<>>> vs cuLaunchKernelEx, dyn smem 1 KB, memory-sync-domain remote, launch priority, cluster 2, carveout 0/100 are all within +-0.03 us of 1.377 us. Only a pointer-to-device-struct param is slower (1.95 vs 1.65 us; it costs a dependent load, and building the struct each call needs a second GPU activity) [probe_b200]"
+  - "probe E3(3), r6 S path at 128 tokens, in-kernel globaltimer span vs CUPTI span, medians of 105 samples: evict_last stores CUPTI 4.51 / in-kernel 3.42 (outside 1.09 us); plain stores 4.35 / 3.30 (1.06); NO stores (read-only) 3.80 / 2.75 (1.05); empty body 2.02 / 0.38 (1.63). The part outside the CTAs is 1.05 us with or without stores, so it is not store drain; it is launch front-end plus teardown, a hardware cost [probe_b200]"
+  - "tooling: CUPTI and globaltimer clocks are offset by about 380 ms with per-iteration jitter of several us, so the before-first-CTA / after-last-CTA split cannot be resolved; only their sum is. Not attempted further [probe_b200]"
+  - "trap: cuFuncSetAttribute is sticky across launches. A first sweep that did not reset it appeared to show carveout 0 at -0.74 us; with the carveout set explicitly before every launch, default/0/8/32/64 are all equal (4.13 us at 128 tokens, 14.42 at 1024) and only carveout 100 is bad (4.86 and 21.8 us). Always set it explicitly in interleaved tests [probe_b200]"
+  - "probe, r6-style kernel, harness timing, 8-10 interleaved repeats, cluster 2 vs plain: 128 tok 4.095->3.968 (-3.1%), 131 4.281->4.112 (-4.0%), 256 5.520->5.359 (-2.9%), 586 +0.6%, 1024 +1.6%, 2048 -1.4%, 4096 -0.8%, 8192 -1.1%. __cluster_dims__ and the cudaLaunchAttributeClusterDimension launch attribute give the same result [probe_b200]"
+  - "probe: cluster 4/8/16 are worse than 2 (256 tok -1.3/-1.6/-0.1% vs -3.1%; 1024 tok +4/+5/+12%); the cluster scheduling policy (spread / load-balancing) changes nothing [probe_b200]"
+  - "run_tests, candidate on r6 only (r11-e3-cluster2-s, cluster at <=300 and >=2048): 16/16 pass after a retry of two 'No timing results for cupti' flakes (workloads 5 and 11, retried with identical files); S -2.2%, M +0.8% (only because it lacks r10's R=3 path), L -1.0% vs r10-rtok-m-disp [run_tests]"
+  - "run_tests, final candidate: 16/16 pass; vs r10-rtok-m-disp on the same GPU S -2.2%, M -0.5%, L -1.3%; 128 tok -3.1%, 131 -3.9%, 256 -2.9% (the 1x256 workload) and -1.5% (the 2x128 workload); the 2x293 workload (586 tok, plain launch) +0.3%; predicted portal 0.6129 +- 0.0061 (current best 0.6111) [run_tests]"
+  - "H14 verdict: partly supported. One launch attribute (cluster dims 2) moves S by 3-4% on the bench, which misses the 0.2 us / 5% success bar (observed 0.12-0.16 us). The empty-kernel span is untouched by every attribute, and about 1.05 us outside the CTAs is fixed hardware. Open: why a cluster of 2 helps. A per-SM CTA histogram (%smid) for plain vs cluster-2 launches was not run because the probe budget ran out"
+  - "dead end: carveout, param count, launch API, dynamic smem, memory-sync domain, priority and cluster scheduling policy each move the real kernel by 0 +- 0.03 us (carveout 100 aside, which is harmful)"
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: 2047, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "cluster placement differs from B200; compiles to the 128-bit fallback"
+  A100:
+    runs: false
+    representative: false
+    note: "no clusters on sm_80: cudaLaunchKernelEx with a cluster attribute fails there; B200 and H200 only"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "The S gain is 0.12-0.16 us (3-4%), about the size of bench noise on the smallest sizes; the portal reports times to 0.1 us. The emulator gives P(beats best) = 65%."
+  - "The cause of the cluster gain is unknown, so it may not transfer to the 1500 MHz portal; an effect of the same sign is expected, since the cluster launch cost is fixed-latency."
+  - "The 2048-8192 token gain (about 1%) is at the noise floor; if it disappears on the portal, restrict cluster launch to tok <= 300."
+  - "cudaLaunchKernelEx with a cluster attribute fails if the grid is not a multiple of 2; the R=1 grid is 6*tokens, always even."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -43,7 +43,44 @@
   "round": "c1",
   "solution": "loop/rounds/c1/portal/c1-control-r6.json",
   "status": "passed",
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.67,
+    "1,128": 4.13,
+    "1,131": 4.06,
+    "1,256": 5.57,
+    "1,8192": 115.82,
+    "16,256": 57.98,
+    "2,128": 5.44,
+    "2,293": 8.64,
+    "32,128": 58.01,
+    "4,1024": 58.07,
+    "4,1657": 93.76,
+    "4,256": 14.5,
+    "4,512": 28.55,
+    "8,128": 14.41,
+    "8,256": 28.26,
+    "8,773": 87.15
+   },
+   "B200r2": {
+    "1,1024": 14.43,
+    "1,128": 4.16,
+    "1,131": 4.06,
+    "1,256": 5.55,
+    "1,8192": 115.85,
+    "16,256": 58.05,
+    "2,128": 5.44,
+    "2,293": 8.67,
+    "32,128": 57.95,
+    "4,1024": 58.03,
+    "4,1657": 93.45,
+    "4,256": 14.47,
+    "4,512": 28.43,
+    "8,128": 14.22,
+    "8,256": 28.39,
+    "8,773": 85.7
+   }
+  }
  },
  "d1-os-r8w4-nohint": {
   "b200": {
@@ -1375,6 +1412,29 @@
   }
  },
  "r10-ldef-real-stel-disp": {
+  "b200": {
+   "geomean_us": 23.419999999999998,
+   "score": 0.608635,
+   "submission": "62661",
+   "timings": {
+    "1,1024": 16.299999999999997,
+    "1,128": 4.8999999999999995,
+    "1,131": 5.0,
+    "1,256": 6.6,
+    "1,8192": 115.8,
+    "16,256": 58.5,
+    "2,128": 6.5,
+    "2,293": 10.5,
+    "32,128": 58.5,
+    "4,1024": 58.4,
+    "4,1657": 93.89999999999999,
+    "4,256": 16.299999999999997,
+    "4,512": 29.9,
+    "8,128": 16.400000000000002,
+    "8,256": 29.9,
+    "8,773": 87.7
+   }
+  },
   "card": "id: r10-ldef-real-stel-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Exploration of the L2 end state. The store side is already at its limit: evict_last on every store\n  is as good as any \"last X MB evict_last\", fractional or reordered variant (all within 1%). The real\n  extra cost is that reads evict the dirty lines the harness flush leaves in L2. evict_first on the x\n  loads recovers 13-15% on a read-only kernel, but with evict_last stores only 1-2% at 256-1024 tokens\n  (8% at 586, which r6 already had). So the candidate is r6 with evict_first x loads extended from\n  B*S <= 600 to B*S <= 1024, plain loads above. Measured on the rented B200 vs r6: S -0.8%, M -1.2%,\n  L +0.3% (noise). The predicted portal score is 0.611 +- 0.009.\nexpected_effect:\n  S:\n    pct: -0.5\n    confidence: medium\n  M:\n    pct: -1\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  EF_MAX_TOKENS: 1024\n  x_load_policy: \"ld.global.L2::evict_first for B*S<=1024, default above\"\n  store_policy: \"createpolicy.fractional.L2::evict_last 1.0, all sizes\"\ndispatch:\n  - max_tokens: 1024\n    kernel: qk_rms_kernel<true>\n    meta:\n      x: \"L2::evict_first\"\n      st: \"evict_last\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      x: \"default\"\n      st: \"evict_last\"\nfindings:\n  - \"probe: under harness timing, evict_last stores (createpolicy) beat plain stores by 8% at 128 tokens, 12% at 256, 14% at 586, 19% at 1024, 12% at 2048, 5% at 4096 and 2.5% at 8192 tokens; r5's mechanism reproduces on the rented B200 [probe_b200]\"\n  - \"dead end: evict_last on only the last 48/80/112 MB of output blocks (earlier stores evict_normal or evict_first) is within +-1% of all-evict_last at 2048-8192 tokens; fractional evict_last 0.5/0.75 is the same or up to 5% worse (0.5 at 1024 tokens). The store-side end state is at its limit [probe_b200]\"\n  - \"dead end: block order (reversed, K first, Q/K interleaved) is within 1% at 128-256 tokens, so the harness's input copies leave no useful L2 residency; the 586-8192 token sizes were not measured because a harness_time CUPTI error ended the run [probe_b200]\"\n  - \"probe: the dirty zero-fill flush costs reads, not writes. Event timing after a zero_ flush vs a zero_+read flush: read-only kernels +7..11 us at 100-400 MB, copy +5..6 us, write-only +-1 us [probe_b200]\"\n  - \"probe: read-only 100/400 MB under harness timing: plain/.nc/.cs/.lu/L1::no_allocate/L2::evict_last 21.9/75.4 us; ld.global.L2::evict_first or createpolicy evict_first 18.6/65-66 us (-15%/-13%); createpolicy evict_unchanged no gain [probe_b200]\"\n  - \"caveat: the CUTLASS EVICT_FIRST constant 0x12F0000000000000 was a no-op when passed as a kernel argument (read-only and full kernel), but works like the qualifier when written into the instruction as an immediate (r6's form). r6's S-band evict_first was therefore real. Cause unknown; prefer the qualifier or createpolicy [probe_b200]\"\n  - \"probe: full kernel with evict_last stores plus evict_first x loads vs default loads: 256 tokens -1.3%, 586 -8.7%, 1024 -1.5..-2%, 2048 +1.5%, 4096/8192 about 0. Weights through .nc: no effect [probe_b200]\"\n  - \"result: run_tests vs r6: S -0.8%, M -1.2% (1024 tokens -1.7..-2.4%), L +0.3%; predicted portal 0.6112 +- 0.0088 [run_tests]\"\n  - \"open: evict_last saves only 3-4 us (about 25-30 MB of write-back) at every size from 1024 to 8192 tokens, not the 126 MB L2; the rest of L2 may be held by the harness's dirty lines or capped for evict_last. Untested idea: anything that stops reads from evicting the harness's dirty lines while stores stay evict_last\"\npaths:\n  - max_tokens: 1024\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: none\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: none\n    w: none\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; 50 MB L2, so the end state differs\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The gain is about 1-2% at 256-1024 tokens, below the portal's noise; one submission cannot confirm it.\"\n  - \"Extending evict_first loads to 1024 tokens could act differently at the portal's locked 1500 MHz SM clock than on the bench.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r10-ldef-real-stel-disp",
   "language": "cuda_cpp",
@@ -1533,6 +1593,29 @@
   }
  },
  "r10-rtok-m-disp": {
+  "b200": {
+   "geomean_us": 23.206999999999997,
+   "score": 0.611104,
+   "submission": "62664",
+   "timings": {
+    "1,1024": 16.1,
+    "1,128": 4.8,
+    "1,131": 4.8,
+    "1,256": 6.5,
+    "1,8192": 115.5,
+    "16,256": 58.4,
+    "2,128": 6.4,
+    "2,293": 10.5,
+    "32,128": 58.6,
+    "4,1024": 58.4,
+    "4,1657": 93.5,
+    "4,256": 16.0,
+    "4,512": 29.9,
+    "8,128": 16.1,
+    "8,256": 30.0,
+    "8,773": 87.6
+   }
+  },
   "card": "id: r10-rtok-m-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: token\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Wildcard result, mostly negative. First I measured where the time goes, using per-CTA globaltimer timelines\n  on the rented B200. The harness's zero-fill flush leaves the L2 full of dirty lines, and every line we\n  allocate forces a write-back. That costs about 20% of the in-kernel time at 12.6 MB and about 35% at 100 MB,\n  measured against a flush that leaves clean lines. No cache hint changes it. Bytes in flight per thread and\n  CTA shape are also not limiting. The one structural idea with a measurable gain is kept. A thread handles\n  R = 3 tokens of the same head (rows h, h+48, h+96), so one weight load serves 3 rows and 96 B of x loads are\n  in flight per thread. The kernel runs 5 CTAs/SM with 48 registers, and it is used only for\n  600 < B*S <= 1100 (the three 1024-token workloads). It measured -1.7 to -4.0% there in two separate\n  run_tests. Every other size runs r6's code unchanged.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -1.5\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 48\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 5\n  bytes_in_flight_per_sm: 122880\n  launches_per_call: 1\nknobs:\n  R_M: 3\n  MINB_M: 5\n  M_RANGE: \"600 < B*S <= 1100\"\n  S_MAX_TOKENS: 600\n  store_policy: \"L2 evict_last fraction 1.0 (all sizes)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_rtok<1,true,8>\n    meta:\n      R: 1\n      loads: \"x evict_first cache_hint, w nc (= r6 S path)\"\n  - max_tokens: 1100\n    kernel: qk_rms_rtok<3,false,5>\n    meta:\n      R: 3\n      note: \"3 same-head tokens per thread, one weight load\"\n  - max_tokens: null\n    kernel: qk_rms_rtok<1,false,8>\n    meta:\n      R: 1\n      note: \"identical to r6 / r5\"\nfindings:\n  - \"probe timeline, 12.6 MB: all 768 CTAs start within 0.06 us (one wave, 5-6 CTAs on every SM, spread over the GPCs); the first load returns at 0.67 us, the median at 1.6 us, the last at 2.9 us; in-kernel span 3.1-3.3 us against a 4.16 us CUPTI time, so about 1 us lies outside the CTAs (launch and teardown) [probe_b200]\"\n  - \"probe, 25 MB: r6's 1536 CTAs exceed the 1184 resident slots (8/SM), so CTA starts spread over 2.7 us (a second partial wave); making it one wave with 2-4 rows per thread does not make it faster [probe_b200]\"\n  - \"probe, dirty-L2 cost: in-kernel span after the harness-style zero flush vs a read-only flush (clean lines): 12.6 MB 3.07 vs 2.56 us, 25 MB 4.10 vs 3.58, 100 MB 16.6 vs 12.3; a read-only kernel shows the same (12.0 vs 8.2 us at 100 MB). Write-backs of the flush's dirty lines are 20-35% of the kernel time and are the main remaining cost at S/M [probe_b200]\"\n  - \"dead end: load hints do not stop those write-backs. x via cache_hint EF, the .L2::evict_first qualifier, .cs, .lu or nc+EF all score within +-2% of default at 128-4096 tokens. Probable reason: an output line's L2 set rarely holds one of our clean input lines, so its victim is still a dirty flush line. Exception: EF x loads gave -6% at 586 tokens once (r6 already uses them there) [probe_b200]\"\n  - \"dead end: the .L2::evict_last store qualifier vs cache_hint+createpolicy evict_last: same within noise at every size [probe_b200]\"\n  - \"dead end: R tokens per thread sharing one weight load (R = 2, 3, 4; 128- and 256-thread CTAs; 64-128 KB in flight per SM) does not beat r6 at S or L (+0 to +4%); R=2 at 8 CTAs/SM spills (STACK 16) and is 5-20% slower. Bytes in flight are not the B200 limit; DRAM plus the dirty write-backs are [probe_b200]\"\n  - \"kept: R=3 at 1024 tokens measured -2.9/-3.4/-1.8% and -3.2/-4.0/-1.7% in two run_tests; at 2048 tokens it was +0.5% (dropped). Bench noise between identical code paths was up to +-2.4% in the same runs [run_tests]\"\n  - \"at S the in-kernel span is about read bytes plus write-back bytes over DRAM bandwidth, plus a fixed ~1 us outside the CTAs; no kernel-side gain of 3% or more is visible at S unless the write-backs can be avoided legitimately (they cannot via hints; discard on inputs counts as touching memory we do not own) [INFERRED from the probes]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: 1100\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 48\n    grid: oneshot\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The 1024-token gain (-2 to -4% on the bench) is close to bench noise; the portal may show nothing. The 48-register path can lose more at 1500 MHz if it is partly SM-bound.\"\n  - \"Emulator prediction 0.6100 +- 0.009 vs the current best 0.6099: a coin flip at the score level.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r10-rtok-m-disp",
   "language": "cuda_cpp",
@@ -1717,6 +1800,141 @@
     "8,773": 86.79
    }
   }
+ },
+ "r11-consol-disp": {
+  "card": "id: r11-consol-disp\nparents:\n  - r10-rtok-m-disp\n  - r10-ldef-real-stel-disp\noperation: crossover\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: token\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E4/H9: put r10's kept effects in one kernel (evict_first x loads, R=3 same-head tokens per thread at\n  1024 tokens, r6 elsewhere, evict_last stores everywhere) and check that each path stays within 2% of a\n  plain copy. Result: the consolidation collapses into r10-rtok-m-disp. At 1024 tokens R=3 already\n  captures the whole gain (-3.2% vs plain R=1, 5-rep medians), and evict_first on the R=3 loads adds nothing\n  (14.10 vs 14.11 us). The R=3 path is NOT lagging the copy: it matches the R=1 plain copy of the same bytes\n  (14.10 vs 14.08 us). The only path with real copy lag is S, +3 to +5%, from the dependent\n  shuffle/rsqrt chain after the loads. Expected portal result is the same as r10-rtok-m-disp (0.611).\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -0.2\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 48\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 5\n  bytes_in_flight_per_sm: 122880\n  launches_per_call: 1\nknobs:\n  R_M: 3\n  MINB_M: 5\n  S_MAX_TOKENS: 600\n  M_RANGE: \"600 < B*S <= 1100\"\n  x_loads: \"S: cache_hint 0x12F0.. + nc weights; 1024 tokens: .L2::evict_first qualifier; above: default\"\n  store_policy: \"createpolicy.fractional.L2::evict_last 1.0, all sizes\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_rtok<1,LD_HINT,8>\n    meta:\n      R: 1\n      regs: 30\n  - max_tokens: 1100\n    kernel: qk_rms_rtok<3,LD_QUAL,5>\n    meta:\n      R: 3\n      regs: 48\n  - max_tokens: null\n    kernel: qk_rms_rtok<1,LD_PLAIN,8>\n    meta:\n      R: 1\n      regs: 30\ntests:\n  - H9\n  - H8\nfindings:\n  - \"compile sm_100a: S path 30 regs, R=3 path 48 regs, above 30 regs; 0 B local, 0 B shared in all three [compile_b200]\"\n  - \"run_tests (16/16 pass on the second try; the first run lost one workload to the known CUPTI 'No timing results' flake): vs r10-rtok-m-disp S -0.3%, M -0.2%, L +0.3%; predicted portal 0.6100 +- 0.0060, P(beats the portal best 0.6111) = 41%. Same code paths as rtok except EF qualifier on the R=3 loads [run_tests]\"\n  - \"probe, 1024 tokens, 5 interleaved reps, median us: plain R=1 14.56, R=1 + EF qualifier 14.28 (-1.9%), R=3 14.10 (-3.2%), R=3 + EF 14.11, plain copy R=1 14.08, plain copy R=3 shape 14.56. R=3 adds nothing on top of R=1+EF beyond -1.3%, and EF adds nothing on top of R=3 [probe_b200]\"\n  - \"copy lag (same CTA shape, width, EL stores): R=1 hint path vs copy: 128 tok 4.14 vs 3.95 (+4.8%), 256 tok 5.34 vs 5.18 (+3.1%); 1024 tok R=1 plain +3.4%, R=3 +0.1%; 2048 tok 28.18 vs 28.27 (-0.3%); 4096 57.63 vs 57.88; 8192 115.76 vs 115.81 (both 0%). So L/M paths are at copy speed; S lags 3-5% (0.15-0.2 us, the shuffle/rsqrt chain) [probe_b200]\"\n  - \"the R=3 copy shape (3 rows per thread, 5 CTAs/SM) is itself slower than the R=1 copy at 1024 tokens (14.56 vs 14.08), yet the full R=3 kernel is as fast as the R=1 copy. R=3's gain is therefore not 'more bytes in flight'; the weight-load saving is more likely [probe_b200]\"\n  - \"EF qualifier vs r6's cache_hint-constant form at S: 128 tok 4.13 (qualifier + default weights) / 4.16 (qualifier + nc) / 4.16 (const hint + nc); 256 tok 5.51 / 5.54 / 5.51; plain no-hint 4.13 and 5.60. Indistinguishable; at 586 tokens EF is -8% (8.58 vs 9.34) [probe_b200]\"\n  - \"dead end: consolidation of r10-ldef-real-stel-disp and r10-rtok-m-disp. ldef's evict_first at 128-586 tokens is what r6 already does; at 1024 it is subsumed by R=3. The portal pair (this + ldef) would give no new information: ldef is already scored (0.6086, S +1.9% vs rtok on the portal, likely 0.1 us rounding) and this candidate is ~rtok (0.6111) [probe_b200, run_tests]\"\n  - \"H9 note: the S-path copy lag (+3-5%) is the only SM-side excess left; the 5% lag threshold was not exceeded by R=3, so the R=3 path is kept. The only untested way to cut S lag is a shorter dependent chain (e.g. 4 lanes per row, H13)\"\n  - \"limitation: the three interleaved run_tests against c1-control-r6 were not run; run_tests only compares against the current best (rtok). The c1 comparison was done with probe_b200 using code-identical kernels, 5 interleaved reps, which reproduces the earlier two run_tests (-2.9..-4.0% at 1024) [probe_b200]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: 1100\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 48\n    grid: oneshot\n    x: ef\n    w: none\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: none\n    w: none\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The 1024-token gain (-2 to -3% on the bench) is close to bench noise (+-2.4%). Portal evidence for the R=3 path is one submission (rtok, -1.8% vs c1 at 1024).\"\n  - \"Portal score will be within noise of r10-rtok-m-disp (0.611); a submission cannot separate them.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r11-consol-disp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "crossover",
+  "parents": [
+   "r10-rtok-m-disp",
+   "r10-ldef-real-stel-disp"
+  ],
+  "round": "r11",
+  "solution": "loop/rounds/r11/candidates/r11-consol-disp.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E4 (tests H9): Consolidate r10's kept effects into one portal candidate and measure its copy lag. Build r11-consol-disp from the two parents, two-file layout: x loads with the ld.global.L2::evict_first qualifier for B*S <= 1024 (from r10-ldef-real-stel-disp); the R=3 rows-per-thread path (one weight load per 3 rows, 48 registers) only for B*S == 1024 (the three 100.7 MB workloads, from r10-rtok-m-disp); c1-control-r6's path everywhere else. Keep evict_last stores at every size. Confirm sm_100a registers and no spills for each path. Run run_tests 3 times interleaved with c1-control-r6 and report per-workload deltas with their spread. Then measure copy lag for each path: compare each path at its sizes with a plain copy kernel of the same CTA shape, width and EL stores, since H9 says lag predicts the portal penalty. If the R=3 path lags the copy by more than 5%, drop it and keep only the evict_first change. Report the predicted portal score and recommend the submission pair (this candidate plus r10-ldef-real-stel-disp) to the user. Success: Predicted portal score >=0.613 +-0.009 with every path at most 2% slower than its plain copy, and the 1024-token workloads >=2% faster than c1-control-r6 in all three runs. Refuted if: The 1024-token gain does not reproduce in 3 interleaved runs (within +-1%), or the R=3 path lags its copy by >5%; then ship only the evict_first change and note that R=3 was bench noise. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "model": "sonnet",
+   "niche": "exp:E4:H9",
+   "operation": "crossover",
+   "parents": [
+    "r10-ldef-real-stel-disp",
+    "r10-rtok-m-disp"
+   ]
+  },
+  "timings": {}
+ },
+ "r11-e1-h12-control": {
+  "card": "id: r11-e1-h12-control\nparents:\n  - c1-control-r6\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E1 tested H12: if each B200 die homes half the memory, a CTA reading only lines homed on its own die\n  might get more bandwidth. The two dies are real: a cold DRAM miss costs about 790 cycles near and about\n  1160 cycles far. SMs split 72/76 into fixed 8-SM blocks, and memory is homed in 4 KB blocks by a hash\n  that is not linear in address bits 7..20. But die-affine placement gives no bandwidth gain: near-only\n  vs mixed is within 1% for reads and for copies, at 148, 74 or 37 active SMs. H12 is refuted and H11 is\n  supported: the read ceiling is DRAM/L2-side. The candidate is the parent kernel, unchanged and split\n  into the two-file layout, so the portal should match c1-control-r6.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  S_MAX_TOKENS: 600\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<true>\n    meta:\n      loads: \"x evict_first (policy constant), w nc\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      loads: default\ntests:\n  - H12\n  - H11\nfindings:\n  - \"probe: read-only grid-stride over 400 MB (LDG.256, 8 CTAs/SM, clean L2), active SMs gated by %smid: 148 SMs 83.9 us (5.00 TB/s); 74 SMs odd smids 84.1, smid<74 83.6, smid>=74 81.5, hashed half 82.5; 37 SMs 91.3 us (4.60 TB/s). Half the SMs reach 100% of full read bandwidth: the ceiling is DRAM/L2-side (H11 supported) [probe_b200]\"\n  - \"probe: one-shot grid of 1184 CTAs is dispatched round-robin over GPCs in TPC pairs (blockIdx 0.. -> smid 142..147,0,1,16,17,32,33,48,49,64,65,2,3,...); every SM gets exactly 8 CTAs [probe_b200]\"\n  - \"probe: L2-hit latency (warm, every SM touching every line) is 241-325 cycles and not bimodal; a ~30-cycle split tracks SM position within a GPC, not the die. Far lines seem served at near-L2 speed once warmed by all SMs [probe_b200]\"\n  - \"probe: cold DRAM-miss latency per 128 B line from a single SM is bimodal: ~790 cycles (near home) vs ~1160 (far), plus a ~1450+ tail (row conflicts). Fast-line sets correlate 0.87 within an SM group and -0.16 across [probe_b200]\"\n  - \"probe: die map from cold latency. Group A (72 SMs) = smids 0-1, 10-17, 26-33, 42-49, 58-65, 74-79, 88-93, 102-107, 116-121, 130-143; group B (76) = the rest (2-9, 18-25, 34-41, 50-57, 66-73, 80-87, 94-101, 108-115, 122-129, 144-147) [probe_b200]\"\n  - \"probe: home granularity is exactly 4 KB (100% agreement within 4 KB blocks, 71% at 8 KB, ~52% at 2 MB). Walsh-Hadamard search finds no XOR mask of bits 7..20 with correlation above 0.08: the hash uses physical bits above the 2 MB page, so a kernel cannot know which die homes a block [probe_b200]\"\n  - \"probe: read 350 MB of classified lines: affine (each die reads its own homed lines) 77.4 us, mixed 77.8, address-sorted 78.2, anti-affine (every SM reads only far lines) 96.9 us (+25%, cross-die cap ~3.8 TB/s). Near-only vs mixed within 0.5%: H12 refuted [probe_b200]\"\n  - \"probe: copy of 265+265 MB in 4 KB blocks, persistent grid-stride (4 CTAs/SM): dirty flush affine 106.7, mixed 107.9, sorted 107.2, read-only-affine 106.6, write-only-affine 106.0, anti 106.7 us; clean flush 96.6-98.9 for all. No affinity effect for read+write [probe_b200]\"\n  - \"probe: one-shot copy, one 4 KB block per 128-thread CTA, block taken from a per-die queue (one atomic per CTA): dirty flush affine 103.2, mixed 102.7, anti 102.3 us; the same kernel indexed by blockIdx (no atomic) 95.6-96.5 us. The atomic costs 6-7% at L and affinity gains nothing; clean-flush queue runs were noisy (101-132 us) [probe_b200]\"\n  - \"dead end: die-affine tile assignment for #38. No bandwidth gain, the home hash cannot be computed from virtual addresses, and choosing tiles by smid needs an atomic per CTA (+6-7%). Close H12 [inferred from probes]\"\n  - \"tooling: dependent clock64 timing needs a real data dependence. clock reads after a load with only an asm register input do not wait (gave 2 cycles); a chain of ld.shared on the loaded value before the second clock works [probe_b200]\"\n  - \"tooling: 32-float register arrays plus long long offsets under __launch_bounds__(256,8) spill (STACK 264); a grid-stride copy then ran at 2.2 TB/s. Check resources before trusting probe bandwidths [probe_b200]\"\n  - \"run_tests: this control 16/16 pass; vs r10-rtok-m-disp S +0.6%, M +1.6% (r10 uses R=3 at 1024 tokens), L +1.0%; predicted portal 0.6070 +- 0.006 [run_tests]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    mem: ldg\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    mem: ldg\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback path; single-die GPU, so it cannot show the B200 die effects measured here\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"None new: the kernel is identical to c1-control-r6 (portal 0.6105). Only the build layout changed (two files, extern C launcher).\"\n  - \"The E1 findings come from the rented B200 at unlocked SM clocks; at the portal's 1500 MHz the near/far cycle counts shift, but no bandwidth effect at 1940 MHz implies none at 1500.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r11-e1-h12-control",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "new_design",
+  "parents": [
+   "c1-control-r6"
+  ],
+  "round": "r11",
+  "solution": "loop/rounds/r11/candidates/r11-e1-h12-control.json",
+  "status": "proposed",
+  "task": {
+   "band": "L",
+   "instructions": "Experiment E1 (tests H12): Die affinity and the read ceiling: is L DRAM-bound or addressable?. Probe-only unless step 4 succeeds. (1) Read-only grid-stride kernel (LDG.256, 8 CTAs/SM resident) over 400 MB after a zero_+read flush (clean L2). Record %smid per CTA. Repeat with CTAs on odd smids (and separately smid>=74) exiting at once, the rest covering all bytes: report bandwidth at 148 vs 74 active SMs. If 74 SMs reach within 10% of 148, the ceiling is DRAM/L2-side (H11 supported). (2) Latency probe: one warp pinned by exiting all CTAs except one on a chosen smid; dependent-load chase over 128 B lines inside one 2 MB-aligned region, varying address bits 7..20 one at a time and in XOR pairs; look for a bimodal near/far latency and derive the bit function that predicts the far partition. Repeat from an SM on the other die (smid>=74 or by the parity found in step 1). (3) If a hash is found: read-only kernel where each CTA reads only near-homed lines vs only far-homed vs mixed, same bytes; report bandwidth and latency. (4) If near-only is >=3% faster: inspect the smid trace of the one-shot grid for a deterministic blockIdx-to-die pattern; if one exists, build a variant of c1-control-r6 whose blockIdx-to-tile mapping gives each CTA tiles homed on its die (every blockIdx still maps to exactly one tile, so correctness never depends on dispatch). run_tests twice interleaved with c1-control-r6. Record all findings including negative ones. Success: Near-only reads >=5% faster than mixed at 400 MB, or a die-affine kernel that is >=3% faster at L in two interleaved run_tests. Refuted if: No bimodal latency over address bits 7..20 from either die, or near-only vs mixed within 2%, or 74 active SMs reach >=90% of the 148-SM read bandwidth with no affinity effect (then close H12 and mark H11 supported). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:E1:H12",
+   "operation": "new_design",
+   "parents": [
+    "c1-control-r6"
+   ]
+  },
+  "timings": {}
+ },
+ "r11-e3-cluster2-rtok-disp": {
+  "card": "id: r11-e3-cluster2-rtok-disp\nparents:\n  - r10-rtok-m-disp\n  - c1-control-r6\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: token\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Experiment E3 (H14), measurement first. Empty kernels span 1.4-1.5 us at 768x256 and do not change with\n  param count, launch API, dynamic smem, memory-sync domain, launch priority or cluster dims, so the launch\n  front-end is hardware. Two attributes do change the real kernel. Preferred shared-memory carveout 100 is\n  harmful: +0.73 us at 128 tokens and +7.4 us at 1024 tokens, and carveouts 0..64 and the default are\n  identical. Cluster dims 2 cut the r6 S kernel by 3-4% (0.13-0.17 us) at 128/131/256 tokens and by about 1%\n  at 2048-8192 tokens. The cause is not a faster launch, since the empty kernel is unchanged; pairing\n  adjacent CTAs changes how CTAs are placed or how their traffic is spread. This candidate adds the cluster-of-2 launch\n  attribute to r10-rtok-m-disp for B*S <= 300 and B*S >= 2048. The 586-1024 token sizes keep the plain launch.\nexpected_effect:\n  S:\n    pct: -2.2\n    confidence: medium\n  M:\n    pct: -0.5\n    confidence: low\n  L:\n    pct: -1.3\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  CLUSTER: 2\n  CLUSTER_TOKENS: \"tok <= 300 or tok >= 2048\"\n  R_M: 3\n  S_MAX_TOKENS: 600\ndispatch:\n  - {max_tokens: 300, kernel: \"qk_rms_rtok<1,true,8> + cluster 2\", meta: {R: 1}}\n  - {max_tokens: 600, kernel: \"qk_rms_rtok<1,true,8>\", meta: {R: 1}}\n  - {max_tokens: 1100, kernel: \"qk_rms_rtok<3,false,5>\", meta: {R: 3}}\n  - {max_tokens: 2047, kernel: \"qk_rms_rtok<1,false,8>\", meta: {R: 1}}\n  - {max_tokens: null, kernel: \"qk_rms_rtok<1,false,8> + cluster 2\", meta: {R: 1}}\ntests: [H14]\nfindings:\n  - \"probe E3(1), empty kernel CUPTI span (us, medians of 3 interleaved, rep 30), grid rows x block cols 64/128/256/512/1024: 1 CTA 1.52/1.38/1.39/1.38/1.42; 148 1.26/1.47/1.53/1.52/1.38; 768 1.25/1.44/1.63/1.53/2.17; 1536 1.86/1.70/1.90/2.08/3.04; 12288 7.30/7.45/7.44/8.70/16.79. The floor is about 1.4 us at any block size, and the span grows with total thread count [probe_b200]\"\n  - \"probe E3(2), empty 768x256, 16 interleaved repeats: 1 param vs 7 params, <<<>>> vs cuLaunchKernelEx, dyn smem 1 KB, memory-sync-domain remote, launch priority, cluster 2, carveout 0/100 are all within +-0.03 us of 1.377 us. Only a pointer-to-device-struct param is slower (1.95 vs 1.65 us; it costs a dependent load, and building the struct each call needs a second GPU activity) [probe_b200]\"\n  - \"probe E3(3), r6 S path at 128 tokens, in-kernel globaltimer span vs CUPTI span, medians of 105 samples: evict_last stores CUPTI 4.51 / in-kernel 3.42 (outside 1.09 us); plain stores 4.35 / 3.30 (1.06); NO stores (read-only) 3.80 / 2.75 (1.05); empty body 2.02 / 0.38 (1.63). The part outside the CTAs is 1.05 us with or without stores, so it is not store drain; it is launch front-end plus teardown, a hardware cost [probe_b200]\"\n  - \"tooling: CUPTI and globaltimer clocks are offset by about 380 ms with per-iteration jitter of several us, so the before-first-CTA / after-last-CTA split cannot be resolved; only their sum is. Not attempted further [probe_b200]\"\n  - \"trap: cuFuncSetAttribute is sticky across launches. A first sweep that did not reset it appeared to show carveout 0 at -0.74 us; with the carveout set explicitly before every launch, default/0/8/32/64 are all equal (4.13 us at 128 tokens, 14.42 at 1024) and only carveout 100 is bad (4.86 and 21.8 us). Always set it explicitly in interleaved tests [probe_b200]\"\n  - \"probe, r6-style kernel, harness timing, 8-10 interleaved repeats, cluster 2 vs plain: 128 tok 4.095->3.968 (-3.1%), 131 4.281->4.112 (-4.0%), 256 5.520->5.359 (-2.9%), 586 +0.6%, 1024 +1.6%, 2048 -1.4%, 4096 -0.8%, 8192 -1.1%. __cluster_dims__ and the cudaLaunchAttributeClusterDimension launch attribute give the same result [probe_b200]\"\n  - \"probe: cluster 4/8/16 are worse than 2 (256 tok -1.3/-1.6/-0.1% vs -3.1%; 1024 tok +4/+5/+12%); the cluster scheduling policy (spread / load-balancing) changes nothing [probe_b200]\"\n  - \"run_tests, candidate on r6 only (r11-e3-cluster2-s, cluster at <=300 and >=2048): 16/16 pass after a retry of two 'No timing results for cupti' flakes (workloads 5 and 11, retried with identical files); S -2.2%, M +0.8% (only because it lacks r10's R=3 path), L -1.0% vs r10-rtok-m-disp [run_tests]\"\n  - \"run_tests, final candidate: 16/16 pass; vs r10-rtok-m-disp on the same GPU S -2.2%, M -0.5%, L -1.3%; 128 tok -3.1%, 131 -3.9%, 256 -2.9% (the 1x256 workload) and -1.5% (the 2x128 workload); the 2x293 workload (586 tok, plain launch) +0.3%; predicted portal 0.6129 +- 0.0061 (current best 0.6111) [run_tests]\"\n  - \"H14 verdict: partly supported. One launch attribute (cluster dims 2) moves S by 3-4% on the bench, which misses the 0.2 us / 5% success bar (observed 0.12-0.16 us). The empty-kernel span is untouched by every attribute, and about 1.05 us outside the CTAs is fixed hardware. Open: why a cluster of 2 helps. A per-SM CTA histogram (%smid) for plain vs cluster-2 launches was not run because the probe budget ran out\"\n  - \"dead end: carveout, param count, launch API, dynamic smem, memory-sync domain, priority and cluster scheduling policy each move the real kernel by 0 +- 0.03 us (carveout 100 aside, which is harmful)\"\npaths:\n  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}\n  - {max_tokens: 2047, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"cluster placement differs from B200; compiles to the 128-bit fallback\"\n  A100:\n    runs: false\n    representative: false\n    note: \"no clusters on sm_80: cudaLaunchKernelEx with a cluster attribute fails there; B200 and H200 only\"\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"The S gain is 0.12-0.16 us (3-4%), about the size of bench noise on the smallest sizes; the portal reports times to 0.1 us. The emulator gives P(beats best) = 65%.\"\n  - \"The cause of the cluster gain is unknown, so it may not transfer to the 1500 MHz portal; an effect of the same sign is expected, since the cluster launch cost is fixed-latency.\"\n  - \"The 2048-8192 token gain (about 1%) is at the noise floor; if it disappears on the portal, restrict cluster launch to tok <= 300.\"\n  - \"cudaLaunchKernelEx with a cluster attribute fails if the grid is not a multiple of 2; the R=1 grid is 6*tokens, always even.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r11-e3-cluster2-rtok-disp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r10-rtok-m-disp",
+   "c1-control-r6"
+  ],
+  "round": "r11",
+  "solution": "loop/rounds/r11/candidates/r11-e3-cluster2-rtok-disp.json",
+  "status": "proposed",
+  "task": {
+   "band": "S",
+   "instructions": "Experiment E3 (tests H14): Which launch attributes move the clock-bound ~1 us outside the CTAs?. Measurement only. Under harness (CUPTI) timing on the rented B200, 5 interleaved repeats each: (1) empty kernel: grid 1, 148, 768, 1536, 12288 CTAs x block 64, 128, 256, 512, 1024 threads. (2) empty kernel at 768x256 with: 7 scalar/pointer params vs a single pointer to a device-side struct (struct must be rebuilt each call without a torch kernel; if that needs a memcpy, measure it but note it would be a second GPU activity) vs 1 param; cudaFuncAttributePreferredSharedMemoryCarveout 0 and 100; dynamic smem 0 vs 1 KB; launch via <<<>>> vs cudaLaunchKernelEx; cluster dims 1 vs 2. (3) c1-control-r6 at 128 tokens: in-kernel globaltimer span (first CTA start, last CTA end) relative to the CUPTI start and end, to split the ~1 us into before-first-CTA and after-last-CTA parts; repeat with the store policy plain to see if the after-last-CTA part is store drain. (4) Apply any attribute that cut the empty span by >=0.1 us to c1-control-r6, run_tests twice interleaved. Record a table of all spans. Success: An attribute change cuts the 12.6 MB CUPTI time of c1-control-r6 by >=0.2 us (about 5%) in 5 interleaved repeats, with no change at M/L. Refuted if: All attribute variants are within +-0.1 us of the baseline empty span and the after-last-CTA part is store drain or fixed; then mark H14 refuted and treat the remaining S fixed cost as hardware. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "model": "sonnet",
+   "niche": "exp:E3:H14",
+   "operation": "new_design",
+   "parents": [
+    "c1-control-r6"
+   ]
+  },
+  "timings": {}
+ },
+ "r11-fi4lane-m-disp": {
+  "card": "id: r11-fi4lane-m-disp\nparents:\n  - c1-control-r6\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows32\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  H13: FlashInfer's sm_100 QK-norm layout gives each thread 4 x 32 B of one row (4 lanes per row), so each\n  warp instruction covers 8 rows. It was expected to beat our half-warp-per-row layout on B200. Interleaved\n  harness-timed probes refute this for fp32 direct loads. Compared with the same hints (evict_first x at <= 1024\n  tokens, evict_last stores), 4-lane and 8-lane layouts are within +-3% of c1 at 128-8192 tokens (the noise level)\n  and 1-4% slower at 586. Every variant already runs at plain-copy speed, and copies with the 4/8-lane layout are\n  no faster than 16-lane copies. FlashInfer's bf16 gain comes from fixing too few bytes per thread (16 B in bf16),\n  a problem our 32 B-per-thread fp32 layout does not have. The candidate keeps the 4-lane path only at 601-1536\n  tokens, where it ties r10-rtok-m-disp's R=3 path.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: -0.5\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 75\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 6\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  S_MAX_TOKENS: 600\n  M4_MAX_TOKENS: 1536\n  LANES_M: 4\n  THREADS_M: 128\n  ROWS_M: 32\n  other_paths: \"LANES 16, 256 threads, 16 rows (c1); 31 regs\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<16,256,EF=true>\n    meta:\n      ROWS: 16\n      THREADS: 256\n  - max_tokens: 1536\n    kernel: qk_rms_kernel<4,128,EF=true>\n    meta:\n      ROWS: 32\n      THREADS: 128\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<16,256,EF=false>\n    meta:\n      ROWS: 16\n      THREADS: 256\ntests:\n  - H13\nfindings:\n  - \"H13 refuted: FlashInfer's 4-lane layout gives no gain for fp32 direct loads on B200; within +-3% of c1 with the same hints at every size and 1-4% slower at 586 tokens. Close H13 [probe_b200]\"\n  - \"probe (default x loads, 5 reps, vs c1): 4-lane/128 thr 128 tok +2.3%, 256 -1.2%, 1024 -1.5%, 2048 -0.3%, 8192 +0.3%; 8-lane/128 thr -0.0/-2.3/-1.2/+0.0/+0.2%; 4-lane/192 thr (48-row token tile) +0.7/-1.7/-1.0/-0.1/+0.3% [probe_b200]\"\n  - \"probe (evict_first x matched, 7 reps, vs r6ef at S / r6 at M): 2x128 tok 4-lane +2.4%, 8-lane +1.2%; 1x256 tok 4-lane -1.1%, 8-lane -2.6% (the same size disagrees by about 4%, so this is noise); 586 tok 4-lane +4.0%, 8-lane/128 +1.4%, 8-lane/256 +2.5%; 1024 tok 4-lane -4.3% vs r6, -1.8% vs r6ef; 2048 tok all within +-1.4% [probe_b200]\"\n  - \"copy lag: plain copies with evict_last stores run 2-5% under the kernels at S and within 0-2% at M/L. 4/8-lane copies are no faster than the 16-lane copy (586 tok +7..15% slower, 1024 +1..3%, 8192 +1.2..1.7%). The lane layout does not change DRAM efficiency [probe_b200]\"\n  - \"evict_first x loads at 586 tokens: -8% (r6 9.44 -> r6ef 8.65 us) again, and evict_first helps 1024 by -2.5% in this run; it also helps the 4/8-lane layouts at 586 (8-lane 9.20 -> 8.77) [probe_b200]\"\n  - \"regs: 4-lane path 72-75 regs (32 x + 32 w floats), no spills, 6 CTAs/SM at 128 threads; 8-lane 44 regs; copies cp4 40 / cp8 26 / cp16 16 [probe_b200, compile_b200]\"\n  - \"run_tests vs r10-rtok-m-disp: 16/16 pass; S +0.7%, M -1.4%, L -0.0%; 1024-token rows -1.8/-2.0/+0.3%, so the 4-lane path ties R=3. The 2048-token rows run identical code and still moved -3.6%/0.0%, so band differences of about 1% are noise. Predicted portal 0.6106 +- 0.006 [run_tests]\"\n  - \"tooling: b200probe.cuda_kernel/resources take opts as a tuple (a bare string is split into characters); NVRTC has no <cstdint>; harness_time can raise 'No timing results' at random, so wrap it in a retry [probe_b200]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: 1536\n    lang: cuda\n    width: 256\n    threads: 128\n    rows: 32\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    w: nc\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; 50 MB L2 changes the evict_last/dirty-flush interplay\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"On the portal the 75-register 4-lane path might lose a little more than on the bench at 1024 tokens (more SM instructions per row at 1500 MHz). It ties r10-rtok-m-disp's 48-register R=3 path, which is also unproven on the portal.\"\n  - \"Expected portal result is a tie with the current best; not worth a slot unless a slot is spare.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r11-fi4lane-m-disp",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows32"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "c1-control-r6"
+  ],
+  "round": "r11",
+  "solution": "loop/rounds/r11/candidates/r11-fi4lane-m-disp.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E2 (tests H13): FlashInfer sm_100 layout: 4 lanes per row, 128 B per thread. CUDA C++ port of the FlashInfer QKRMSNorm sm_100 tiling with our memory path: 4 lanes per row, 32 rows per 128-thread CTA (16 KB per CTA), thread t of a row owns columns [8t,8t+8)+32k for k=0..3 so each ld.global.v8.f32 warp instruction covers 128 B of each of 8 rows; 4 loads per thread issued up front, then the sum of squares over 32 floats, 2 shuffles (xor 1, 2), rsqrtf, weights via 4 x ld.global.nc.v8.f32, stores st.global.L2::cache_hint v8 with createpolicy evict_last (as r6). Reuse the x registers for y; target <=80 registers (check spills with the sm_100a compile); if above, try 8 lanes per row (2 loads per thread, 64 B contiguous per lane) as the second variant. Build both as one dispatcher so run_tests covers all 16 workloads. Probe interleaved against c1-control-r6 at 128, 256, 586, 1024, 2048 and 8192 tokens, 5 repeats each, under harness timing. Also record copy lag per variant (plain copy with the same layout and EL stores). If a variant wins at some sizes only, make a size dispatcher with c1 elsewhere and run run_tests twice. Success: >=3% faster than c1-control-r6 at any band in repeated interleaved probes, and predicted portal score >=0.615. Refuted if: Both lane layouts are within +-1% of c1-control-r6 at every size, or slower; then record that the FlashInfer gain does not transfer to fp32 direct loads and close H13. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:E2:H13",
+   "operation": "structural_mutation",
+   "parents": [
+    "c1-control-r6"
+   ]
+  },
+  "timings": {}
  },
  "r2-ldg256-os-r16": {
   "b200": {

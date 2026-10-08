@@ -1,0 +1,126 @@
+id: r11-consol-disp
+parents:
+  - r10-rtok-m-disp
+  - r10-ldef-real-stel-disp
+operation: crossover
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: token
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E4/H9: put r10's kept effects in one kernel (evict_first x loads, R=3 same-head tokens per thread at
+  1024 tokens, r6 elsewhere, evict_last stores everywhere) and check that each path stays within 2% of a
+  plain copy. Result: the consolidation collapses into r10-rtok-m-disp. At 1024 tokens R=3 already
+  captures the whole gain (-3.2% vs plain R=1, 5-rep medians), and evict_first on the R=3 loads adds nothing
+  (14.10 vs 14.11 us). The R=3 path is NOT lagging the copy: it matches the R=1 plain copy of the same bytes
+  (14.10 vs 14.08 us). The only path with real copy lag is S, +3 to +5%, from the dependent
+  shuffle/rsqrt chain after the loads. Expected portal result is the same as r10-rtok-m-disp (0.611).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -0.2
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 48
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 5
+  bytes_in_flight_per_sm: 122880
+  launches_per_call: 1
+knobs:
+  R_M: 3
+  MINB_M: 5
+  S_MAX_TOKENS: 600
+  M_RANGE: "600 < B*S <= 1100"
+  x_loads: "S: cache_hint 0x12F0.. + nc weights; 1024 tokens: .L2::evict_first qualifier; above: default"
+  store_policy: "createpolicy.fractional.L2::evict_last 1.0, all sizes"
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_rtok<1,LD_HINT,8>
+    meta:
+      R: 1
+      regs: 30
+  - max_tokens: 1100
+    kernel: qk_rms_rtok<3,LD_QUAL,5>
+    meta:
+      R: 3
+      regs: 48
+  - max_tokens: null
+    kernel: qk_rms_rtok<1,LD_PLAIN,8>
+    meta:
+      R: 1
+      regs: 30
+tests:
+  - H9
+  - H8
+findings:
+  - "compile sm_100a: S path 30 regs, R=3 path 48 regs, above 30 regs; 0 B local, 0 B shared in all three [compile_b200]"
+  - "run_tests (16/16 pass on the second try; the first run lost one workload to the known CUPTI 'No timing results' flake): vs r10-rtok-m-disp S -0.3%, M -0.2%, L +0.3%; predicted portal 0.6100 +- 0.0060, P(beats the portal best 0.6111) = 41%. Same code paths as rtok except EF qualifier on the R=3 loads [run_tests]"
+  - "probe, 1024 tokens, 5 interleaved reps, median us: plain R=1 14.56, R=1 + EF qualifier 14.28 (-1.9%), R=3 14.10 (-3.2%), R=3 + EF 14.11, plain copy R=1 14.08, plain copy R=3 shape 14.56. R=3 adds nothing on top of R=1+EF beyond -1.3%, and EF adds nothing on top of R=3 [probe_b200]"
+  - "copy lag (same CTA shape, width, EL stores): R=1 hint path vs copy: 128 tok 4.14 vs 3.95 (+4.8%), 256 tok 5.34 vs 5.18 (+3.1%); 1024 tok R=1 plain +3.4%, R=3 +0.1%; 2048 tok 28.18 vs 28.27 (-0.3%); 4096 57.63 vs 57.88; 8192 115.76 vs 115.81 (both 0%). So L/M paths are at copy speed; S lags 3-5% (0.15-0.2 us, the shuffle/rsqrt chain) [probe_b200]"
+  - "the R=3 copy shape (3 rows per thread, 5 CTAs/SM) is itself slower than the R=1 copy at 1024 tokens (14.56 vs 14.08), yet the full R=3 kernel is as fast as the R=1 copy. R=3's gain is therefore not 'more bytes in flight'; the weight-load saving is more likely [probe_b200]"
+  - "EF qualifier vs r6's cache_hint-constant form at S: 128 tok 4.13 (qualifier + default weights) / 4.16 (qualifier + nc) / 4.16 (const hint + nc); 256 tok 5.51 / 5.54 / 5.51; plain no-hint 4.13 and 5.60. Indistinguishable; at 586 tokens EF is -8% (8.58 vs 9.34) [probe_b200]"
+  - "dead end: consolidation of r10-ldef-real-stel-disp and r10-rtok-m-disp. ldef's evict_first at 128-586 tokens is what r6 already does; at 1024 it is subsumed by R=3. The portal pair (this + ldef) would give no new information: ldef is already scored (0.6086, S +1.9% vs rtok on the portal, likely 0.1 us rounding) and this candidate is ~rtok (0.6111) [probe_b200, run_tests]"
+  - "H9 note: the S-path copy lag (+3-5%) is the only SM-side excess left; the 5% lag threshold was not exceeded by R=3, so the R=3 path is kept. The only untested way to cut S lag is a shorter dependent chain (e.g. 4 lanes per row, H13)"
+  - "limitation: the three interleaved run_tests against c1-control-r6 were not run; run_tests only compares against the current best (rtok). The c1 comparison was done with probe_b200 using code-identical kernels, 5 interleaved reps, which reproduces the earlier two run_tests (-2.9..-4.0% at 1024) [probe_b200]"
+paths:
+  - max_tokens: 600
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    x: ef
+    w: nc
+    st: el
+  - max_tokens: 1100
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 48
+    grid: oneshot
+    x: ef
+    w: none
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    x: none
+    w: none
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback, 50 MB L2"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The 1024-token gain (-2 to -3% on the bench) is close to bench noise (+-2.4%). Portal evidence for the R=3 path is one submission (rtok, -1.8% vs c1 at 1024)."
+  - "Portal score will be within noise of r10-rtok-m-disp (0.611); a submission cannot separate them."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

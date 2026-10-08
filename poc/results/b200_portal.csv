@@ -14,3 +14,7 @@ r2-ldg256-os-r16,0.025362,0.575609,16,1.252,62016,038_flux_multi_head_rmsnorm_qk
 d1-os-r8w4-nohint,0.024947,0.582207,16,1.273,62030,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62030_d1-os-r8w4-nohint.html
 r5-ldg256-os-r16-stel,0.023357,0.608914,16,1.359,62031,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62031_r5-ldg256-os-r16-stel.html
 r6-s-ldef-nc-disp,0.023308,0.609882,16,1.362,62049,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62049_r6-s-ldef-nc-disp.html
+r7-ldg256-l2pf-mdisp,0.023322,0.608428,16,1.361,62062,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62062_r7-ldg256-l2pf-mdisp.html
+r9-xo-spf-l2mode-disp,0.023864,0.599501,16,1.330,62633,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62633_r9-xo-spf-l2mode-disp.html
+r8-ldg256-l2mode-disp,0.023916,0.598615,16,1.327,62634,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62634_r8-ldg256-l2mode-disp.html
+c1-control-r6,0.023254,0.610480,16,1.365,62643,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62643_c1-control-r6.html

@@ -154,6 +154,8 @@ SOLX_PROBLEM=$P .venv/bin/python loop/emulator.py                            # r
 
 - Local: `python3 -m venv --system-site-packages .venv && .venv/bin/pip install modal mcp`. Modal login:
   `.venv/bin/python -m modal setup`. The OpenRouter key (optional) is read from `.env` (git-ignored) and never printed.
+- After cloning SOL-ExecBench, run `python3 loop/patch_dataset.py`: FlashInfer-Bench definitions leave the metadata
+  field `hf_id` empty, which the harness's data model rejects; the script fills it in our local copy only.
 - The B200 image follows SOL-ExecBench's Dockerfile (CUDA 13.1.1, CUTLASS 4.4.1, the uv-locked environment, fbtriton
   3.7.1). Our copy of the harness skips timing windows that hold none of the user's kernels (CPU/GPU timestamp skew
   on Modal; `loop/patch_harness_timing.py`); the portal never needs this.

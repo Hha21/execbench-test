@@ -1,0 +1,92 @@
+id: r12-e1-h18-efcurve-disp
+parents:
+  - c2-cluster2-s-only
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests:
+  - H18
+hypothesis: >-
+  H18 (refuted at 1024-2048 tokens): footprint-capped store policies (evict_last only for the last T MiB of output,
+  EF or EN stores earlier, EF loads) would bring the 586-token evict_first gain to 1024-2048 tokens. Measured: the EF
+  gain has a sharp edge between 800 and 1024 tokens (39-50 MB of evict_last output), and every hybrid ties or loses
+  to all-evict_last. The candidate is c2 with the EF-load R=1 path widened to <= 900 tokens (the measured window).
+  No workload falls in 601-900 tokens, so it behaves exactly like c2.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  EF_MAX_TOKENS: 900
+  R3_MAX_TOKENS: 1100
+  CLUSTER2_MAX_TOKENS: 300
+dispatch:
+  - max_tokens: 300
+    kernel: qk_rms_rtok
+    meta: {R: 1, LOAD_S: true, MINB: 8, cluster: 2}
+  - max_tokens: 900
+    kernel: qk_rms_rtok
+    meta: {R: 1, LOAD_S: true, MINB: 8}
+  - max_tokens: 1100
+    kernel: qk_rms_rtok
+    meta: {R: 3, LOAD_S: false, MINB: 5}
+  - max_tokens: null
+    kernel: qk_rms_rtok
+    meta: {R: 1, LOAD_S: false, MINB: 8}
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 900, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+findings:
+  - "probe E1 curve (R=1, 1xN, harness CUPTI, 5 interleaved reps, medians us; dirty = harness zero flush, clean = zero flush then a read of the same 2xL2 buffer). Columns: tok: (a) default x + EL stores dirty/clean/d-c | (b) EF x + EL dirty/clean/d-c | EF gain dirty/clean. 300: 6.11/5.33/0.78 | 5.95/5.31/0.64 | -2.6/-0.4%. 400: 7.15/6.35/0.80 | 6.87/6.34/0.54 | -3.9/-0.3. 500: 8.42/7.31/1.11 | 7.87/7.30/0.58 | -6.5/-0.2. 586: 9.41/8.19/1.21 | 8.74/8.19/0.54 | -7.1/-0.0. 700: 10.88/9.38/1.51 | 10.08/9.34/0.74 | -7.4/-0.3. 800: 12.11/10.35/1.76 | 11.29/10.34/0.96 | -6.7/-0.1. 900: 13.09/11.44/1.65 | 12.58/11.39/1.19 | -3.9/-0.4. 1024: 14.69/12.67/2.01 | 14.56/12.48/2.08 | -0.8/-1.5. 1200: 16.85/14.60/2.25 | 16.72/14.37/2.35 | -0.8/-1.6. 1536: 21.27/18.48/2.79 | 21.57/17.70/3.87 | +1.4/-4.2. 2048: 28.81/24.18/4.63 | 29.13/23.37/5.76 | +1.1/-3.3 [probe_b200]"
+  - "H18 threshold: with EF loads the dirty cost stays flat at ~0.55 us up to 586-700 tokens (<= ~34 MB of EL output) and then grows. The EF gain falls from -6.7% at 800 tokens (39 MB) to -0.8% at 1024 (50 MB). The edge is sharp at about 40-45 MB of evict_last output, which explains the 586-token -8%. No production workload falls in 600-1000 tokens, so the effect cannot be extended to a scored size [probe_b200]"
+  - "probe (c)/(d) and cross terms, dirty/clean/d-c us. 586: L0+EL 9.49/8.27/1.23; EF+EL 8.67/8.24/0.42; EF+EFst 10.95/8.29/2.66; L0+plain 10.95/8.23/2.72; L0+EFst 11.17/8.26/2.92; EF+plain 10.91/8.21/2.70; EF+ENst 10.93/8.23/2.70. 1024: 14.60/12.71/1.89; 14.27/12.58/1.69; 17.66/12.67/4.98; 17.67/12.68/4.99; 17.93/12.74/5.19; 17.57/12.58/4.99; 17.66/12.59/5.07. 2048: 28.51/24.06/4.45; 28.93/23.27/5.66; 32.63/26.07/6.56; 32.41/24.74/7.67; 32.64/25.38/7.26; 32.38/25.95/6.43; 32.32/25.97/6.36 [probe_b200]"
+  - "key mechanism finding: after a clean flush all store policies tie at 586-1024 tokens (8.21-8.29 and 12.58-12.74 us). The evict_last-store gain (H1) is therefore entirely a dirty-flush effect. Non-EL stores (plain/EF/EN) pay 2.7 us of dirty cost at 586 and 5.0 at 1024; EL stores cut it to 1.2/1.9. EF loads cut it further only while the EL footprint stays under ~40 MB. Load policy alone (any store policy except EL) changes nothing dirty [probe_b200]"
+  - "dead end (H18 step 2), 7 interleaved reps vs c2 paths (1024: R=3 14.14 us; 2048: R=1 28.69 us), EF loads, R=1, tail = last-dispatched K CTAs. 1024: all-EL +0.5%; tailEL20 EFst +11.9 / ENst +11.0; tailEL30 +3.7/+2.9; tailEL40 -0.6/-0.7; headEL (EL first, EF after) 20/30/40: +3.9/+0.7/+0.0%. 2048: all-EL +0.7; tailEL20 +6.0/+5.3; tailEL30 +3.0/+2.1; tailEL40 +1.3/+0.5; headEL20/30/40 +3.5/+1.7/+1.6%. Every hybrid ties or loses, and EL on the FIRST output beats EL on the last. Evict_last avoids in-kernel dirty write-backs; it is not output parked past the window [probe_b200]"
+  - "dead end: fractional evict_last (0.75 or 0.5 with evict_first secondary; 0.75 with unchanged secondary), default or EF loads, vs c2 paths, 5 reps. 900 tok: best L1 EL.75/unch -0.8% (all-EL+EF -1.5%); 1024: +0.8..+9.8% (all-EL+EF -0.5%); 1200: -0.4..+5.8%; 2048: +0.5..+3.7%. Full evict_last (1.0) is the best store policy everywhere. Extends H15 to 900-1200 tokens [probe_b200]"
+  - "EF loads after a CLEAN flush gain 3-4% at 1536-2048 tokens but lose 1% after the dirty flush; this cannot be used under the harness [probe_b200]"
+  - "run_tests: 16/16 pass; vs c2-cluster2-s-only S -0.0%, M -0.1%, L +0.3% (same code on every workload; 4,256 -2.5% and 8,256 +2.0% are noise); predicted portal 0.6129 +- 0.006 [run_tests]"
+  - "tooling: b200probe.harness_time has no clean-flush option; monkey-patching sol_execbench.core.bench.timing._clear_cache inside a probe (zero_ then int64 max over the same buffer) gives one. /tmp persists between probes, so a shared helper module (/tmp/e1lib.py) saves re-sending code. One harness_time call (rep 50) takes ~0.07 s [probe_b200]"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "sm_90 fallback uses 128-bit loads; the L2 dirty-flush effects are B200-specific"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "None new: same code as c2 on all 16 workloads. The EF window to 900 tokens only matters for unscored shapes."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

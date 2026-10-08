@@ -1,0 +1,65 @@
+id: r12-c3-c2-no-prefetch
+parents:
+  - c2-cluster2-s-only
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests: [H19]
+hypothesis: >-
+  H19 (one-wave-ahead L2 bulk prefetch, plain or evict_first policy, additive to cluster-2 at 256 tokens and to R=3 at
+  1024 tokens) is refuted. Prefetch lost on top of cluster-2 at 256 tokens, cost +9.7% at 586 tokens, was +12% on R=3 at
+  1024 tokens, and the evict_first policy did not change any of it. Nothing gained 1.5% or more, so c3 is c2 unchanged
+  and no new portal submission is warranted.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {THREADS: 256, R_S: 1, R_1024: 3, cluster_max_tokens: 300, prefetch: none}
+dispatch:
+  - {max_tokens: 600, kernel: qk_rms_rtok<1,true,8>, meta: {cluster2_if_tokens_le: 300}}
+  - {max_tokens: 1100, kernel: qk_rms_rtok<3,false,5>, meta: {}}
+  - {max_tokens: null, kernel: qk_rms_rtok<1,false,8>, meta: {}}
+runs_on:
+  H200: {runs: true, representative: false, note: "256-bit path falls back to two 128-bit accesses"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Identical to c2 apart from a comment; the portal would re-measure c2 and give only a noise sample."
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+findings:
+  - "probe, 256 tokens, 15 interleaved reps (us): cluster-2 c2 5.250; c2+plain prefetch 5.392 (+2.7%); c2+EF prefetch 5.377 (+2.4%); plain launch 5.407; plain+prefetch 5.476 (+1.3% vs plain); plain+EF prefetch 5.475. An earlier 7-rep run gave the same signs. The 2x128 and 1x256 workloads are the same kernel call (it sees only n_tok), so one probe covers both. [probe_b200]"
+  - "H19 additivity at 256 tokens: prefetch and cluster-2 are not additive. Cluster-2 alone is -2.9..-3.0% vs a plain launch. Prefetch is +1.3% on a plain launch and +2.4..2.7% on top of cluster-2, so it cancels more than the whole cluster gain. Only 352 of 1536 CTAs have a CTA one wave ahead; every one of those prefetches lands during the first-wave ramp and competes with demand loads. [probe_b200]"
+  - "probe, 128 and 131 tokens (one wave, prefetch distance 1184 > grid 768): c2 4.017 / 4.033; +plain prefetch 4.032 / 4.034; +EF prefetch 4.002 / 4.032 (all within +-0.4%). A no-op, as expected, and free. [probe_b200]"
+  - "probe, 586 tokens, 15 reps: plain launch 8.549; +plain prefetch 9.378 (+9.7%); +EF prefetch 9.376 (+9.7%). Prefetch costs about 10% here and the EF policy did not help. This matches H18 (extra allocations evict dirty flush lines at this size). [probe_b200]"
+  - "probe, 1024 tokens (15-21 reps): R=3 vs R=3 + prefetch +12.3%, vs R=3 + EF prefetch +12.6%; R=1 EF-load + prefetch about 1% worse than R=1 EF-load without it. R=3 prefetch (three 8 KB prefetches from thread 0, distance 740 CTAs) is clearly harmful. Across processes the R=3 vs R=1+EF order flipped (R=1+EF +1.8%, then -2.0% vs R=3), so a single comparison at 1024 tokens is good to only about 2%. [probe_b200]"
+  - "probe, 2048 tokens, two 15-rep runs: c2 28.47 / 28.45; c2+EF prefetch +3.1% / +3.3%; EF-load kernel without prefetch +1.5% / +1.6%; EF-load kernel + plain prefetch -1.1% / -1.0%; EF-load + EF prefetch -1.0% / -0.9%. The only positive result in the study: a 1% gain at 2048 tokens that needs EF loads and a prefetch together. It is below the 1.5% bar and not confirmable on the bench, so it was left out. [probe_b200]"
+  - "dead end: an evict_first policy on the prefetch (cp.async.bulk.prefetch.L2.global.L2::cache_hint with createpolicy evict_first) behaves like the plain prefetch at 256, 586, 1024 and 2048 tokens (differences <= 0.3%). The prefetch hint is not what makes it lose. [probe_b200]"
+  - "compile sm_100a: S path 30 regs, R=3 path 48 regs, M/L path 30 regs, 0 B local, 0 B shared (unchanged from c2) [compile_b200]"
+  - "run_tests, c3 (code identical to c2) vs c2 on the same GPU: 16/16 pass; S +0.2%, M +0.1%, L +0.0%; per workload -0.4%..+0.7%. Useful noise floor: two identical builds differ by up to +-0.7% per workload. Predicted portal 0.6122 +- 0.0060 against c2's 0.6125 [run_tests]"
+  - "verdict: H19 refuted. Prefetch adds nothing on top of cluster-2 at 256 tokens, nothing on top of R=3 at 1024, and the EF policy does not help at 586-2048. Do not revisit L2 prefetch at 128-2048 tokens. r7's portal gain (-2..-3% at 256 and 1024 tokens) was most likely its R-less EF-loads plus nc-weights in a different run, not the prefetch. [probe_b200, run_tests]"

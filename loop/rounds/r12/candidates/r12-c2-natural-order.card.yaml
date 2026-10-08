@@ -1,0 +1,64 @@
+id: r12-c2-natural-order
+parents:
+  - c2-cluster2-s-only
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  H20 test: the blockIdx-to-tile order (Q then K, per-CTA or per-wave Q/K interleave, reversed, stride permutation,
+  pair-spread) changes DRAM efficiency by 2% or more at 2048-8192 tokens. Refuted: natural is the best or tied.
+  The candidate is c2's code unchanged, a control that ties c2 and adds no new portal information.
+tests: [H20]
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {THREADS: 256, R_S: 1, R_1024: 3, R_ML: 1, cluster_max_tokens: 300}
+dispatch:
+  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, x: ef, w: nc, cluster: 2}}
+  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, x: ef, w: nc}}
+  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3}}
+  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1}}
+findings:
+  - "Part A skipped on the operator's note: clock locking is refused on the rented B200 (nvidia-smi -lgc/-pl/-ac fail with no permission); nvidia-smi shows the SM at 1965 MHz under load [operator, probe_b200]"
+  - "probe, c2 R=1 path, 5 interleaved reps, harness timing, medians vs natural at 2048/4096/8192 tokens (28.44/57.81/115.86 us): Q/K interleaved per CTA +3.0/+1.2/0.0%; interleaved per 1184-CTA wave +1.9/+0.7/+0.1%; reversed -0.2/-0.5/-0.2%; stride 1187 (CTAs 1187 tiles apart) +8.0/+6.4/+6.1%; TPC pair reads tiles N/4 apart +2.3/+0.5/+0.1% [probe_b200]"
+  - "probe, plain copy with the same six orders: within 1% of the kernel's per-order deltas (copy 2048 tok: +2.5/+1.4/-0.5/+7.1/+2.1%; 8192 tok: +0.2/+0.2/-0.1/+6.1/-0.2%), so the order effect is in the memory system, not the SM work [probe_b200]"
+  - "probe, 12 interleaved reps, reversed vs natural: 1024 tok -0.39% (reversed faster in 12/12), 2048 -0.48% (9/12), 4096 +0.07%, 6184 +0.23%, 8192 -0.08% (9/12). Noise level, below the 1% bar; not worth a dispatcher [probe_b200]"
+  - "H20 verdict: refuted. No order is 2% faster at two L sizes; every order that spreads concurrent CTAs far apart in address space (stride) loses 6-8%, matching the r10 one-wave finding that scattered or contiguous-per-CTA layouts cost more. Natural adjacent-tile order is optimal for the one-shot grid. Close H20 [probe_b200]"
+  - "pair-spread (order 6) and per-CTA Q/K interleave both lose 0-3% at 2048 tokens: putting the two CTAs of a TPC pair on far-apart lines does not help, and adjacent tiles for the TPC pair are at least as good. This also bears on H17: the cluster-of-2 gain at <= 256 tokens is not reproduced by any simple permutation of tile order [probe_b200]"
+  - "run_tests of the final code: 16/16 pass on the second try (the first run lost workload 12, 1x131, to the known CUPTI 'No timing results' flake); vs c2 on the same GPU S +0.3%, M +0.1%, L +0.1%; predicted portal 0.6113 +- 0.006, P(beats 0.6125) = 40%, i.e. a tie with c2 [run_tests]"
+  - "tooling: the first compile_b200 call was rejected because no files were passed; pass complete files every time [compile_b200]"
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "256-bit loads fall back to 2x128-bit on sm_90; correctness only"}
+  A100: {runs: true, representative: false}
+  L40S: {runs: true, representative: false}
+risks:
+  - "Identical code to c2: any portal difference is noise (about 0.5% on the portal)"
+  - "The 1x131 workload hit a CUPTI 'No timing results' flake once in the bench; c2 itself passed on the portal"
+measure_first: []
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

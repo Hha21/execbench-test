@@ -1,0 +1,85 @@
+id: r12-e2-h17-cl2-frontend
+parents:
+  - c2-cluster2-s-only
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests:
+  - H17
+hypothesis: >-
+  E2 tested whether c2's cluster-of-2 gain at <= 256 tokens comes from CTA placement or dispatch order. It does not.
+  Per-SM CTA counts, TPC pairing and die split are the same as a plain launch, and the in-kernel span is the same.
+  The ~0.15 us saving is a fixed launch front-end/teardown cost outside the CTAs; an empty 768-CTA kernel shows it
+  too. No permutation, staggered issue or cluster CTA shape enlarges it, so the code is c2's, unchanged.
+  H17 is refuted; park it and stop S-band launch work.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  THREADS: 256
+  R_S: 1
+  R_1024: 3
+  cluster_max_tokens: 300
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+findings:
+  - "probe E2 step1 (%smid log, 5 cold-L2 reps): 128 tok, both launches give 5 CTAs on 120 SMs and 6 on 28; both CTAs of every blockIdx pair (2b,2b+1) land on one TPC (100%); 372/768 CTAs on die A for both. Placement is identical [probe_b200]"
+  - "probe E2 step1: dispatch order differs only in SM order. Cluster-2 is a strict period-148 round robin in SM index order (142..147,0,1,2,3,...; SM142 gets bids 0,148,296,...). Plain round-robins over GPCs in TPC pairs (142..147,0,1,16,17,32,33,...) and its later rounds are irregular (SM142 gets 0,108,236,366,...) [probe_b200]"
+  - "probe E2 step1: cluster dispatch is slower. CTA start spread p50/p90/max 384/544/768 ns (cluster) vs 64/480/640 ns (plain) at 128 tok; first-load-return and end distributions are the same (firstld p50 1760 ns, end p50 2432 ns for both) [probe_b200]"
+  - "probe E2: in-kernel globaltimer span (first CTA start to last CTA end, 40 cold reps) 128 tok 3024 vs 3024 ns, 256 tok 4416 (plain) vs 4480 (cluster), while CUPTI is 4.19 vs 4.03 and 5.60 vs 5.39 us. The gain is entirely outside the CTAs [probe_b200]"
+  - "probe E2: the cluster saving appears in every traffic mode at 128 tok (768 CTAs): full -0.161 us, read-only -0.161, write-only -0.128, EMPTY kernel -0.153 (1.616 -> 1.463). Mechanism: a cheaper launch front-end/teardown for a one-wave cluster grid. This contradicts r11's 'empty kernel unchanged by cluster dims' (r11 used the launch attribute; here __cluster_dims__ was compiled in, 8 params) [probe_b200]"
+  - "probe E2: the empty kernel loses with cluster 2 once the grid exceeds one wave: 1536 CTAs +0.24 us, 6144 CTAs +1.43 us (4.11 -> 5.55). Slow cluster CTA dispatch is hidden behind memory work at 256 tok (full -0.17 us) and roughly breaks even at 1024 tok (full -0.03). This is a likely mechanism for H16's portal losses at M/L at the 1500 MHz clock [probe_b200]"
+  - "dead end (step 2i): a plain launch with an SM-major contiguous tile permutation is +4.9% at 128 tok and +5.6% at 131 vs cluster-2, the same as plain identity order (+4.1/+5.0%). Reversed blockIdx order: plain -0.2/-0.1/+0.6%, cluster -4.0/-3.7/-2.3% vs plain at 128/131/256. Order is not the mechanism [probe_b200]"
+  - "dead end: staggering load issue in a plain launch (bid-proportional spin of 0-300/600/1000 ns) costs +3/+4.5/+8% at 128 tok and +3/+5/+14% at 256; cluster + 300 ns stagger loses its gain. Smoothing the DRAM burst does not help [probe_b200]"
+  - "dead end (step 2ii): cluster pairs taking Q tile i and K tile i (half the grid apart) instead of adjacent tiles: -0.8% at 128 tok, +2.8% at 131 vs c2. Pairing a working CTA with an idle partner: +12% (128) / +24% (256) [probe_b200]"
+  - "dead end (step 2iii, 10 interleaved reps, vs c2 S path): cluster 2 of 128-thread CTAs +9.9/+10.5% (128/131 tok); 384 threads -0.6/+0.6/+0.3% (128/131/256, a tie); 512 threads with masks +1.2/+2.0%; 768 threads (one token per CTA) +1.6/+1.7/+13%; R=2 rows per thread (half the threads) cluster +3.2/+5.6/+7.5%, plain +5.6/+7.5/+10.6%. Step 2iv (DSMEM weight sharing) skipped: nothing pointed at L2 request count [probe_b200]"
+  - "H17 verdict: refuted. Placement and pairing are identical; the order differs, but reproducing or changing it moves nothing; the gain is a ~0.13-0.16 us fixed launch-path saving at one-wave grids. Park H17 and stop S-band launch work [inferred from probes]"
+  - "run_tests: 16/16 pass; vs c2 on the same GPU S +0.1%, M -0.4%, L -0.0% (identical code); predicted portal 0.6122 +- 0.006 [run_tests]"
+  - "tooling: NVRTC in b200probe has no <cstdint> (typedef uint64_t yourself); files written to /tmp do not persist between probes; harness_time with warmup=5, rep=40 takes about 0.1 s per call, so 8-10 interleaved reps of 8 variants at 3 sizes fit in one probe [probe_b200]"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "no 256-bit path; cluster launch behaviour differs"
+  A100:
+    runs: false
+    representative: false
+    note: "cluster launch needs sm_90+"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Identical to c2: no expected score change; it exists only to document E2"
+  - "The front-end saving was measured on the rented B200 at unlocked clocks; its portal size at 1500 MHz is as c2 measured (-4% at 128 tok)"
+measure_first: []
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

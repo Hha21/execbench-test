@@ -190,6 +190,11 @@ passed, with 0.15% run-to-run noise.
   hints, and it is no faster than the 128-bit, hinted `g2-os-r8w4`. Small sizes are the same for all three. The
   untested combination is 128-bit loads without hints, which would separate width from hints (`b200_sota.md` §3).
   [portal; INFERRED]
+- **Instrument precision (8 October).** The portal is repeatable: r6 resubmitted unchanged (`c1-control-r6`, #62643)
+  scored 0.6105 against 0.6099, every size within ±0.3% except the two smallest, which moved one 0.1 µs reporting
+  step (the portal reports times to 0.1 µs, about 2% at 4.8 µs). The rented B200 is noisier: the same kernel run twice
+  in one container differs by sd 1.1% (S), 0.9% (M), 0.6% (L), up to 4.7%. Portal differences above about 0.5% are
+  real; bench differences below about 2% need repeats (interleave candidate and reference in one probe).
 - **Reading B200 test numbers (8 October).** The test bench is a rented B200 whose SM clock runs at about
   1940 MHz under load; the portal locks it at 1500 MHz (DRAM 3996 MHz on both). So run_tests reports a *predicted
   portal score ± error* from a multi-fidelity emulator fitted on 17 kernels measured on both (loop/emulator.py).

@@ -1,4 +1,50 @@
 {
+ "c1-control-r6": {
+  "b200": {
+   "geomean_us": 23.254,
+   "score": 0.61048,
+   "submission": "62643",
+   "timings": {
+    "1,1024": 16.400000000000002,
+    "1,128": 4.8,
+    "1,131": 4.8,
+    "1,256": 6.5,
+    "1,8192": 115.7,
+    "16,256": 58.5,
+    "2,128": 6.4,
+    "2,293": 10.4,
+    "32,128": 58.4,
+    "4,1024": 58.5,
+    "4,1657": 93.89999999999999,
+    "4,256": 16.2,
+    "4,512": 29.7,
+    "8,128": 16.400000000000002,
+    "8,256": 29.8,
+    "8,773": 87.6
+   }
+  },
+  "card": "id: r6-s-ldef-nc-disp\nparents:\n  - r5-ldg256-os-r16-stel\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  My estimate of what the parent's ~3.2 us fixed cost on small inputs is made of:\n  (a) CUPTI launch-to-end span of a near-empty kernel, about 1-1.5 us;\n  (b) loaded DRAM latency plus TLB misses on first touch of fresh pool addresses, about 1 us;\n  (c) store drain and grid exit, about 0.3-0.5 us;\n  (d) possibly extra DRAM write-backs: every line we allocate in an L2 full of the flush's dirty zero lines\n  may evict one of them.\n  (a)-(c) are mostly outside a kernel's control. r4-cute-ldg256-sw2-disp tests warp and CTA dispatch.\n  This candidate tests (d) only. For B*S <= 600, x loads carry L2 evict_first and weights use ld.global.nc,\n  the load policy CAKE kept after paired cold-L2 B200 tests. Allocations for input lines then recycle our\n  own clean lines instead of evicting dirty flush lines, and output stores (still evict_last) can take the\n  place of those clean input lines. Larger sizes run the parent unchanged, so the B200 result isolates the\n  effect on S.\n  Measured on A100 (128-bit fallback), against the parent: S +0.3% (noise; -2.2%, -1.1% at 25 MB, +1.5 to +1.8%\n  at 12.6 MB), M/L 0%. The near-peak marginal bandwidth on both GPUs already argues that (d) is small. So\n  this is mainly a cheap B200 check of the mechanism: an expected gain of 0 to 3% on S, B200-only if it\n  appears at all.\n  Also tried and rejected: 2-4 tiles per CTA. On A100 that was -6% at 128 tokens and +14% at 256 tokens. The\n  128-token gain is an A100 wave effect (the parent runs 1.8 waves on 108 SMs, but one wave on B200's 148).\n  It duplicates r4-cute, and the 2-tile kernel needs 48 registers on sm_100a, so 5 CTAs/SM would spill\n  256 tokens into a second wave.\nexpected_effect:\n  S:\n    pct: -1.5\n    confidence: low\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  S_MAX_TOKENS: 600\n  S_load_policy: \"x: L2::cache_hint 0x12F0000000000000 (evict_first); w: ld.global.nc\"\n  store_policy: \"L2 evict_last, fraction 1.0 (all sizes)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<true>\n    meta:\n      ROWS: 16\n      THREADS: 256\n      loads: \"x evict_first, w nc\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      ROWS: 16\n      THREADS: 256\n      note: \"identical to parent r5-ldg256-os-r16-stel\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; the L2 is 50 MB instead of 126 MB, so the dirty-flush interaction differs\"\n  A100:\n    runs: true\n    representative: false\n    note: \"measured S +0.3%, M 0.0%, L -0.1% vs parent (noise); 16/16 pass\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Term (d) may be negligible on B200, since marginal bandwidth between 12.6 and 25 MB is already about 7.9 TB/s. The expected result is then about 0 on S.\"\n  - \"On A100, evict_first loads hurt L by 4% (r5 session). That is why they apply only to B*S <= 600; the 586-token workload (57.6 MB) is the one most exposed if B200 behaves the same way.\"\n  - \"S-band noise on the portal is about 5%, so one submission cannot resolve an effect of 1-3%.\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "c1-control-r6",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "control",
+  "parents": [
+   "r6-s-ldef-nc-disp"
+  ],
+  "round": "c1",
+  "solution": "loop/rounds/c1/portal/c1-control-r6.json",
+  "status": "passed",
+  "timings": {}
+ },
  "d1-os-r8w4-nohint": {
   "b200": {
    "geomean_us": 24.947,
@@ -1281,7 +1327,22 @@
   ],
   "round": "r10",
   "solution": "loop/rounds/r10/candidates/r10-bulk1d-ring-stel.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__59d48836_9_kernel_cu_b059d53711qk_rms_bulkEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 1,
+     "UBLKCP": 8
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 33824
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "gain": null,
@@ -1292,7 +1353,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 15.84,
+    "1,128": 4.91,
+    "1,131": 4.78,
+    "1,256": 6.48,
+    "1,8192": 117.4,
+    "16,256": 58.64,
+    "2,128": 6.51,
+    "2,293": 10.95,
+    "32,128": 58.79,
+    "4,1024": 59.01,
+    "4,1657": 94.78,
+    "4,256": 15.73,
+    "4,512": 30.51,
+    "8,128": 15.6,
+    "8,256": 30.18,
+    "8,773": 88.14
+   }
+  }
  },
  "r10-ldef-real-stel-disp": {
   "card": "id: r10-ldef-real-stel-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Exploration of the L2 end state. The store side is already at its limit: evict_last on every store\n  is as good as any \"last X MB evict_last\", fractional or reordered variant (all within 1%). The real\n  extra cost is that reads evict the dirty lines the harness flush leaves in L2. evict_first on the x\n  loads recovers 13-15% on a read-only kernel, but with evict_last stores only 1-2% at 256-1024 tokens\n  (8% at 586, which r6 already had). So the candidate is r6 with evict_first x loads extended from\n  B*S <= 600 to B*S <= 1024, plain loads above. Measured on the rented B200 vs r6: S -0.8%, M -1.2%,\n  L +0.3% (noise). The predicted portal score is 0.611 +- 0.009.\nexpected_effect:\n  S:\n    pct: -0.5\n    confidence: medium\n  M:\n    pct: -1\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  EF_MAX_TOKENS: 1024\n  x_load_policy: \"ld.global.L2::evict_first for B*S<=1024, default above\"\n  store_policy: \"createpolicy.fractional.L2::evict_last 1.0, all sizes\"\ndispatch:\n  - max_tokens: 1024\n    kernel: qk_rms_kernel<true>\n    meta:\n      x: \"L2::evict_first\"\n      st: \"evict_last\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_kernel<false>\n    meta:\n      x: \"default\"\n      st: \"evict_last\"\nfindings:\n  - \"probe: under harness timing, evict_last stores (createpolicy) beat plain stores by 8% at 128 tokens, 12% at 256, 14% at 586, 19% at 1024, 12% at 2048, 5% at 4096 and 2.5% at 8192 tokens; r5's mechanism reproduces on the rented B200 [probe_b200]\"\n  - \"dead end: evict_last on only the last 48/80/112 MB of output blocks (earlier stores evict_normal or evict_first) is within +-1% of all-evict_last at 2048-8192 tokens; fractional evict_last 0.5/0.75 is the same or up to 5% worse (0.5 at 1024 tokens). The store-side end state is at its limit [probe_b200]\"\n  - \"dead end: block order (reversed, K first, Q/K interleaved) is within 1% at 128-256 tokens, so the harness's input copies leave no useful L2 residency; the 586-8192 token sizes were not measured because a harness_time CUPTI error ended the run [probe_b200]\"\n  - \"probe: the dirty zero-fill flush costs reads, not writes. Event timing after a zero_ flush vs a zero_+read flush: read-only kernels +7..11 us at 100-400 MB, copy +5..6 us, write-only +-1 us [probe_b200]\"\n  - \"probe: read-only 100/400 MB under harness timing: plain/.nc/.cs/.lu/L1::no_allocate/L2::evict_last 21.9/75.4 us; ld.global.L2::evict_first or createpolicy evict_first 18.6/65-66 us (-15%/-13%); createpolicy evict_unchanged no gain [probe_b200]\"\n  - \"caveat: the CUTLASS EVICT_FIRST constant 0x12F0000000000000 was a no-op when passed as a kernel argument (read-only and full kernel), but works like the qualifier when written into the instruction as an immediate (r6's form). r6's S-band evict_first was therefore real. Cause unknown; prefer the qualifier or createpolicy [probe_b200]\"\n  - \"probe: full kernel with evict_last stores plus evict_first x loads vs default loads: 256 tokens -1.3%, 586 -8.7%, 1024 -1.5..-2%, 2048 +1.5%, 4096/8192 about 0. Weights through .nc: no effect [probe_b200]\"\n  - \"result: run_tests vs r6: S -0.8%, M -1.2% (1024 tokens -1.7..-2.4%), L +0.3%; predicted portal 0.6112 +- 0.0088 [run_tests]\"\n  - \"open: evict_last saves only 3-4 us (about 25-30 MB of write-back) at every size from 1024 to 8192 tokens, not the 126 MB L2; the rest of L2 may be held by the harness's dirty lines or capped for evict_last. Untested idea: anything that stops reads from evicting the harness's dirty lines while stores stay evict_last\"\npaths:\n  - max_tokens: 1024\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: none\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: none\n    w: none\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; 50 MB L2, so the end state differs\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The gain is about 1-2% at 256-1024 tokens, below the portal's noise; one submission cannot confirm it.\"\n  - \"Extending evict_first loads to 1024 tokens could act differently at the portal's locked 1500 MHz SM clock than on the bench.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1314,7 +1394,33 @@
   ],
   "round": "r10",
   "solution": "loop/rounds/r10/candidates/r10-ldef-real-stel-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__43046e82_9_kernel_cu_b059d53713qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 4,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__43046e82_9_kernel_cu_b059d53713qk_rms_kernelILb1EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 4,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "gain": null,
@@ -1325,7 +1431,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.63,
+    "1,128": 4.16,
+    "1,131": 4.13,
+    "1,256": 5.42,
+    "1,8192": 115.79,
+    "16,256": 58.02,
+    "2,128": 5.5,
+    "2,293": 8.62,
+    "32,128": 58.03,
+    "4,1024": 58.12,
+    "4,1657": 93.57,
+    "4,256": 14.18,
+    "4,512": 28.44,
+    "8,128": 14.21,
+    "8,256": 28.46,
+    "8,773": 87.03
+   }
+  }
  },
  "r10-onewave-gs-sdisp": {
   "card": "id: r10-onewave-gs-sdisp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Exploration of \"one resident wave of fat CTAs\" (explore:one-wave-fat). The idea: launching and retiring\n  CTAs costs time on B200, so a grid of exactly 148 x resident CTAs, each streaming many rows, should cut\n  fixed cost and CTA overhead. Probes on the rented B200 (harness timing) falsified it. The one-shot grid\n  already hides CTA launch and retire. One-wave grids tie at 12.6-101 MB and are 11-15% slower at 201-805 MB.\n  That holds whether a CTA streams a contiguous chunk or strides across the grid, with 1, 2 or 4 rows in\n  flight per thread, and with a register prefetch ring 1-3 rows deep. So this candidate keeps the one-wave\n  grid-stride path only for B*S <= 600, where it ties. That path uses r6's S-band load policy: x loads\n  evict_first, weights .nc. Larger sizes run r6's one-shot kernel. A portal run tests whether the one-wave\n  path changes the S band under locked clocks. Expect about 0.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 31\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  ONEWAVE_MAX_TOKENS: 600\n  CTAS_PER_SM: 8\n  wave_grid: \"min(2*n_tiles, SMs*8)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_onewave\n    meta:\n      grid: \"min(2*n_tiles, 1184)\"\n      loads: \"x evict_first, w nc\"\n      stores: \"evict_last\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_oneshot\n    meta:\n      note: \"same as r6 M/L path\"\nfindings:\n  - \"probe: one wave of fat CTAs (contiguous chunk per CTA, 1/2/4 rows per thread per step) vs one-shot, 805 MB: 132-137 us vs 114.9 us; 101 MB: 16.4-16.8 vs 14.4; 12.6 MB: 4.3-5.2 vs 4.15. Contiguous chunks were the worst layout [probe_b200]\"\n  - \"probe: one-wave grid-stride (1184 CTAs, one row per thread per iteration) vs one-shot: 256 tok 5.65 vs 5.53; 586 tok 9.2 vs 9.15-9.4; 1024 tok 14.5-14.8 vs 14.5; 2048 tok 30.9 vs 27.4-28.1; 4096 tok 64.8 vs 57.7; 8192 tok 131-132 vs 114-116 [probe_b200]\"\n  - \"probe: register prefetch ring (next 1-3 tiles' x loaded before current compute), 805 MB: P1/592 CTAs 124.1, P1/888 130.5, P2/592 123.8, P2/444 138.4, P3/296 170.6, P3/444 142.7 us vs one-shot 114.2. Prefetch does not recover the persistent loss; fewer CTAs make it much worse [probe_b200]\"\n  - \"dead end: one-wave persistent grids lose 11-15% once traffic exceeds about 200 MB (above the 126 MB L2). One-shot CTA turnover on B200 is not a bottleneck: the empty-grid span of 26 us at 49k CTAs overlaps fully with memory work [probe_b200, inferred]\"\n  - \"probe: plain stores vs evict_last stores in one-shot: 805 MB 118.6 vs 114.2 us; 101 MB 17.6 vs 14.5; 12.6 MB 4.30 vs 4.16. Re-confirms the evict_last store lever, biggest at M [probe_b200]\"\n  - \"run_tests: this dispatcher vs r6, band geomeans S -0.2%, M -0.3%, L -0.3% (noise; M/L run identical code); predicted portal 0.6109 +- 0.0088 [run_tests]\"\n  - \"tooling: harness_time sometimes raises 'No timing results for methodology: cupti'; retrying fixes it [probe_b200]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: persistent\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The S-band one-wave path ties at best on the bench. The grid-stride loop adds SM work per byte, which the lower portal clock may penalise slightly at 586 tokens (+0-2%).\"\n  - \"S-band portal noise of about 5% cannot resolve an effect this small.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1347,7 +1472,35 @@
   ],
   "round": "r10",
   "solution": "loop/rounds/r10/candidates/r10-onewave-gs-sdisp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__30dd1653_9_kernel_cu_b059d53714qk_rms_oneshotEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 3,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 2
+    },
+    "regs": 29,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__30dd1653_9_kernel_cu_b059d53714qk_rms_onewaveEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 3,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "gain": null,
@@ -1358,7 +1511,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.69,
+    "1,128": 4.16,
+    "1,131": 4.03,
+    "1,256": 5.54,
+    "1,8192": 116.0,
+    "16,256": 56.9,
+    "2,128": 5.52,
+    "2,293": 8.86,
+    "32,128": 58.03,
+    "4,1024": 58.04,
+    "4,1657": 93.46,
+    "4,256": 14.53,
+    "4,512": 28.51,
+    "8,128": 14.49,
+    "8,256": 28.34,
+    "8,773": 85.54
+   }
+  }
  },
  "r10-rtok-m-disp": {
   "card": "id: r10-rtok-m-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: token\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Wildcard result, mostly negative. First I measured where the time goes, using per-CTA globaltimer timelines\n  on the rented B200. The harness's zero-fill flush leaves the L2 full of dirty lines, and every line we\n  allocate forces a write-back. That costs about 20% of the in-kernel time at 12.6 MB and about 35% at 100 MB,\n  measured against a flush that leaves clean lines. No cache hint changes it. Bytes in flight per thread and\n  CTA shape are also not limiting. The one structural idea with a measurable gain is kept. A thread handles\n  R = 3 tokens of the same head (rows h, h+48, h+96), so one weight load serves 3 rows and 96 B of x loads are\n  in flight per thread. The kernel runs 5 CTAs/SM with 48 registers, and it is used only for\n  600 < B*S <= 1100 (the three 1024-token workloads). It measured -1.7 to -4.0% there in two separate\n  run_tests. Every other size runs r6's code unchanged.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -1.5\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 48\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 5\n  bytes_in_flight_per_sm: 122880\n  launches_per_call: 1\nknobs:\n  R_M: 3\n  MINB_M: 5\n  M_RANGE: \"600 < B*S <= 1100\"\n  S_MAX_TOKENS: 600\n  store_policy: \"L2 evict_last fraction 1.0 (all sizes)\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_rtok<1,true,8>\n    meta:\n      R: 1\n      loads: \"x evict_first cache_hint, w nc (= r6 S path)\"\n  - max_tokens: 1100\n    kernel: qk_rms_rtok<3,false,5>\n    meta:\n      R: 3\n      note: \"3 same-head tokens per thread, one weight load\"\n  - max_tokens: null\n    kernel: qk_rms_rtok<1,false,8>\n    meta:\n      R: 1\n      note: \"identical to r6 / r5\"\nfindings:\n  - \"probe timeline, 12.6 MB: all 768 CTAs start within 0.06 us (one wave, 5-6 CTAs on every SM, spread over the GPCs); the first load returns at 0.67 us, the median at 1.6 us, the last at 2.9 us; in-kernel span 3.1-3.3 us against a 4.16 us CUPTI time, so about 1 us lies outside the CTAs (launch and teardown) [probe_b200]\"\n  - \"probe, 25 MB: r6's 1536 CTAs exceed the 1184 resident slots (8/SM), so CTA starts spread over 2.7 us (a second partial wave); making it one wave with 2-4 rows per thread does not make it faster [probe_b200]\"\n  - \"probe, dirty-L2 cost: in-kernel span after the harness-style zero flush vs a read-only flush (clean lines): 12.6 MB 3.07 vs 2.56 us, 25 MB 4.10 vs 3.58, 100 MB 16.6 vs 12.3; a read-only kernel shows the same (12.0 vs 8.2 us at 100 MB). Write-backs of the flush's dirty lines are 20-35% of the kernel time and are the main remaining cost at S/M [probe_b200]\"\n  - \"dead end: load hints do not stop those write-backs. x via cache_hint EF, the .L2::evict_first qualifier, .cs, .lu or nc+EF all score within +-2% of default at 128-4096 tokens. Probable reason: an output line's L2 set rarely holds one of our clean input lines, so its victim is still a dirty flush line. Exception: EF x loads gave -6% at 586 tokens once (r6 already uses them there) [probe_b200]\"\n  - \"dead end: the .L2::evict_last store qualifier vs cache_hint+createpolicy evict_last: same within noise at every size [probe_b200]\"\n  - \"dead end: R tokens per thread sharing one weight load (R = 2, 3, 4; 128- and 256-thread CTAs; 64-128 KB in flight per SM) does not beat r6 at S or L (+0 to +4%); R=2 at 8 CTAs/SM spills (STACK 16) and is 5-20% slower. Bytes in flight are not the B200 limit; DRAM plus the dirty write-backs are [probe_b200]\"\n  - \"kept: R=3 at 1024 tokens measured -2.9/-3.4/-1.8% and -3.2/-4.0/-1.7% in two run_tests; at 2048 tokens it was +0.5% (dropped). Bench noise between identical code paths was up to +-2.4% in the same runs [run_tests]\"\n  - \"at S the in-kernel span is about read bytes plus write-back bytes over DRAM bandwidth, plus a fixed ~1 us outside the CTAs; no kernel-side gain of 3% or more is visible at S unless the write-backs can be avoided legitimately (they cannot via hints; discard on inputs counts as touching memory we do not own) [INFERRED from the probes]\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: 1100\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 48\n    grid: oneshot\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback, 50 MB L2\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"The 1024-token gain (-2 to -4% on the bench) is close to bench noise; the portal may show nothing. The 48-register path can lose more at 1500 MHz if it is partly SM-bound.\"\n  - \"Emulator prediction 0.6100 +- 0.009 vs the current best 0.6099: a coin flip at the score level.\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1380,7 +1552,48 @@
   ],
   "round": "r10",
   "solution": "loop/rounds/r10/candidates/r10-rtok-m-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__d27b1ed0_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__d27b1ed0_9_kernel_cu_ba37c84a11qk_rms_rtokILi3ELb0ELi5EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__d27b1ed0_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "gain": null,
@@ -1391,7 +1604,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.3,
+    "1,128": 4.16,
+    "1,131": 4.13,
+    "1,256": 5.54,
+    "1,8192": 115.75,
+    "16,256": 57.98,
+    "2,128": 5.47,
+    "2,293": 8.61,
+    "32,128": 57.94,
+    "4,1024": 58.07,
+    "4,1657": 93.56,
+    "4,256": 14.25,
+    "4,512": 27.78,
+    "8,128": 14.09,
+    "8,256": 28.33,
+    "8,773": 87.1
+   }
+  }
  },
  "r10-ws-l-steal-disp": {
   "card": "id: r10-ws-l-steal-disp\nparents:\n  - r6-s-ldef-nc-disp\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  A persistent single wave (148 x 8 CTAs of 256 threads) takes tiles from an atomic counter. Tiles are\n  16 rows, with Q and K interleaved. Each thread issues the next tile's 256-bit loads before reducing the\n  current tile. The idea was to remove the tail and the per-CTA launch cost. The counter is reset with no\n  fence and no extra launch: the CTA whose grab returns the largest possible value makes the last access\n  and resets it. Measured on the rented B200, this loses to one-shot at every size. The atomic round trip\n  plus __syncthreads serialises each CTA's tiles, while one-shot launches are cheap and overlap. Only L\n  uses stealing here; S/M run the parent unchanged. Run_tests vs r6: S -1.0% (noise), M -0.2%, L +1.8%\n  (805 MB +5.6%). Predicted portal score 0.605 +/- 0.010.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 2\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 1032\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  ROWS: 16\n  THREADS: 256\n  S_MAX_TOKENS: 600\n  M_MAX_TOKENS: 2100\n  steal_grid: \"SMs x occupancy (148 x 8)\"\n  steal_unit: \"one 16-row tile, Q/K interleaved, 1 unit per grab, 1-unit software prefetch\"\ndispatch:\n  - max_tokens: 600\n    kernel: qk_rms_kernel<true>\n    meta:\n      note: \"parent S path (x evict_first, w nc, evict_last stores)\"\n  - max_tokens: 2100\n    kernel: qk_rms_kernel<false>\n    meta:\n      note: \"parent one-shot\"\n  - max_tokens: 1000000000\n    kernel: qk_rms_steal_kernel\n    meta:\n      grid: \"148 x 8 persistent\"\n      note: \"work stealing, fence-free counter reset\"\nfindings:\n  - \"probe: work-stealing CTAs that had only their static tile (one failing atomic + __syncthreads each) cost 5.2 vs 4.1 us at 12.6 MB; striping the counter over 32 addresses did not help, so the cost is atomic round-trip latency under load (~1 us), not contention [probe_b200]\"\n  - \"probe: one fire-and-forget atomicAdd per CTA on a single address costs +8% at 805 MB (49k CTAs: 124.1 vs 114.5 us); over 32 addresses +1.5% [probe_b200]\"\n  - \"probe: work stealing without loads issued ahead is +14-18% at 101 MB and about +3% at 805 MB vs one-shot [probe_b200]\"\n  - \"probe: pipelined work stealing (next tile's loads before current reduce), 8 CTAs/SM, 32 regs: +9% at 12.6 MB (4.48 vs 4.10 us), +10% at 101 MB (16.4 vs 14.8 us), +0.7% at 805 MB (116.9 vs 116.2 us) vs one-shot [probe_b200]\"\n  - \"probe: at L, stealing beats a static persistent stride by about 3% (117.2 vs 120.7 us, 6 CTAs/SM), but neither beats one-shot; 4 CTAs/SM or 128-thread CTAs are 15-30% worse [probe_b200]\"\n  - \"probe: interleaving Q/K tiles in a one-shot grid is neutral (-1% to +3%) [probe_b200]\"\n  - \"fence-free reset: every grabbing CTA makes exactly one failing grab, so the CTA whose grab returns Lw+m-1 makes the last access and resets the counter with atomicExch; counter was 0 after every probe run; 16/16 pass [probe_b200, run_tests]\"\n  - \"run_tests vs r6: S -1.0%, M -0.2%, L +1.8% (1x8192 +5.6%, 4x1657 +2.2%); predicted portal 0.605 +/- 0.010 vs 0.610 [run_tests]\"\n  - \"dead end: on B200, persistent/work-stealing grids cannot beat one-shot 8 KB CTAs for #38; CTA launch cost is not the bottleneck at any size\"\npaths:\n  - max_tokens: 600\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    x: ef\n    w: nc\n    st: el\n  - max_tokens: 2100\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: oneshot\n    st: el\n  - max_tokens: null\n    lang: cuda\n    width: 256\n    threads: 256\n    rows: 16\n    grid: persistent\n    prefetch: true\n    st: el\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"128-bit fallback; different occupancy and atomic latency\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Measured slower at L on the rented B200 (+1.8%); the portal's lower SM clock likely makes the serial atomic + barrier step costlier.\"\n  - \"The counter lives in a __device__ global; if a kernel is ever aborted mid-run the counter stays stale (not possible in normal harness flow).\"\n  - \"Overlapping calls on different streams would share the counter (the harness uses one stream).\"\nmeasure_first:\n  - H200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -1413,7 +1645,48 @@
   ],
   "round": "r10",
   "solution": "loop/rounds/r10/candidates/r10-ws-l-steal-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__bb136c19_9_kernel_cu_ba37c84a13qk_rms_kernelILb0EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 6,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__bb136c19_9_kernel_cu_ba37c84a13qk_rms_kernelILb1EEEvPKfS2_S2_S2_PfS3_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 6,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__bb136c19_9_kernel_cu_ba37c84a19qk_rms_steal_kernelEPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 6,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 3
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 1032
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "gain": null,
@@ -1424,7 +1697,26 @@
     "r6-s-ldef-nc-disp"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.69,
+    "1,128": 4.02,
+    "1,131": 4.13,
+    "1,256": 5.54,
+    "1,8192": 120.41,
+    "16,256": 58.11,
+    "2,128": 5.5,
+    "2,293": 8.61,
+    "32,128": 58.74,
+    "4,1024": 59.3,
+    "4,1657": 95.48,
+    "4,256": 14.51,
+    "4,512": 28.53,
+    "8,128": 14.53,
+    "8,256": 28.45,
+    "8,773": 86.79
+   }
+  }
  },
  "r2-ldg256-os-r16": {
   "b200": {

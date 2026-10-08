@@ -37,3 +37,6 @@ r9-xo-spf-l2mode-disp:
   - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
   - {max_tokens: 1536, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, st: el}
   - {max_tokens: null, lang: cuda, width: 256, threads: 512, rows: 32, grid: oneshot, st: el}
+c1-control-r6:        # identical code to r6-s-ldef-nc-disp, resubmitted 8 October (portal repeatability control)
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}

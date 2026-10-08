@@ -122,11 +122,13 @@ def portal_rows(path):
         return []
     name = P().name
     prob = lambda r: r.get("kernel") or r.get("definition")          # summary CSV: the problem is in 'kernel'
+    # The portal's 'Kernel' field is the definition name; also accept a level prefix or a missing number prefix.
+    ours = lambda k: bool(k) and k.rpartition("/")[2] in (name, name.split("_", 1)[1])
     rows = list(csv.DictReader(open(path)))
     if rows and prob(rows[0]) is None:                                # per-workload CSV: match via the submission
         defs = {r["vid"]: prob(r) for r in csv.DictReader(open(PORTAL))} if PORTAL.exists() else {}
-        return [r for r in rows if defs.get(r["vid"]) == name]
-    return [r for r in rows if prob(r) == name]
+        return [r for r in rows if ours(defs.get(r["vid"]))]
+    return [r for r in rows if ours(prob(r))]
 
 
 def ingest_portal(arc):

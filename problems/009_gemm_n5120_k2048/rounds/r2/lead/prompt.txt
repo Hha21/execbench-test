@@ -1,0 +1,202 @@
+=== TASK ===
+Round r2: update the hypothesis ledger and design 3 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+r1 portal: r1-cutlass256-lt-tiles scored 0.4847 vs r0 0.4870. Forced cublasLt tiles transferred at M=25/34 (-7/-10% portal) but not at 172 (-1% portal vs -7% rented); CUTLASS 256x256 was 1-2.5% SLOWER than cuBLAS at M >= 8828 on the portal while the rented box said 1-3% faster. Conclusions: the rented box (power-capped to ~1117 MHz under sustained GEMM load) cannot rank large-M kernels, and the large-M Tb is a stored constant 6-9% below cuBLAS's portal time, so do no large-M work this round. The base is r1b-lt-tiles (r0 + the tiles, no CUTLASS; expected ~0.489). Focus on the mid band M = 17-952 (12 workloads). r1's E2 showed that loading everything first serialises all MMA work after the stream; build a pipelined streaming kernel instead (compute chunk j while later chunks load: cp.async or TMA ring with mbarriers), mma.sync up to M ~64 and tcgen05 above, at least 148 CTAs, split-K only if its reduction is cheap. Also run a cheap sweep extending the forced-cublasLt-tile table to every mid size, using interleaved repeats; on the portal only gains of 4% or more on the rented box transferred. Keep one session exploratory.
+
+=== PROBLEM ===
+FlashInfer-Bench/009_gemm_n5120_k2048: 25 workloads, variable axes ['M']; bands by size: S <= 21.2 MB < M <= 23.4 MB < L
+                 1      20.99 MB  band S
+                 2      21.00 MB  band S
+                 4      21.03 MB  band S
+                 5      21.04 MB  band S
+                 6      21.06 MB  band S
+                 8      21.09 MB  band S
+                16      21.20 MB  band S
+                17      21.22 MB  band S
+                25      21.33 MB  band M
+                32      21.43 MB  band M
+                34      21.46 MB  band M
+                63      21.87 MB  band M
+                64      21.89 MB  band M
+                93      22.30 MB  band M
+               128      22.81 MB  band M
+               172      23.44 MB  band M
+               289      25.11 MB  band L
+               492      28.02 MB  band L
+               952      34.62 MB  band L
+              8828     147.53 MB  band L
+             11006     178.75 MB  band L
+             12251     196.60 MB  band L
+             12853     205.23 MB  band L
+             14915     234.79 MB  band L
+             16294     254.56 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/009_gemm_n5120_k2048/ledger.yaml) ===
+# Hypothesis ledger for FlashInfer-Bench/009_gemm_n5120_k2048, seeded 2026-10-08 by the research phase (r0); updated r1 (2026-10-08).
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'fp16 inputs with fp32 accumulation only: no FP8/FP4/TF32-style truncation of A or B, no fp16 accumulation.'
+- 'Portal Tb at 9-20 us is +-5% noisy per size (r0 page): judge mid-M candidates on rented ours/reference ratios over
+  interleaved repeats, never on one portal size.'
+- 'Compute-band candidates are judged on the rented box with the SM clock locked to 1500 MHz where possible (E1 checks
+  whether nvidia-smi -lgc works there); unlocked 1965 MHz numbers overstate cuBLAS''s gap to peak.'
+hypotheses:
+- id: H1
+  statement: For M <= 172 the time is the cost of streaming B (21 MB) under the harness, about 6.4 us (read floor incl. ~2 us dirty-L2 write-back), plus a kernel-specific tail; cuBLAS sits 1.4-3.9 us above that.
+  status: supported
+  evidence:
+  - 'probe r0: 256-bit read-only kernel 6.4-6.7 us for every grid shape; empty kernel 1.5 us; read-only flush is 2.1 us faster than the zero flush (event timing)'
+  - 'run_tests r0: cuBLAS 7.6-10.3 us at M <= 172'
+  - 'portal r0: our 7.7-8.2 us at M <= 16 vs rented 6.9-7.2 (ratio 1.07-1.13), so the portal floor is ~7.0-7.5 us'
+- id: H2
+  statement: At M <= 16 a one-shot 640-CTA mma.sync kernel with 256-bit loads straight into fragments beats cuBLAS by ~10%; the residual 0.6 us is the post-load tail plus 640/148 CTA imbalance.
+  status: supported
+  evidence:
+  - 'run_tests r0: 6.9-7.2 us vs cuBLAS 7.6-7.9'
+  - 'portal r0: 7.7-8.2 us vs Tb 8.7-9.3, S 0.54-0.55 (-10% on both machines)'
+  - 'probe r0: 8 warps x 4 loads/lane best; 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us; tail/imbalance split not yet measured'
+- id: H3
+  statement: For 17 <= M <= 172 the winning structure is BN = 32-64 B-rows per CTA with A staged once per k-chunk in shared memory and split-K across a 2-4 CTA cluster (DSMEM reduction) or a last-CTA-reduces counter, reaching ~7-7.5 us rented (~7.8-8.3 portal, S ~0.56); re-reading A per warp from L2 does not work.
+  status: open
+  evidence:
+  - 'probe r0: per-warp A re-read (640 CTAs) 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A L2 traffic = 640 x M x 4 KB)'
+  - 'portal r0: cuBLAS path 9.1-12.2 us at M=17-172 vs Tb 8.9-11.5 (S 0.46-0.52); the 9 workloads are worth ~+0.03 at 7.8 us portal'
+- id: H4
+  statement: mma.sync (~550 TFLOP/s on B200) is enough up to M ~ 64 when overlapped with the B stream; from M ~ 93 upward tcgen05 is required to stay memory-bound.
+  status: open
+  evidence:
+  - 'probe r0: mma.sync m16n8k16 fp16 peaks at 553 TFLOP/s (148-1184 CTAs); 2.5 us of MMA at M=64, 6.5 us at M=172'
+- id: H5
+  statement: Triton tl.dot GEMMs cannot compete at any M on B200; CUDA C++ (mma.sync / tcgen05 / CUTLASS) is the only route.
+  status: supported
+  evidence:
+  - 'probe r0: Triton 8.9-13 us at M <= 64 vs cuBLAS 7.8-8.0; 309 us vs 199 us at M=16294 (best of 5 configs)'
+- id: H6
+  statement: 'At M >= 8828 cuBLAS nvjet 128x256 2-CTA kernels are at the same ceiling as CUTLASS (CuTe DSL persistent 256x256 2cta: 195 vs 199 us at M=16294); only wave-quantization, tile choice for N=5120 (256x160 or 256x128 tiles give 98-99% wave efficiency vs 96% for 256x256) and raster/epilogue overlap can gain 1-3%.'
+  status: open
+  evidence:
+  - 'probe r0: CuTe DSL dense_gemm_persistent 195.5 us (256x256, 2x1), 216.7 us (128x256), 252.7 us (128x128 no 2cta); cuBLAS 198.7 us harness'
+  - 'portal r0: Tb at M=16294 is 223.1 us = 84% of the 1.81 PF peak at 1500 MHz, so a 3% win needs >= 87% of peak; untested whether CUTLASS reaches that at the locked clock'
+- id: H7
+  statement: On the portal's 1500 MHz lock the compute-band workloads slow by ~1.2x (not the full 1.31x clock ratio) for cuBLAS; Tb for large M is 1.16-1.21x the rented reference time, and our cuBLAS call slows by 1.22-1.26x.
+  status: supported
+  evidence:
+  - 'rented box runs 1965 MHz under GEMM load; cuBLAS 1.75 PFLOP/s = 73% of 2.38 PF at that clock (probe r0)'
+  - 'portal r0 page: Tb 130.6-223.1 us at M >= 8828 vs rented reference 108.6-194.9 (1.16-1.21x); ours 140.6-242.6 vs rented 111.2-196.0 (1.22-1.26x)'
+- id: H8
+  statement: 'Portal Tsol = max(bytes / 6.75 TB/s, FLOPs / 1.81 PFLOP/s): 3.1-3.5 us for M <= 172, 5.7 us at 492, 11.1 us at 952, 102-189 us for M >= 8828. With Tb = cuBLAS the small-M ceiling at a 7.0 us portal time is S ~0.59; the compute band has Tsol = 85% of Tb, so each 1% of time there is worth 0.02-0.03 of S.'
+  status: supported
+  evidence:
+  - 'r0 portal page: the model reproduces all 25 scores to rms 0.0014 (sol.yaml, planner.sol_model)'
+- id: H9
+  statement: evict_first on the streamed B loads does not reduce the dirty-L2 write-back cost for a read-dominated 21 MB kernel.
+  status: refuted
+  evidence:
+  - 'probe r0: rd4e 6.46 us vs rd4 6.43 us; skinny k8w8m1e 7.07/7.28 vs 7.07/7.33'
+- id: H10
+  statement: cuBLAS's small-M nvjet kernels are latency-limited by their small grids (64x8 tiles over N=5120 = 80 CTAs), which is why a 640-CTA stream wins and why 1184-1280 CTAs with cluster split-K may win more.
+  status: open
+  evidence:
+  - 'kernel names from torch.profiler (probe r0); grid sizes inferred, not measured'
+  - 'low priority after r0: M <= 16 already scores 0.54-0.55 against a ~0.59 ceiling'
+- id: H11
+  statement: For M = 289-952 a persistent tcgen05 kernel with 128-row tiles that keeps B streaming lands near max(memory, compute floor) + ~3 us, i.e. 1.5-2x faster than cuBLAS (11-18 us rented, 13.5-22 us portal).
+  status: open
+  evidence:
+  - 'floors from the card; cuBLAS tiles (128x104, 144x128, 256x136) give one under-filled wave'
+  - 'portal r0: 13.5/14.5/22.0 us vs Tb 13.0/14.1/21.3 at M=289/492/952 (S 0.48-0.49)'
+- id: H12
+  statement: 'at::matmul_out(C, A, B.t()) runs a slower cuBLAS path than the reference torch.matmul(A, B.T) (3% rented, 6-9% portal at M >= 8828) because of the caller-supplied output (different nvjet heuristic pick, 256-B-shifted C alignment, workspace or Lt-vs-legacy path); a direct cublasLt call with a chosen algorithm and workspace, or the matching torch call, closes the gap. Alternative: Tb is not plain torch.matmul but a faster PyTorch-only solution, in which case only our own kernel can match it.'
+  status: refuted
+  evidence:
+  - 'r1 (E1): every entry point launches the same nvjet kernel; no faster cublasLt algorithm; alignment irrelevant; residual ~1% rented = harness zero-fill of the DPS output. Portal Tb is a stored constant (identical on all 23 #38 pages), so the 6-9% portal gap is the baseline run, not our call.'
+  - 'card section 7: same library, 3% slower rented (0.6-2.4% per size in the table), 6-9% slower on the portal; kernel names of the two calls not yet compared'
+- id: H13
+  statement: Locking the rented B200 SM clock to 1500 MHz (nvidia-smi -lgc) makes rented compute-band times match the portal within ~3% and makes cuBLAS's efficiency rise to ~84% of peak, so tile/raster gains measured at 1500 MHz transfer to the portal.
+  status: refuted
+  evidence:
+  - 'portal/rented ratio 1.22-1.26 for our cuBLAS call vs clock ratio 1.31 (r0 page)'
+  - 'Modal B200 refuses nvidia-smi -lgc/-pl/-ac (insufficient permissions; tested during #38). Rented timings stay at ~1965 MHz; transfer to the portal goes through ours/reference ratios and the emulator.'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r1-cutlass256-lt-tiles (portal 0.4847) vs r0-skinny16-cublas: S bench -0.8% / portal +0.6%; M bench -2.7% / portal -2.7%; L bench -1.2% / portal +1.4%
+Findings recorded by earlier design sessions (most recent first):
+- [r1-cutlass256-lt-tiles] H6 supported: CUTLASS 256x256x64 cluster 2x1 2-CTA (6 stages, CLC persistent, no C load) equals cuBLAS in interleaved repeats: 111.6 vs 111.0 us (M=8828), 199.5 vs 200.3 us (M=16294); output bit-identical to torch.matmul (max err 0.0) [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: other large-M tiles at M=16294 vs reference 199.4 us: 256x160 2x1 203.1 (+2%), 256x128 2x1 213-215 (+7%), 256x128 2x2 232 (+17%), 256x256 2x2 214-216 (+8%), 256x256x128 (3 stages) +2.3-2.6% at 8828/12251, 256x256 cluster 4x1 +7-8% [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: raster AlongM is 5-13% slower than AlongN/heuristic for every tile; swizzle 2/4/8 changes nothing (within 1%) [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: CUTLASS StreamK scheduler for the wave tail at 256x256: +4.5% (M=16294) and +8% (M=8828), with a 24-28 MB workspace; forced data-parallel through the StreamK scheduler +2-6% [probe_b200]
+- [r1-cutlass256-lt-tiles] rented B200 is power-capped under sustained GEMM load: 1117 MHz at 1017 W, throttle reason SW power cap (0x4). So rented compute-band times are power-bound, and tiles that move more bytes per FLOP lose even when their wave quantisation is better [probe_b200 nvidia-smi]
+- [r1-cutlass256-lt-tiles] H11 refuted for stock CUTLASS: at M=93-952 every CUTLASS sm100 config is 1.2-3x slower than cuBLAS (best: M=289 128x128 13.6 vs 11.2 us; M=492 128x256 19.1 vs 11.7; M=952 256x128 2SM 23.4-24.7 vs 18.0). Too few tiles for 148 SMs, and CUTLASS split-K/stream-K costs another +20-100% [probe_b200]
+- [r1-cutlass256-lt-tiles] cublasLt heuristic list (8 algos, all algo 66, w/o workspace) has faster picks than the default: M=25 tile 13 or 314 7.85 vs 8.45 us (2 repeats); M=34 tile 314/315 8.0 vs 8.7; M=172 tile 183 9.7 vs 10.2. No gain at M=17, 32, 63, 64, 93, 128, 289, 492, 952 [probe_b200]
+- [r1-cutlass256-lt-tiles] run_tests x2 vs r0: M=34 -10.2/-8.7%, M=172 -5.3/-6.0%, M=25 -5.0/-3.8%; large M +2-4% then +0.3-2.4%, while unchanged S paths also read +1%, i.e. session drift against r0's stored times; interleaved probe says parity [run_tests]
+- [r1-cutlass256-lt-tiles] torch.matmul(A,B.T,out=C) equals torch.matmul(A,B.T) on the rented box at M=8828/16294 (111.0 vs 111.0, 200.8 vs 200.3): H12's rented gap is not reproduced in interleaved timing [probe_b200]
+- [r1-cutlass256-lt-tiles] CUTLASS sm100 single instantiation builds in ~40-45 s with nvcc 13.1; 5-8 instantiations build in parallel in ~30-47 s on the 24-core box [probe_b200]
+- [r1-skinny16-mmout] torch.profiler: reference torch.matmul(A,B.T), matmul(out=C) at C offsets of 256 and 1024 B, and F.linear all launch one identical kernel: nvjet_hsh_128x256_64x6_2x1_2cta_v_bz_TNT at M=8828/16294 (118-119 / 211-212 us profiler) and nvjet_hsh_256x136_64x4_2x1_v_bz_TNT at M=952 [probe_b200]
+- [r1-skinny16-mmout] cublasLt direct (ctypes, CUBLAS_COMPUTE_32F, TN, 32 MB workspace allowed): heuristic returns 8 algos, all with workspace 0. M=8828: algo0 111.5 us (= default), others 115.5-123.2. M=16294: algo0 199.7, algo1 198.1 (noise), others 205-222 us. No better cuBLAS algorithm exists [probe_b200]
+- [r1-skinny16-mmout] interleaved harness_time x3, ratio mm_out(out=C)/reference: 1.001 (M=172), 0.996 (492), 1.000 (952), 1.007 (8828), 1.012 (11006), 1.017 (12251), 0.971 (12853, noisy), 1.009 (14915), 1.001 (16294); F.linear equals the reference [probe_b200]
+- [r1-skinny16-mmout] C alignment is irrelevant: mm_out into a fixed buffer at offsets 0/256/512/1024/2048/4096 B from 2 MB: 111.3-111.7 us at M=8828, 145.9-146.8 at 12251, 198.3-200.6 at 16294 [probe_b200]
+- [r1-skinny16-mmout] cause of the residual ~1%: the same mm_out into a fixed buffer takes 111.6 us when the harness also zero-fills a DPS output and 110.8 us with no harness outputs, equal to the reference (110.7); at M=16294 200.9 vs 199.1 (reference 199.5). It is the harness's DPS output zero-fill, which the return-style reference never pays; no solution-side fix [probe_b200]
+- [r1-skinny16-mmout] run_tests: 25/25 pass; vs r0 S +0.1%, M +0.3%, L -0.2% (neutral) [run_tests]
+- [r1-skinny16-mmout] untested: the reference at 1500 MHz (the rented box cannot lock clocks). Tb/rented-reference = 1.12-1.18 at M >= 8828, but our portal/rented = 1.22-1.26; the 6-9% portal gap stays unexplained (Tb from another solution or another portal run). Next: E3 own kernel, or a repeat r0-equivalent portal submission to measure run-to-run variance [INFERRED]
+- [r1-splitk4-cluster-m17-64] run_tests: 25/25 pass; split-K path M=17 10.4 us vs 7.8 cuBLAS (+33%), 25 11.8 vs 8.5, 32 12.2 vs 7.9, 34 13.5 vs 8.6, 63/64 21.1 vs 8.0 (+165%); predicted portal 0.443 vs 0.487 [run_tests]
+- [r1-splitk4-cluster-m17-64] mma.sync m16n8k16 dependent-issue latency on B200 is only 21 cycles, so latency chains are not the problem [probe_b200]
+- [r1-splitk4-cluster-m17-64] key mechanism: when every B load is issued up front, data lands at the end for all CTAs, so the whole mma.sync workload (~M*21 MFLOP / 550 TF/s: 0.9 us at M=17, 1.8 at 34, 3.4 at 64) is serialized after the stream; measured compute-stage increments +1.4/+2.0/+5 us match. The same effect explains r0's ~0.6 us above the read floor at M<=16 [probe_b200]
+- [r1-splitk4-cluster-m17-64] consequence: any up-front-load design for M>=24 with mma.sync cannot beat cuBLAS (~7.9-8.6 us); the band needs a pipelined stream (compute chunk j while j+1..j+D load) so tensor work overlaps DRAM, plus tcgen05 from M~93 (H4) [INFERRED from probes]
+- [r1-splitk4-cluster-m17-64] staging the A slice per CTA via cp.async costs 0.4 us at M=17 and ~2 us at M=34 on top of the B stream (stream+stage-only 7.4/7.7/9.2/11.7 us at M=17/25/34/64): L2->SM traffic (5120/BN)*M*4 KB is as large as B's DRAM traffic at M~32 with BN=32 [probe_b200]
+- [r1-splitk4-cluster-m17-64] 4-CTA cluster DSMEM reduction (2 cluster barriers + 4 remote float2 reads per output pair) adds ~1.5 us over local-only reduction at M=17-34: above the 1 us refutation threshold [probe_b200]
+- [r1-splitk4-cluster-m17-64] 8-CTA cluster variant (BN=64, SPLIT=8) cost +3 us for the cluster reduce when CTAs ran in 2 waves [probe_b200]
+- [r1-splitk4-cluster-m17-64] dead end: fp32 atomicAdd on shared memory compiles to ATOMS.CAST.SPIN CAS loops on sm_100a (no native shared f32 add); split-K with smem atomics 12.8-105 us [probe_b200]
+- [r1-splitk4-cluster-m17-64] occupancy is decisive: 640 one-shot CTAs need 5 CTAs/SM. 256-thread CTAs with 4x32 B per lane can't hold MMA state in 48 regs (launch_bounds(256,5) gives 24-72 B stack spills, +2-8 us); 128-thread CTAs with 8x32 B per lane fit in 90-96 regs without spills. Above ~41 KB smem/CTA (M>40 at KC=512) the grid falls to 2 waves [probe_b200]
+- [r1-splitk4-cluster-m17-64] dead end for r0 (M<=16): splitting the mma accumulator chain into 2/4 independent accumulators raises regs to 60/72, gives 4/3 CTAs/SM, and is slower (8.0-9.2 vs 6.9-7.1 us) [probe_b200]
+- [r1-splitk4-cluster-m17-64] swapped mma roles (B rows as the m16 operand, A rows as n8) pad M to 8 instead of 16 and keep the r0 k-permutation trick; correct (max err 0.06 vs fp32 ref) [probe_b200]
+- [r1b-lt-tiles] portal 62881 (r1-cutlass256-lt-tiles): tile 314 -7%/-10% at M=25/34, tile 183 -1% at M=172; CUTLASS +1.1-2.5% slower than cuBLAS at M >= 8828 (rented said -1 to -3%) [portal]
+- [r0-skinny16-cublas] cuBLAS launches one nvjet kernel per call at every M; 7.6-10.3 us for M <= 172, 11-18 us for 289-952, 109-195 us for M >= 8828 on the rented B200 at 1965 MHz [run_tests, probe]
+- [r0-skinny16-cublas] 256-bit read-only kernel over the 21 MB of B: 6.4-6.7 us for any grid shape (320-2560 CTAs); empty kernel 1.5 us; read-only flush instead of the zero flush saves 2.1 us (event timing), so ~2 us is dirty-L2 write-back [probe_b200]
+- [r0-skinny16-cublas] evict_first on B loads: no change (6.46 vs 6.43 us read-only; 7.07 vs 7.07 skinny) [probe_b200]
+- [r0-skinny16-cublas] mma.sync m16n8k16 fp16 peaks at ~553 TFLOP/s on B200 (1/4 of tcgen05) [probe_b200]
+- [r0-skinny16-cublas] skinny kernel for M<=16: 8 warps x 4 x 32 B per lane best (6.9-7.2 us); 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us, A loads issued before B +0.3 us [probe_b200]
+- [r0-skinny16-cublas] dead end: extending the skinny kernel to M > 16 by re-reading 16-row A tiles per warp from L2: 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A traffic 640 x M x 4 KB) [probe_b200]
+- [r0-skinny16-cublas] Triton tl.dot pointer GEMMs 8.9-13 us at M <= 64 and 309 us at M=16294 vs cuBLAS 7.8 / 199 us [probe_b200]
+- [r0-skinny16-cublas] CuTe DSL dense_gemm_persistent (256x256, cluster 2x1, 2-CTA MMA) 195.5 us at M=16294 vs cuBLAS 198.7 us: same ceiling, 73% of the 2.38 PF peak at 1965 MHz [probe_b200]
+- [r0-skinny16-cublas] r0 passes 25/25; M<=16 6.9-7.2 us (-10% vs cuBLAS), all other sizes equal to cuBLAS within noise [run_tests]
+
+=== PORTAL RESULTS (best first) ===
+- r0-skinny16-cublas: portal 0.4870, S/M/L 8.0/10.1/83.2 µs
+- r1-cutlass256-lt-tiles: portal 0.4847, S/M/L 8.1/9.8/84.4 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (1) | middle (64) | largest (16294) |
+|---|---|---|---|
+| x: ef | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| w: nc | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| w: el | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| st: ef | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| st: none (vs el) | +0.0% ± 1.5 | +0.0% ± 1.5 | +0.0% ± 2.0 |
+| width 128 | +0.0% ± 1.5 | +0.0% ± 1.5 | +0.0% ± 2.0 |
+| threads 512, rows 32 | -1.3% ± 2.1 | -1.3% ± 2.1 | -1.1% ± 2.3 |
+| threads 128, rows 8 | -1.4% ± 2.3 | -1.4% ± 2.3 | -1.2% ± 2.4 |
+| grid persistent | +0.0% ± 1.5 | +0.0% ± 1.5 | +0.0% ± 2.0 |
+| prefetch L2 | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| mem tma | +0.0% ± 1.5 | +0.0% ± 1.5 | +0.0% ± 2.0 |
+| lang triton | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+| lang cute | -0.7% ± 2.2 | -0.7% ± 2.2 | -0.6% ± 2.4 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-skinny16-cublas | ldg256/oneshot/dispatch:size | cuda_cpp | 7.2/8.5/67.4 | -/-/- | -/-/- | -/-/- | 8.0/10.1/83.2 | 0.48696 | 46/5120/None | passed |
+| r1-cutlass256-lt-tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 7.2/8.3/66.6 | -/-/- | -/-/- | -/-/- | 8.1/9.8/84.4 | 0.484724 | 46/5120/None | passed |
+| r1-skinny16-mmout | ldg256/oneshot/dispatch:size | cuda_cpp | 7.1/8.5/66.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 46/5120/None | passed |
+| r1-splitk4-cluster-m17-64 | ldg256/oneshot/dispatch:size | cuda_cpp | 7.4/12.6/66.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 95/1024/None; 46/5120/None | passed |
+| r1b-lt-tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 7.1/8.3/66.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 46/5120/None | passed |

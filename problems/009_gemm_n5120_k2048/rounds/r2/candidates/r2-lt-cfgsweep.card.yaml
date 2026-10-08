@@ -1,0 +1,106 @@
+id: r2-lt-cfgsweep
+parents:
+- r1b-lt-tiles
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  A wider cublasLt search than the 8-result heuristic list (heuristic indices with a 32 MB workspace, split-K, reduction
+  scheme, cluster and custom-option overrides) might find >= 4% gains at mid sizes beyond M=25/34/172. The coarse sweep
+  that fit the budget found none, so the final table equals r1b (tile 314 at M 20-48, tile 183 at M 150-200).
+  H14 is neither confirmed nor refuted: the full (tile x custom-option x cluster x split-K x reduction x swizzle) enumeration was not run.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: medium
+  L:
+    pct: 0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 5120
+  threads_per_cta: 256
+  ctas_per_sm: 5
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  LT_TILE_M20_48: 314
+  LT_TILE_M150_200: 183
+  LT_WS_BYTES: 33554432
+dispatch:
+- max_tokens: 16
+  kernel: skinny_m16_kernel
+  meta:
+    BN: 8
+    WARPS: 8
+- max_tokens: 19
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+- max_tokens: 48
+  kernel: cublasLtMatmul tile 314
+  meta: {}
+- max_tokens: 149
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+- max_tokens: 200
+  kernel: cublasLtMatmul tile 183
+  meta: {}
+- max_tokens: null
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+tests:
+- H14
+findings:
+- "probe: the probe budget ran out (about 8 probes) before the timing sweep. The full enumeration was NOT run, so H14 is not refuted [probe_b200]"
+- "probe: cublasLtMatmulAlgoGetIds for FP16/COMPUTE_32F returns 25 ids; only 66 (634 tile ids, stages [35]=64xAUTO) is the nvjet family used by the heuristic. Ids 21/23/24/58/70/71 have small tile lists (5-10) and 24/58 only a few stages [probe_b200]"
+- "probe: algo 66 caps need exact 4-byte buffers: SPLITK_SUPPORT=1, REDUCTION_SCHEME_MASK=2 (compute type only), CTA_SWIZZLING_SUPPORT=0, CUSTOM_OPTION_MAX=7 [probe_b200]"
+- "probe: a bare cublasLtMatmulAlgoInit(66) + tile/stages never passes AlgoCheck (NOT_SUPPORTED for all 634 tiles). The heuristic's algo carries a cluster-shape field (config id 8, uint16, stored in bits 48-63 of d[3]; read/write with size 2, size 4 fails) that Init leaves unset. Start from a heuristic-returned algo and override tile/custom-option/cluster [probe_b200]"
+- "probe: heuristic picks pair (tile, custom option 0-3) so a tile alone is not a config. Setting cluster ids 2-5 on the M=64 heuristic algo passes AlgoCheck; INNER_SHAPE_ID is not settable. A template-based enumeration (634 tiles x copt 0-7 x cluster ids) was written but the probe budget ended before it ran [probe_b200]"
+- "run_tests: heuristic idx 0 with a 32 MB workspace equals the default at all 12 mid sizes (-3.8..+3.4%, noise), so the workspace-enabled list starts with the same kernel [run_tests]"
+- "run_tests: heuristic idx 1 (workspace allowed): M=25 -7.7%, M=34 -5.0%, M=93 -2.2%; M=17 +1.8, M=172 +9.2, M=289 +15, M=492 +23, M=952 +1.6, others within noise. These are tile 314-like wins already in r1b; nothing new above 4% [run_tests]"
+- "run_tests: heuristic idx 2: M=25 -6.1%; M=17 +9.9, 32 +60, 34 +5.7, 63 +9.9, 64 +5.2, 93 +7.4, 289 +12, 492 +22, 952 +8.4. No new win [run_tests]"
+- "run_tests: split-K=2 with reduction scheme 2 on top of the default pick is accepted by AlgoCheck and +48% to +141% slower at 17-492 (M=952 +1.4%). Split-K is a dead end at N=5120, K=2048 [run_tests]"
+- "run_tests: final r1b-equivalent table via the new config infra: M=25 -6.8%, M=34 -4.7%, M=172 -3.3%, others within noise (M=17 +4.5% and M=289 +3.9% are noise, both served by the default). Large M +2% is session drift against the stored reference; those sizes run untouched at::matmul_out. Predicted portal 0.4811 +- 0.006, i.e. no gain over r0 [run_tests]"
+- "dead end: nothing in the heuristic list (indices 0-2, ws 32 MB) beats default at M=17, 32, 63, 64, 128, 289, 492, 952 by 4%. Remaining untested for H14: heuristic indices 3-7 with a workspace, custom-option and cluster overrides, other algo ids (21/23/70/71) [run_tests]"
+- "next: with a probe budget, run the template enumeration (heuristic algo as template, then 634 tiles x copt 0-7 x cluster {0,2..7}, AlgoCheck, harness_time top-10 per M); AlgoCheck costs about 4 us per config, so the whole check pass takes seconds, and the cost is the timing pass [INFERRED]"
+paths:
+- {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, launches: 1, cluster: 1}
+- {max_tokens: 19, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 1}
+- {max_tokens: 48, lang: cuda, width: 128, threads: 256, rows: 64, grid: persistent, mem: tma, launches: 1, cluster: 1}
+- {max_tokens: 149, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 1}
+- {max_tokens: 200, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 1}
+- {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 1}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: skinny path uses 256-bit loads and the cublasLt tile ids are B200 nvjet configs
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+- "Tile ids 314/183 come from this cuBLAS build; if they are missing on the portal the plan falls back to heuristic index 0, which is the default kernel"
+- "A 32 MB workspace is cudaMalloc'd once at first use during correctness round 0 for the idx/split-K path; the final table does not use it (tile mode, workspace 0)"
+- "Gains at M=25/34/172 are 0.4-0.7 us where portal Tb noise is +-5%; this candidate predicts about the same portal score as r0/r1b"
+measure_first:
+- B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,3 +1,12 @@
+### Assessment
+
+Where the score is: r1 confirmed that the compute band (6 workloads, Tb 6-9% below anything cuBLAS or CUTLASS gives us on the portal) is parked, and that the small band (M<=16, S 0.54-0.55) is within 0.04 of its ceiling. The remaining pool is the 12 mid workloads M=17-952, now at S 0.46-0.52. Reaching the ~7.8 us portal read floor at M=17-172 is worth about +0.03; cutting M=289-952 by 20-30% is worth another +0.01. The score model prices 15% off the M band plus 3% off L at 0.517 vs 0.487.
+
+What we learned: up-front loading serialises all MMA work after the B stream (r1 E2), so the mid band needs a pipelined ring. The r1 evidence also points to two mechanisms behind cuBLAS's mid-band times that the ledger now states as hypotheses: wave quantisation of its tile picks (M=289: 150 CTAs, M=952: 304 CTAs on 148 SMs) and a per-SM L2-to-SMEM ingress bound that caps small tcgen05 tiles at ~40% of peak. Both are measurable in a session.
+
+This round: E1 builds the pipelined cp.async/mma.sync streaming kernel for M=17-172 (H16, the largest pool). E2 is the cheap cublasLt sweep over all 12 mid sizes, enumerating beyond the heuristic (split-K, tiles, cluster shapes) with a 4% transfer bar (H14). E3 is exploratory: measure the per-SM ingress bound (H15), then test whole-wave tcgen05 tiles at M=289-952 through CUTLASS (H17), reporting residuals so r3 knows whether a custom tcgen05 kernel is justified. No large-M work.
+
+```yaml ledger
 # Hypothesis ledger for FlashInfer-Bench/009_gemm_n5120_k2048, seeded 2026-10-08 by the research phase (r0); updated r1 and r2 (2026-10-08).
 constraints:
 - 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
@@ -122,3 +131,45 @@ hypotheses:
   evidence:
   - 'card tile names (NxM naming inferred from the M <= 64 picks): 128x104 at 289 -> 3 x 50 = 150 CTAs (2 waves); 144x128 2cta at 492 -> 144 CTAs (1 wave, yet 11.8 us: H15); 256x136 at 952 -> 7 x 20 x 2 = 280-304 CTAs (3 waves, 17.9 us ~ 3 x 5.8 us per CTA)'
   - 'r1 refutation applies only to the tiles tried (128x128, 128x256, 256x128 2SM, split-K, stream-K): none of them is a whole-wave tile at these M'
+```
+
+```json tasks
+[
+  {
+    "id": "E1",
+    "hypothesis": "H16",
+    "title": "Pipelined cp.async ring + mma.sync streaming kernel for M = 17-172",
+    "operation": "new_design",
+    "parents": ["r1b-lt-tiles", "r1-splitk4-cluster-m17-64"],
+    "band": "M",
+    "instructions": "Build on r1b-lt-tiles (keep its M<=16 skinny path and cublasLt tile table; the new kernel replaces the cuBLAS/Lt path for 17<=M<=MAXM, with MAXM chosen by measurement). Kernel: 128-thread CTAs, BN=32 B-rows per CTA, full K (160 CTAs) and a split-K=2 variant (320 CTAs, no cluster: each CTA writes fp32 partials [M,32] to a module-level scratch buffer (allocated once with at::empty at first use), an atomic counter per n-block elects the last CTA to sum and write fp16 and reset the counter to 0; the counter buffer is zeroed once at module load, never inside run). Ring: STAGES (try 3,4,6) x k-chunk KC=128 (also 64/256); each stage holds the B tile [32 x KC] and the A chunk [M x KC] in smem with a 16-B padded row stride (KC*2+16 B) so ldmatrix is conflict-free; loads via cp.async.cg 16 B per thread (LDGSTS, no registers) with commit_group/wait_group per stage (or a 2-D TMA box with 128B swizzle and host-encoded CUtensorMap if cp.async issue cost shows up). Consume with ldmatrix.x4 (B as the m16 operand: 2 m16 tiles) and ldmatrix.x2 (A as the n8 operand, M padded to 8) into mma.sync m16n8k16 fp32; for M<=32 split K within the chunk across the 4 warps and reduce through smem at the end, for M>32 split the ceil(M/8) n8 tiles across warps (acc <= 2 x 6 x 4 regs at M=172) so registers stay <= 96 and 2 CTAs/SM fit (smem <= 110 KB). Steps: (1) B-only ring (no A, no MMA) must reach ~6.5-7.0 us at every M like r0's read-only probe; if it does not, fix bytes in flight (STAGES x stage bytes x CTAs/SM >= 64 KB per SM) before adding compute. (2) Add the A chunk and record the delta (this is the ingress cost of A: (5120/BN) x M x 4 KB through L2). (3) Add MMA and the epilogue; verify correctness at M=17,25,32,34,63,64,93,128,172 and all other sizes via run_tests (25/25). (4) Tune STAGES/KC/split per M with interleaved repeats (>=3) against the r1b path; record a per-M table. (5) Set MAXM to the largest M where the new kernel wins by >= 4% rented, and submit the resulting dispatcher (r2-ring-mma) to run_tests.",
+    "success": "Rented harness time <= 7.5 us at M=17-64 and <= 8.5 us at M=93-172 (vs 7.8-10.2 for the r1b path), 25/25 correct, run_tests predicted portal >= 0.50.",
+    "refuted_if": "After tuning STAGES/KC/BN/split the pipelined kernel is not >= 4% faster than the r1b path at any M in 17-172, or the B-only ring itself cannot get under 7.5 us (then the ring, not the overlap, is the limit and H16 is refuted as stated).",
+    "model": "opus"
+  },
+  {
+    "id": "E2",
+    "hypothesis": "H14",
+    "title": "Full cublasLt configuration sweep over all 12 mid sizes (M = 17-952)",
+    "operation": "knob_mutation",
+    "parents": ["r1b-lt-tiles"],
+    "band": "all",
+    "instructions": "Write a probe (C++ or ctypes) that, for each M in {17,25,32,34,63,64,93,128,172,289,492,952}, enumerates cublasLt configurations beyond the heuristic: cublasLtMatmulAlgoGetIds for CUDA_R_16F/CUBLAS_COMPUTE_32F, then for each algo id read the caps (TILE_IDS, STAGES_IDS, SPLITK_SUPPORT, REDUCTION_SCHEME_MASK, CTA_SWIZZLING_SUPPORT, CUSTOM_OPTION_MAX, and cluster-shape ids if the 13.1 headers expose them), build every combination with cublasLtMatmulAlgoInit + AlgoConfigSetAttribute (tile, stages, splitK in {1,2,3,4,8}, reduction scheme, swizzle, custom option), keep those that pass cublasLtMatmulAlgoCheck with a 32 MB workspace allowed (allocate the workspace once at module level), and time each with the harness methodology (cold-L2 flush, shifted pointers, CUPTI span over ALL kernels the config launches, since split-K may add a reduction kernel). Prune: first pass 20 calls each, keep the top 10 per M, then >= 3 interleaved repeats against the current r1b pick (default or tile 314/183) and torch.matmul. Accept only configs that are >= 4% faster than the r1b pick in every repeat; prefer single-kernel configs and require the 4% net of any second kernel. Extend lt_tile_for into a per-M config table (tile, stages, splitK, reduction, swizzle, workspace bytes) in binding.cpp/kernel.cu, keeping the fallback to heuristic index 0 when a config is unavailable; run run_tests (25/25) and record the per-M table, including negative results per size, as findings.",
+    "success": "At least 3 mid sizes beyond M=25/34/172 gain >= 4% rented over interleaved repeats, and run_tests predicts >= +0.004 over r1b-lt-tiles with 25/25 correct.",
+    "refuted_if": "The full enumeration (not just the heuristic list) yields no config >= 4% faster than the current pick at any of the 9 remaining mid sizes; then H14 is refuted and the cuBLAS path is final for the sizes E1/E3 do not cover.",
+    "model": "sonnet"
+  },
+  {
+    "id": "E3",
+    "hypothesis": "H17",
+    "title": "Exploratory: per-SM ingress bound (H15) and whole-wave tcgen05 tiles for M = 289-952",
+    "operation": "new_design",
+    "parents": ["r1-cutlass256-lt-tiles"],
+    "band": "L",
+    "instructions": "Part 1 (probe, H15): measure how fast one SM can ingest L2-resident data. Kernel with grid=148 (1 CTA/SM, then 2 and 4 CTAs/SM), each CTA streaming a 4-8 MB region that is already in L2 (touch it once before timing, event timing not the cold flush) through a 4-8 stage ring of 16-32 KB TMA/cp.async.bulk copies, no compute; report GB/s per SM and aggregate; repeat with cp.async 16 B (LDGSTS) and with a cluster-of-2/4 multicast TMA copy to see whether the limit is L2 read bandwidth (multicast helps) or SM ingress (it does not). Also report the figure for 148 CTAs reading DRAM-cold data for comparison. Part 2 (H17): for M=289/492/952 build CUTLASS sm100 GEMMs with whole-wave tiles: M=289: 128x112x64 1SM (3 x 46 = 138 CTAs) and 128x128 (120 CTAs) with the deepest stage count that fits; M=492: 256x144x64 2SM cluster 2x1 (72 pairs = 144 CTAs) and 128x144 1SM (144 CTAs); M=952: 256x144 2SM (288 CTAs, 2 full waves), 128x160 1SM (256 CTAs) and 256x256 2SM (160 CTAs) for comparison; raster AlongN, no CLC persistence unless it helps, epilogue without a C load. If CUTLASS rejects a tile N (must be a multiple of 16 for 2SM, 8 for 1SM), use the nearest valid one and state the CTA count. Time each with the harness methodology in interleaved repeats (>= 3) against cuBLAS (torch.matmul). Part 3: for every config compute the expected time max(FLOPs/(148 x per-SM peak at 1965 MHz), operand bytes per CTA / measured ingress) x waves + ~1.5 us ramp, and tabulate measured minus expected; this residual tells r3 whether a custom tcgen05 streaming kernel (A-stationary or B-stationary in smem/TMEM with fewer ingested bytes) can beat CUTLASS. If a config beats cuBLAS by >= 15% at a size, add it to r1b-lt-tiles as the path for that M range (289 band: 200 < M <= 400; 492: <= 700; 952: <= 1500), run run_tests (25/25) and record the per-size table and the ingress numbers as findings.",
+    "success": "Part 1 yields a per-SM ingress number with its limiting mechanism; Part 2 beats cuBLAS by >= 15% rented at >= 2 of M=289/492/952 (~+0.008 portal) and the dispatcher passes 25/25.",
+    "refuted_if": "Whole-wave tiles are within 5% of cuBLAS at all three sizes: then tile/wave choice is not the lever and the measured ingress bound (H15) or something else is; report the residual table so r3 can decide on a custom tcgen05 kernel.",
+    "model": "opus"
+  }
+]
+```

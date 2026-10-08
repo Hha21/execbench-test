@@ -1,0 +1,948 @@
+=== TASK ===
+Round: r2   Operation: new_design
+Problem: FlashInfer-Bench/009_gemm_n5120_k2048   Target niche: exp:E1:H16   Target band: M
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r2-'.
+Experiment E1 (tests H16): Pipelined cp.async ring + mma.sync streaming kernel for M = 17-172. Build on r1b-lt-tiles (keep its M<=16 skinny path and cublasLt tile table; the new kernel replaces the cuBLAS/Lt path for 17<=M<=MAXM, with MAXM chosen by measurement). Kernel: 128-thread CTAs, BN=32 B-rows per CTA, full K (160 CTAs) and a split-K=2 variant (320 CTAs, no cluster: each CTA writes fp32 partials [M,32] to a module-level scratch buffer (allocated once with at::empty at first use), an atomic counter per n-block elects the last CTA to sum and write fp16 and reset the counter to 0; the counter buffer is zeroed once at module load, never inside run). Ring: STAGES (try 3,4,6) x k-chunk KC=128 (also 64/256); each stage holds the B tile [32 x KC] and the A chunk [M x KC] in smem with a 16-B padded row stride (KC*2+16 B) so ldmatrix is conflict-free; loads via cp.async.cg 16 B per thread (LDGSTS, no registers) with commit_group/wait_group per stage (or a 2-D TMA box with 128B swizzle and host-encoded CUtensorMap if cp.async issue cost shows up). Consume with ldmatrix.x4 (B as the m16 operand: 2 m16 tiles) and ldmatrix.x2 (A as the n8 operand, M padded to 8) into mma.sync m16n8k16 fp32; for M<=32 split K within the chunk across the 4 warps and reduce through smem at the end, for M>32 split the ceil(M/8) n8 tiles across warps (acc <= 2 x 6 x 4 regs at M=172) so registers stay <= 96 and 2 CTAs/SM fit (smem <= 110 KB). Steps: (1) B-only ring (no A, no MMA) must reach ~6.5-7.0 us at every M like r0's read-only probe; if it does not, fix bytes in flight (STAGES x stage bytes x CTAs/SM >= 64 KB per SM) before adding compute. (2) Add the A chunk and record the delta (this is the ingress cost of A: (5120/BN) x M x 4 KB through L2). (3) Add MMA and the epilogue; verify correctness at M=17,25,32,34,63,64,93,128,172 and all other sizes via run_tests (25/25). (4) Tune STAGES/KC/split per M with interleaved repeats (>=3) against the r1b path; record a per-M table. (5) Set MAXM to the largest M where the new kernel wins by >= 4% rented, and submit the resulting dispatcher (r2-ring-mma) to run_tests. Success: Rented harness time <= 7.5 us at M=17-64 and <= 8.5 us at M=93-172 (vs 7.8-10.2 for the r1b path), 25/25 correct, run_tests predicted portal >= 0.50. Refuted if: After tuning STAGES/KC/BN/split the pipelined kernel is not >= 4% faster than the r1b path at any M in 17-172, or the B-only ring itself cannot get under 7.5 us (then the ring, not the overlap, is the limit and H16 is refuted as stated). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-skinny16-cublas | ldg256/oneshot/dispatch:size | cuda_cpp | 7.2/8.5/67.4 | -/-/- | -/-/- | -/-/- | 8.0/10.1/83.2 | 0.48696 | 46/5120/None | passed |
+| r1-cutlass256-lt-tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 7.2/8.3/66.6 | -/-/- | -/-/- | -/-/- | 8.1/9.8/84.4 | 0.484724 | 46/5120/None | passed |
+| r1-skinny16-mmout | ldg256/oneshot/dispatch:size | cuda_cpp | 7.1/8.5/66.4 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 46/5120/None | passed |
+| r1-splitk4-cluster-m17-64 | ldg256/oneshot/dispatch:size | cuda_cpp | 7.4/12.6/66.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 95/1024/None; 46/5120/None | passed |
+| r1b-lt-tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 7.1/8.3/66.9 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 46/5120/None | passed |
+B200 results so far:
+- r0-skinny16-cublas: B200 score 0.487, geomean 20.0 µs, B200 S/M/L 8.0/10.1/83.2 µs
+- r1-cutlass256-lt-tiles: B200 score 0.485, geomean 20.0 µs, B200 S/M/L 8.1/9.8/84.4 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for FlashInfer-Bench/009_gemm_n5120_k2048, seeded 2026-10-08 by the research phase (r0); updated r1 and r2 (2026-10-08).
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'fp16 inputs with fp32 accumulation only: no FP8/FP4/TF32-style truncation of A or B, no fp16 accumulation.'
+- 'Portal Tb at 9-20 us is +-5% noisy per size (r0 page): judge mid-M candidates on rented ours/reference ratios over
+  interleaved repeats, never on one portal size.'
+- 'Compute-band candidates cannot be ranked on the rented box: it power-caps to ~1117 MHz under sustained GEMM load and
+  nvidia-smi -lgc is refused (r1). CUTLASS 256x256 read -1..-3% rented and +1..+2.5% portal. No large-M (M >= 8828) work
+  until a portal-representative measurement method exists; the base keeps at::matmul_out there.'
+- 'Transfer rule for the mid band (r1 portal 62881): only rented gains of >= 4% over interleaved repeats count (tile 183 was
+  -7% rented and -1% portal; tile 314 -7/-10% rented and -7/-10% portal).'
+- 'Every candidate must launch the same kernel sequence on every call; a second kernel (e.g. a cublasLt split-K reduction)
+  is legal but its gap and tail are timed, so it must win by >= 4% net in harness timing.'
+hypotheses:
+- id: H1
+  statement: For M <= 172 the time is the cost of streaming B (21 MB) under the harness, about 6.4 us (read floor incl. ~2 us dirty-L2 write-back), plus a kernel-specific tail; cuBLAS sits 1.4-3.9 us above that.
+  status: supported
+  evidence:
+  - 'probe r0: 256-bit read-only kernel 6.4-6.7 us for every grid shape; empty kernel 1.5 us; read-only flush is 2.1 us faster than the zero flush (event timing)'
+  - 'run_tests r0: cuBLAS 7.6-10.3 us at M <= 172'
+  - 'portal r0: our 7.7-8.2 us at M <= 16 vs rented 6.9-7.2 (ratio 1.07-1.13), so the portal floor is ~7.0-7.5 us'
+- id: H2
+  statement: At M <= 16 a one-shot 640-CTA mma.sync kernel with 256-bit loads straight into fragments beats cuBLAS by ~10%; the residual 0.6 us is the post-load tail plus 640/148 CTA imbalance.
+  status: supported
+  evidence:
+  - 'run_tests r0: 6.9-7.2 us vs cuBLAS 7.6-7.9'
+  - 'portal r0: 7.7-8.2 us vs Tb 8.7-9.3, S 0.54-0.55 (-10% on both machines)'
+  - 'probe r0: 8 warps x 4 loads/lane best; 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us'
+  - 'r1 E2: the 0.6 us tail is the mma.sync work serialised after the up-front stream (same mechanism as H3); 2/4 independent accumulator chains made it worse (8.0-9.2 us, 60-72 regs)'
+- id: H3
+  statement: For 17 <= M <= 172 the winning structure is BN = 32-64 B-rows per CTA with A staged once per k-chunk in shared memory and split-K across a 2-4 CTA cluster (DSMEM reduction) or a last-CTA-reduces counter, reaching ~7-7.5 us rented (~7.8-8.3 portal, S ~0.56); re-reading A per warp from L2 does not work.
+  status: refuted
+  evidence:
+  - 'probe r0: per-warp A re-read (640 CTAs) 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A L2 traffic = 640 x M x 4 KB)'
+  - 'r1 E2 (r1-splitk4-cluster-m17-64): up-front B loads + A slice via cp.async + 4-CTA DSMEM reduction: 10.4-21.1 us vs cuBLAS 7.8-8.6. All MMA runs after the stream (+1.4/+2.0/+5 us at M=17/34/64), A staging costs 0.4-2 us, the cluster reduction ~1.5 us, smem atomics are CAS loops. The up-front variant is dead; the pipelined variant is H16.'
+- id: H4
+  statement: mma.sync (~550 TFLOP/s on B200) is enough up to M ~ 64 when overlapped with the B stream; from M ~ 93 upward tcgen05 is required to stay memory-bound.
+  status: open
+  evidence:
+  - 'probe r0: mma.sync m16n8k16 fp16 peaks at 553 TFLOP/s (148-1184 CTAs); 2.5 us of MMA at M=64, 6.5 us at M=172'
+  - 'r1 E2: dependent-issue latency is 21 cycles, so chains are not the limit; the 550 TF/s figure is aggregate over 148 SMs, so a balanced pipelined grid could stretch mma.sync to M ~ 128-172 (6.5 us of MMA against a 6.4 us stream). E1 (r2) probes the upper limit.'
+- id: H5
+  statement: Triton tl.dot GEMMs cannot compete at any M on B200; CUDA C++ (mma.sync / tcgen05 / CUTLASS) is the only route.
+  status: supported
+  evidence:
+  - 'probe r0: Triton 8.9-13 us at M <= 64 vs cuBLAS 7.8-8.0; 309 us vs 199 us at M=16294 (best of 5 configs)'
+- id: H6
+  statement: 'At M >= 8828 cuBLAS nvjet 128x256 2-CTA kernels are at the same ceiling as CUTLASS; only wave quantisation, tile choice for N=5120 and raster/epilogue overlap can gain 1-3%, and the portal cannot currently show it.'
+  status: parked
+  evidence:
+  - 'probe r0: CuTe DSL dense_gemm_persistent 195.5 us (256x256, 2x1) vs cuBLAS 198.7 us harness'
+  - 'r1: CUTLASS 256x256x64 2x1 (6 stages, CLC) = cuBLAS in interleaved repeats (111.6 vs 111.0 at 8828, 199.5 vs 200.3 at 16294); every other tile, raster, cluster and StreamK variant +2-17%'
+  - 'portal 62881: the same CUTLASS path +1.1-2.5% vs cuBLAS at M >= 8828 while rented said -1..-3%: the power-capped rented box cannot rank large-M kernels. Tb is 6-9% below our portal cuBLAS time and is a stored constant. Parked by the operator (r2).'
+- id: H7
+  statement: On the portal's 1500 MHz lock the compute-band workloads slow by ~1.2x (not the full 1.31x clock ratio) for cuBLAS; Tb for large M is 1.16-1.21x the rented reference time, and our cuBLAS call slows by 1.22-1.26x.
+  status: supported
+  evidence:
+  - 'rented box runs 1965 MHz under short GEMM load, 1117 MHz power-capped under sustained load (r1 nvidia-smi)'
+  - 'portal r0 page: Tb 130.6-223.1 us at M >= 8828 vs rented reference 108.6-194.9 (1.16-1.21x); ours 140.6-242.6 vs rented 111.2-196.0 (1.22-1.26x)'
+- id: H8
+  statement: 'Portal Tsol = max(bytes / 6.75 TB/s, FLOPs / 1.81 PFLOP/s): 3.1-3.5 us for M <= 172, 5.7 us at 492, 11.1 us at 952, 102-189 us for M >= 8828. Tb is a stored per-workload constant. With Tb = cuBLAS the small-M ceiling at a 7.0 us portal time is S ~0.59; the compute band has Tsol = 85% of Tb.'
+  status: supported
+  evidence:
+  - 'r0 portal page: the model reproduces all 25 scores to rms 0.0014 (sol.yaml, planner.sol_model)'
+  - 'r1: identical Tb on every #38 page and on both #218 pages; the mid-band Tb is uneven per size (0.95-1.11x our cuBLAS time)'
+- id: H9
+  statement: evict_first on the streamed B loads does not reduce the dirty-L2 write-back cost for a read-dominated 21 MB kernel.
+  status: refuted
+  evidence:
+  - 'probe r0: rd4e 6.46 us vs rd4 6.43 us; skinny k8w8m1e 7.07/7.28 vs 7.07/7.33'
+- id: H10
+  statement: cuBLAS's small-M nvjet kernels are latency-limited by their small grids (64x8 tiles over N=5120 = 80 CTAs), which is why a 640-CTA stream wins and why 1184-1280 CTAs with cluster split-K may win more.
+  status: open
+  evidence:
+  - 'kernel names from torch.profiler (probe r0); grid sizes inferred, not measured'
+  - 'low priority: M <= 16 already scores 0.54-0.55 against a ~0.59 ceiling; r1 E2 showed cluster reductions cost ~1.5 us, so the second half is unlikely'
+- id: H11
+  statement: For M = 289-952 a persistent tcgen05 kernel with 128-row tiles that keeps B streaming lands near max(memory, compute floor) + ~3 us, i.e. 1.5-2x faster than cuBLAS (11-18 us rented, 13.5-22 us portal).
+  status: open
+  evidence:
+  - 'portal r0: 13.5/14.5/22.0 us vs Tb 13.0/14.1/21.3 at M=289/492/952 (S 0.48-0.49)'
+  - 'r1: stock CUTLASS sm100 configs tried (128x128, 128x256, 256x128 2SM, split-K, stream-K) are 1.2-3x slower than cuBLAS at M=93-952; the specific whole-wave tiles of H17 were not tried. Refined into H15 (ingress bound) and H17 (wave quantisation).'
+- id: H12
+  statement: 'at::matmul_out(C, A, B.t()) runs a slower cuBLAS path than the reference torch.matmul(A, B.T); a direct cublasLt call or the matching torch call closes the 6-9% portal gap at M >= 8828.'
+  status: refuted
+  evidence:
+  - 'r1 (E1): every entry point launches the same nvjet kernel; no faster cublasLt algorithm among the 8 heuristic results; alignment irrelevant; residual ~1% rented = harness zero-fill of the DPS output. The portal gap is the stored Tb.'
+- id: H13
+  statement: Locking the rented B200 SM clock to 1500 MHz (nvidia-smi -lgc) makes rented compute-band times match the portal within ~3%.
+  status: refuted
+  evidence:
+  - 'Modal B200 refuses nvidia-smi -lgc/-pl/-ac (insufficient permissions). Rented timings stay at ~1965 MHz (or power-capped lower); transfer goes through ours/reference ratios and the emulator.'
+- id: H14
+  statement: 'cuBLAS''s mid-band picks (M=17-952) are not the best nvjet configurations in the library: the heuristic list (8 algos, workspace 0) is a subset, and a full cublasLt enumeration (every tile id, stage id, split-K with workspace, cluster shape and CTA swizzle that passes cublasLtMatmulAlgoCheck) contains >= 4% rented gains at >= 3 sizes beyond M=25/34/172.'
+  status: open
+  evidence:
+  - 'r1: within the 8 heuristic results, tile 314 -7% (M=25), -8% (M=34), tile 183 -5% (M=172); nothing at the other 9 mid sizes. r1 set MAX_WORKSPACE_BYTES=0 when building plans, so split-K configurations were never offered.'
+  - 'card: cuBLAS tile picks give 150 CTAs at M=289 (128x104), 304 CTAs at M=952 (256x136) on 148 SMs, i.e. 2-3 partly filled waves (see H17)'
+- id: H15
+  statement: 'Per-SM operand ingress (L2 -> shared memory) on B200 is bounded at roughly 64-72 B/clk per SM (~140 GB/s at 1965 MHz; the 21 TB/s aggregate L2 figure / 148). A tcgen05 tile needs >= ~87 FLOP per ingested byte (BM*BN/(BM+BN)) to be compute-bound, so 128x128 (64 FLOP/B) and smaller tiles are ingress-bound at ~70% or less of peak, which is why cuBLAS reaches only 40-50% of peak at M=289-952 even with a single-wave tile (144x128 2cta at M=492: 144 CTAs, 11.8 us vs 4.7 us of MMA). Multicast reduces L2 reads but not SM ingress.'
+  status: open
+  evidence:
+  - 'INFERRED from chipsandcheese L2 bandwidth (21 TB/s local partition) and r1''s CUTLASS 128x128 result at M=289 (13.6 us for 120 CTAs x 1 MB of operands each); no direct measurement yet. E3 step 1 measures it.'
+  - 'r1 E2: cp.async A staging of 22-41 MB through L2 cost 0.4-2 us on top of the stream at M=17-64, consistent with a per-SM ingress cost'
+- id: H16
+  statement: 'A pipelined ring (cp.async or TMA, 3-6 stages of KC=128, B rows plus the A k-chunk per stage, padded 16 B row stride for conflict-free ldmatrix) feeding mma.sync with B as the m16 operand, BN=32 (160 CTAs full-K, or 320 CTAs split-K 2 with a last-CTA-reduces counter and no cluster), keeps the tensor work overlapped with the B stream and reaches <= 7.5 us rented at M=17-64 and <= 8.5 us at M=93-172 (cuBLAS/Lt 7.8-10.2), worth ~+0.03 portal.'
+  status: open
+  evidence:
+  - 'r1 E2 mechanism: compute serialises after an up-front stream; a bounded ring spreads each CTA''s loads over the kernel so chunk j''s MMA overlaps chunk j+1..j+S loads [INFERRED]'
+  - 'budget at M=172, BN=32: per SM ~130 KB of B + ~690 KB of A ingress (5.7 us at 140 GB/s) and 6.5 us of mma.sync spread over 148 SMs, both close to the 6.4 us stream: the upper end is marginal (H4)'
+- id: H17
+  statement: 'At M=289-952 cuBLAS loses mainly to wave quantisation (150, 160 and 304 CTAs on 148 SMs); a tcgen05 tile whose grid is a whole number of waves (M=289: 128x112 1SM -> 138 CTAs; M=492: 256x144 2SM cluster 2x1 -> 144 CTAs; M=952: 256x144 2SM -> 288 CTAs = 2 full waves) built with CUTLASS or the CuTe DSL beats cuBLAS by >= 15% rented at >= 2 of the 3 sizes, subject to the H15 ingress bound.'
+  status: open
+  evidence:
+  - 'card tile names (NxM naming inferred from the M <= 64 picks): 128x104 at 289 -> 3 x 50 = 150 CTAs (2 waves); 144x128 2cta at 492 -> 144 CTAs (1 wave, yet 11.8 us: H15); 256x136 at 952 -> 7 x 20 x 2 = 280-304 CTAs (3 waves, 17.9 us ~ 3 x 5.8 us per CTA)'
+  - 'r1 refutation applies only to the tiles tried (128x128, 128x256, 256x128 2SM, split-K, stream-K): none of them is a whole-wave tile at these M'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r1-cutlass256-lt-tiles (portal 0.4847) vs r0-skinny16-cublas: S bench -0.8% / portal +0.6%; M bench -2.7% / portal -2.7%; L bench -1.2% / portal +1.4%
+Findings recorded by earlier design sessions (most recent first):
+- [r1-cutlass256-lt-tiles] H6 supported: CUTLASS 256x256x64 cluster 2x1 2-CTA (6 stages, CLC persistent, no C load) equals cuBLAS in interleaved repeats: 111.6 vs 111.0 us (M=8828), 199.5 vs 200.3 us (M=16294); output bit-identical to torch.matmul (max err 0.0) [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: other large-M tiles at M=16294 vs reference 199.4 us: 256x160 2x1 203.1 (+2%), 256x128 2x1 213-215 (+7%), 256x128 2x2 232 (+17%), 256x256 2x2 214-216 (+8%), 256x256x128 (3 stages) +2.3-2.6% at 8828/12251, 256x256 cluster 4x1 +7-8% [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: raster AlongM is 5-13% slower than AlongN/heuristic for every tile; swizzle 2/4/8 changes nothing (within 1%) [probe_b200]
+- [r1-cutlass256-lt-tiles] dead end: CUTLASS StreamK scheduler for the wave tail at 256x256: +4.5% (M=16294) and +8% (M=8828), with a 24-28 MB workspace; forced data-parallel through the StreamK scheduler +2-6% [probe_b200]
+- [r1-cutlass256-lt-tiles] rented B200 is power-capped under sustained GEMM load: 1117 MHz at 1017 W, throttle reason SW power cap (0x4). So rented compute-band times are power-bound, and tiles that move more bytes per FLOP lose even when their wave quantisation is better [probe_b200 nvidia-smi]
+- [r1-cutlass256-lt-tiles] H11 refuted for stock CUTLASS: at M=93-952 every CUTLASS sm100 config is 1.2-3x slower than cuBLAS (best: M=289 128x128 13.6 vs 11.2 us; M=492 128x256 19.1 vs 11.7; M=952 256x128 2SM 23.4-24.7 vs 18.0). Too few tiles for 148 SMs, and CUTLASS split-K/stream-K costs another +20-100% [probe_b200]
+- [r1-cutlass256-lt-tiles] cublasLt heuristic list (8 algos, all algo 66, w/o workspace) has faster picks than the default: M=25 tile 13 or 314 7.85 vs 8.45 us (2 repeats); M=34 tile 314/315 8.0 vs 8.7; M=172 tile 183 9.7 vs 10.2. No gain at M=17, 32, 63, 64, 93, 128, 289, 492, 952 [probe_b200]
+- [r1-cutlass256-lt-tiles] run_tests x2 vs r0: M=34 -10.2/-8.7%, M=172 -5.3/-6.0%, M=25 -5.0/-3.8%; large M +2-4% then +0.3-2.4%, while unchanged S paths also read +1%, i.e. session drift against r0's stored times; interleaved probe says parity [run_tests]
+- [r1-cutlass256-lt-tiles] torch.matmul(A,B.T,out=C) equals torch.matmul(A,B.T) on the rented box at M=8828/16294 (111.0 vs 111.0, 200.8 vs 200.3): H12's rented gap is not reproduced in interleaved timing [probe_b200]
+- [r1-cutlass256-lt-tiles] CUTLASS sm100 single instantiation builds in ~40-45 s with nvcc 13.1; 5-8 instantiations build in parallel in ~30-47 s on the 24-core box [probe_b200]
+- [r1-skinny16-mmout] torch.profiler: reference torch.matmul(A,B.T), matmul(out=C) at C offsets of 256 and 1024 B, and F.linear all launch one identical kernel: nvjet_hsh_128x256_64x6_2x1_2cta_v_bz_TNT at M=8828/16294 (118-119 / 211-212 us profiler) and nvjet_hsh_256x136_64x4_2x1_v_bz_TNT at M=952 [probe_b200]
+- [r1-skinny16-mmout] cublasLt direct (ctypes, CUBLAS_COMPUTE_32F, TN, 32 MB workspace allowed): heuristic returns 8 algos, all with workspace 0. M=8828: algo0 111.5 us (= default), others 115.5-123.2. M=16294: algo0 199.7, algo1 198.1 (noise), others 205-222 us. No better cuBLAS algorithm exists [probe_b200]
+- [r1-skinny16-mmout] interleaved harness_time x3, ratio mm_out(out=C)/reference: 1.001 (M=172), 0.996 (492), 1.000 (952), 1.007 (8828), 1.012 (11006), 1.017 (12251), 0.971 (12853, noisy), 1.009 (14915), 1.001 (16294); F.linear equals the reference [probe_b200]
+- [r1-skinny16-mmout] C alignment is irrelevant: mm_out into a fixed buffer at offsets 0/256/512/1024/2048/4096 B from 2 MB: 111.3-111.7 us at M=8828, 145.9-146.8 at 12251, 198.3-200.6 at 16294 [probe_b200]
+- [r1-skinny16-mmout] cause of the residual ~1%: the same mm_out into a fixed buffer takes 111.6 us when the harness also zero-fills a DPS output and 110.8 us with no harness outputs, equal to the reference (110.7); at M=16294 200.9 vs 199.1 (reference 199.5). It is the harness's DPS output zero-fill, which the return-style reference never pays; no solution-side fix [probe_b200]
+- [r1-skinny16-mmout] run_tests: 25/25 pass; vs r0 S +0.1%, M +0.3%, L -0.2% (neutral) [run_tests]
+- [r1-skinny16-mmout] untested: the reference at 1500 MHz (the rented box cannot lock clocks). Tb/rented-reference = 1.12-1.18 at M >= 8828, but our portal/rented = 1.22-1.26; the 6-9% portal gap stays unexplained (Tb from another solution or another portal run). Next: E3 own kernel, or a repeat r0-equivalent portal submission to measure run-to-run variance [INFERRED]
+- [r1-splitk4-cluster-m17-64] run_tests: 25/25 pass; split-K path M=17 10.4 us vs 7.8 cuBLAS (+33%), 25 11.8 vs 8.5, 32 12.2 vs 7.9, 34 13.5 vs 8.6, 63/64 21.1 vs 8.0 (+165%); predicted portal 0.443 vs 0.487 [run_tests]
+- [r1-splitk4-cluster-m17-64] mma.sync m16n8k16 dependent-issue latency on B200 is only 21 cycles, so latency chains are not the problem [probe_b200]
+- [r1-splitk4-cluster-m17-64] key mechanism: when every B load is issued up front, data lands at the end for all CTAs, so the whole mma.sync workload (~M*21 MFLOP / 550 TF/s: 0.9 us at M=17, 1.8 at 34, 3.4 at 64) is serialized after the stream; measured compute-stage increments +1.4/+2.0/+5 us match. The same effect explains r0's ~0.6 us above the read floor at M<=16 [probe_b200]
+- [r1-splitk4-cluster-m17-64] consequence: any up-front-load design for M>=24 with mma.sync cannot beat cuBLAS (~7.9-8.6 us); the band needs a pipelined stream (compute chunk j while j+1..j+D load) so tensor work overlaps DRAM, plus tcgen05 from M~93 (H4) [INFERRED from probes]
+- [r1-splitk4-cluster-m17-64] staging the A slice per CTA via cp.async costs 0.4 us at M=17 and ~2 us at M=34 on top of the B stream (stream+stage-only 7.4/7.7/9.2/11.7 us at M=17/25/34/64): L2->SM traffic (5120/BN)*M*4 KB is as large as B's DRAM traffic at M~32 with BN=32 [probe_b200]
+- [r1-splitk4-cluster-m17-64] 4-CTA cluster DSMEM reduction (2 cluster barriers + 4 remote float2 reads per output pair) adds ~1.5 us over local-only reduction at M=17-34: above the 1 us refutation threshold [probe_b200]
+- [r1-splitk4-cluster-m17-64] 8-CTA cluster variant (BN=64, SPLIT=8) cost +3 us for the cluster reduce when CTAs ran in 2 waves [probe_b200]
+- [r1-splitk4-cluster-m17-64] dead end: fp32 atomicAdd on shared memory compiles to ATOMS.CAST.SPIN CAS loops on sm_100a (no native shared f32 add); split-K with smem atomics 12.8-105 us [probe_b200]
+- [r1-splitk4-cluster-m17-64] occupancy is decisive: 640 one-shot CTAs need 5 CTAs/SM. 256-thread CTAs with 4x32 B per lane can't hold MMA state in 48 regs (launch_bounds(256,5) gives 24-72 B stack spills, +2-8 us); 128-thread CTAs with 8x32 B per lane fit in 90-96 regs without spills. Above ~41 KB smem/CTA (M>40 at KC=512) the grid falls to 2 waves [probe_b200]
+- [r1-splitk4-cluster-m17-64] dead end for r0 (M<=16): splitting the mma accumulator chain into 2/4 independent accumulators raises regs to 60/72, gives 4/3 CTAs/SM, and is slower (8.0-9.2 vs 6.9-7.1 us) [probe_b200]
+- [r1-splitk4-cluster-m17-64] swapped mma roles (B rows as the m16 operand, A rows as n8) pad M to 8 instead of 16 and keep the r0 k-permutation trick; correct (max err 0.06 vs fp32 ref) [probe_b200]
+- [r1b-lt-tiles] portal 62881 (r1-cutlass256-lt-tiles): tile 314 -7%/-10% at M=25/34, tile 183 -1% at M=172; CUTLASS +1.1-2.5% slower than cuBLAS at M >= 8828 (rented said -1 to -3%) [portal]
+- [r0-skinny16-cublas] cuBLAS launches one nvjet kernel per call at every M; 7.6-10.3 us for M <= 172, 11-18 us for 289-952, 109-195 us for M >= 8828 on the rented B200 at 1965 MHz [run_tests, probe]
+- [r0-skinny16-cublas] 256-bit read-only kernel over the 21 MB of B: 6.4-6.7 us for any grid shape (320-2560 CTAs); empty kernel 1.5 us; read-only flush instead of the zero flush saves 2.1 us (event timing), so ~2 us is dirty-L2 write-back [probe_b200]
+- [r0-skinny16-cublas] evict_first on B loads: no change (6.46 vs 6.43 us read-only; 7.07 vs 7.07 skinny) [probe_b200]
+- [r0-skinny16-cublas] mma.sync m16n8k16 fp16 peaks at ~553 TFLOP/s on B200 (1/4 of tcgen05) [probe_b200]
+- [r0-skinny16-cublas] skinny kernel for M<=16: 8 warps x 4 x 32 B per lane best (6.9-7.2 us); 4 warps 8.9 us, 16 warps 7.7-8.4 us, BN=16 7.5-7.7 us, A loads issued before B +0.3 us [probe_b200]
+- [r0-skinny16-cublas] dead end: extending the skinny kernel to M > 16 by re-reading 16-row A tiles per warp from L2: 10.8 us at M=17, 19.5 us at M=64, 33.7 us at M=128 (A traffic 640 x M x 4 KB) [probe_b200]
+- [r0-skinny16-cublas] Triton tl.dot pointer GEMMs 8.9-13 us at M <= 64 and 309 us at M=16294 vs cuBLAS 7.8 / 199 us [probe_b200]
+- [r0-skinny16-cublas] CuTe DSL dense_gemm_persistent (256x256, cluster 2x1, 2-CTA MMA) 195.5 us at M=16294 vs cuBLAS 198.7 us: same ceiling, 73% of the 2.38 PF peak at 1965 MHz [probe_b200]
+- [r0-skinny16-cublas] r0 passes 25/25; M<=16 6.9-7.2 us (-10% vs cuBLAS), all other sizes equal to cuBLAS within noise [run_tests]
+
+=== PARENTS ===
+--- parent r1b-lt-tiles ---
+design card:
+id: r1b-lt-tiles
+parents:
+- r1-cutlass256-lt-tiles
+- r0-skinny16-cublas
+operation: crossover
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: persistent
+  launch: fused
+  tile: rows256
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: r0 plus r1's forced cublasLt tiles (tile 314 at M 20-48, tile 183 at M 150-200), without r1's CUTLASS large-M
+  path, which was 1-2.5% slower than cuBLAS on the portal. Every path has portal results. Expected portal score ~0.489 from
+  the two pages' per-workload times.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: medium
+  L:
+    pct: 0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 214016
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  CUTLASS_TILE: 256x256x64
+  CLUSTER: 2x1
+  STAGES: 6
+  RASTER: AlongN
+  SWIZZLE: 0
+  CUTLASS_MIN_M: 4096
+  LT_TILE_M20_48: 314
+  LT_TILE_M150_200: 183
+dispatch:
+- max_tokens: 16
+  kernel: skinny_m16_kernel
+  meta:
+    BN: 8
+    WARPS: 8
+- max_tokens: 19
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+- max_tokens: 48
+  kernel: cublasLtMatmul tile 314
+  meta: {}
+- max_tokens: 149
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+- max_tokens: 200
+  kernel: cublasLtMatmul tile 183
+  meta: {}
+- max_tokens: null
+  kernel: at::matmul_out (cuBLAS default)
+  meta: {}
+tests:
+- H6
+- H11
+findings:
+- 'portal 62881 (r1-cutlass256-lt-tiles): tile 314 -7%/-10% at M=25/34, tile 183 -1% at M=172; CUTLASS +1.1-2.5% slower than
+  cuBLAS at M >= 8828 (rented said -1 to -3%) [portal]'
+paths:
+- max_tokens: 16
+  lang: cuda
+  width: 256
+  threads: 256
+  rows: 8
+  grid: oneshot
+  mem: ldg
+  launches: 1
+  cluster: 1
+- max_tokens: 19
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 128
+  grid: persistent
+  mem: tma
+  launches: 1
+  note: cuBLAS default via at::matmul_out
+- max_tokens: 48
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 64
+  grid: persistent
+  mem: tma
+  launches: 1
+  note: cublasLt forced tile id 314, no workspace
+- max_tokens: 149
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 128
+  grid: persistent
+  mem: tma
+  launches: 1
+  note: cuBLAS default via at::matmul_out
+- max_tokens: 200
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 128
+  grid: persistent
+  mem: tma
+  launches: 1
+  note: cublasLt forced tile id 183, no workspace
+- max_tokens: null
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 128
+  grid: persistent
+  mem: tma
+  launches: 1
+  note: cuBLAS default via at::matmul_out
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: sm_100a tcgen05 and 256-bit loads; B200 only
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+- Large M only at parity with cuBLAS on the rented box; on the portal it could land either side of at::matmul_out by 1-3%
+  (the open part of H6/H12)
+- cublasLt tile ids 314/183 come from this cuBLAS build's heuristic list; if missing on the portal, the plan falls back to
+  heuristic index 0 (the default kernel), so no failure
+- Adds -lcublasLt to ld_flags; build time ~45 s for the CUTLASS file (parallel with the other two)
+- M=25/34/172 gains are 0.4-0.9 us at sizes where portal Tb noise is +-5%
+measure_first:
+- B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 7.1/8.3/66.9
+B200 portal: score not submitted, geomean - µs
+
+sm_100a static features: [{"kernel": "_ZN41_GLOBAL__N__3043b96a_9_kernel_cu_77587d0c17skinny_m16_kernelEPK6__halfS2_PS0_i", "num_warps": null, "regs": 46, "smem": 5120, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT.256": 8, "LDG.NA.CONSTANT.256": 4, "STG": 1}}]
+source:
+--- file kernel.cu ---
+// 009_gemm_n5120_k2048: C[M,5120] = A[M,2048] @ B[5120,2048]^T, fp16 in/out, fp32 accumulate.
+// Skinny path (M <= 16): one CTA per 8 rows of B (640 CTAs), 8 warps split K into 256-wide slices,
+// each lane streams 4 x 32 B of B straight into mma.sync fragments (k permuted consistently for A and B),
+// warps' partial sums are reduced through shared memory and written as fp16.
+// cublasLt path: same cuBLAS library, but an explicitly chosen tile (by tile id) for M ranges where the
+// default heuristic pick is measurably slower on B200.
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#include <cublasLt.h>
+#include <unordered_map>
+
+namespace {
+
+constexpr int N_DIM = 5120;
+constexpr int K_DIM = 2048;
+
+template <int BN, int WARPS>
+__device__ __forceinline__ void skinny_body(const __half* __restrict__ A, const __half* __restrict__ B,
+                                            __half* __restrict__ C, int M) {
+  constexpr int KS = K_DIM / WARPS;   // k-slice per warp
+  constexpr int CH = KS / 64;         // 64-wide k chunks per warp (one 256-bit load per lane each)
+  constexpr int NT = BN / 8;          // n8 tiles per CTA
+  __shared__ float red[WARPS][16][BN];
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+  const int n0 = blockIdx.x * BN;
+  const int kw = warp * KS;
+
+  // B fragments: lane (g,t) holds row n0+8*nt+g, k = kw + 64*c + 16*t .. +15
+  unsigned bq[CH][NT][8];
+#pragma unroll
+  for (int c = 0; c < CH; ++c)
+#pragma unroll
+    for (int nt = 0; nt < NT; ++nt) {
+      const __half* p = B + (long)(n0 + 8 * nt + g) * K_DIM + kw + 64 * c + 16 * t;
+      asm volatile("ld.global.nc.L1::no_allocate.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(bq[c][nt][0]), "=r"(bq[c][nt][1]), "=r"(bq[c][nt][2]), "=r"(bq[c][nt][3]),
+                     "=r"(bq[c][nt][4]), "=r"(bq[c][nt][5]), "=r"(bq[c][nt][6]), "=r"(bq[c][nt][7])
+                   : "l"(p));
+    }
+
+  float acc[NT][4];
+#pragma unroll
+  for (int nt = 0; nt < NT; ++nt)
+#pragma unroll
+    for (int j = 0; j < 4; ++j) acc[nt][j] = 0.f;
+
+  const bool r0 = g < M, r1 = (g + 8) < M;
+#pragma unroll
+  for (int c = 0; c < CH; ++c) {
+    unsigned a0[8], a1[8];
+    const __half* pa0 = A + (long)g * K_DIM + kw + 64 * c + 16 * t;
+    const __half* pa1 = pa0 + 8l * K_DIM;
+    if (r0)
+      asm volatile("ld.global.nc.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(a0[0]), "=r"(a0[1]), "=r"(a0[2]), "=r"(a0[3]), "=r"(a0[4]), "=r"(a0[5]), "=r"(a0[6]), "=r"(a0[7])
+                   : "l"(pa0));
+    else {
+#pragma unroll
+      for (int j = 0; j < 8; ++j) a0[j] = 0u;
+    }
+    if (r1)
+      asm volatile("ld.global.nc.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(a1[0]), "=r"(a1[1]), "=r"(a1[2]), "=r"(a1[3]), "=r"(a1[4]), "=r"(a1[5]), "=r"(a1[6]), "=r"(a1[7])
+                   : "l"(pa1));
+    else {
+#pragma unroll
+      for (int j = 0; j < 8; ++j) a1[j] = 0u;
+    }
+    // virtual k-step s uses elements 4s..4s+3 of each lane's 16-element chunk (same permutation for A and B)
+#pragma unroll
+    for (int s = 0; s < 4; ++s)
+#pragma unroll
+      for (int nt = 0; nt < NT; ++nt)
+        asm volatile(
+            "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+            : "+f"(acc[nt][0]), "+f"(acc[nt][1]), "+f"(acc[nt][2]), "+f"(acc[nt][3])
+            : "r"(a0[2 * s]), "r"(a1[2 * s]), "r"(a0[2 * s + 1]), "r"(a1[2 * s + 1]), "r"(bq[c][nt][2 * s]),
+              "r"(bq[c][nt][2 * s + 1]));
+  }
+
+  // cross-warp reduction of the [16, BN] fp32 partials
+#pragma unroll
+  for (int nt = 0; nt < NT; ++nt) {
+    red[warp][g][8 * nt + 2 * t] = acc[nt][0];
+    red[warp][g][8 * nt + 2 * t + 1] = acc[nt][1];
+    red[warp][g + 8][8 * nt + 2 * t] = acc[nt][2];
+    red[warp][g + 8][8 * nt + 2 * t + 1] = acc[nt][3];
+  }
+  __syncthreads();
+  for (int e = threadIdx.x; e < 16 * BN; e += WARPS * 32) {
+    const int m = e / BN, n = e % BN;
+    if (m < M) {
+      float s = 0.f;
+#pragma unroll
+      for (int w = 0; w < WARPS; ++w) s += red[w][m][n];
+      C[(long)m * N_DIM + n0 + n] = __float2half_rn(s);
+    }
+  }
+}
+
+__global__ void __launch_bounds__(256) skinny_m16_kernel(const __half* __restrict__ A, const __half* __restrict__ B,
+                                                         __half* __restrict__ C, int M) {
+  skinny_body<8, 8>(A, B, C, M);
+}
+
+// cublasLt plans keyed by (M, wanted tile id): shape-only configuration, no data or pointers cached.
+struct LtPlan {
+  cublasLtMatmulDesc_t op = nullptr;
+  cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr;
+  cublasLtMatmulAlgo_t algo;
+  bool ok = false;
+};
+cublasLtHandle_t g_lt = nullptr;
+std::unordered_map<long long, LtPlan> g_plans;
+
+LtPlan make_plan(int M, int want_tile) {
+  LtPlan p;
+  // Row-major C[M,N] = A[M,K] B[N,K]^T is column-major C^T[N,M] = (B^T)^T[N,K] x A^T[K,M].
+  if (cublasLtMatmulDescCreate(&p.op, CUBLAS_COMPUTE_32F, CUDA_R_32F) != CUBLAS_STATUS_SUCCESS) return p;
+  cublasOperation_t t = CUBLAS_OP_T, n = CUBLAS_OP_N;
+  cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_TRANSA, &t, sizeof(t));
+  cublasLtMatmulDescSetAttribute(p.op, CUBLASLT_MATMUL_DESC_TRANSB, &n, sizeof(n));
+  cublasLtMatrixLayoutCreate(&p.la, CUDA_R_16F, K_DIM, N_DIM, K_DIM);
+  cublasLtMatrixLayoutCreate(&p.lb, CUDA_R_16F, K_DIM, M, K_DIM);
+  cublasLtMatrixLayoutCreate(&p.lc, CUDA_R_16F, N_DIM, M, N_DIM);
+  cublasLtMatmulPreference_t pref;
+  cublasLtMatmulPreferenceCreate(&pref);
+  size_t wsb = 0;
+  cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &wsb, sizeof(wsb));
+  cublasLtMatmulHeuristicResult_t res[32];
+  int nres = 0;
+  cublasLtMatmulAlgoGetHeuristic(g_lt, p.op, p.la, p.lb, p.lc, p.lc, pref, 32, res, &nres);
+  cublasLtMatmulPreferenceDestroy(pref);
+  if (nres <= 0) return p;
+  int pick = 0;
+  for (int i = 0; i < nres; ++i) {
+    int tile = -1;
+    size_t sz;
+    cublasLtMatmulAlgoConfigGetAttribute(&res[i].algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &tile, sizeof(tile), &sz);
+    if (tile == want_tile && res[i].workspaceSize == 0) { pick = i; break; }
+  }
+  p.algo = res[pick].algo;
+  p.ok = true;
+  return p;
+}
+
+}  // namespace
+
+extern "C" void launch_skinny_m16(const void* A, const void* B, void* C, int M, cudaStream_t stream) {
+  skinny_m16_kernel<<<N_DIM / 8, 256, 0, stream>>>(reinterpret_cast<const __half*>(A),
+                                                   reinterpret_cast<const __half*>(B),
+                                                   reinterpret_cast<__half*>(C), M);
+}
+
+// Returns 0 when the GEMM was launched; nonzero (nothing launched) means the caller must fall back.
+extern "C" int launch_lt_tile(const void* A, const void* B, void* C, int M, int want_tile, cudaStream_t stream) {
+  if (!g_lt && cublasLtCreate(&g_lt) != CUBLAS_STATUS_SUCCESS) { g_lt = nullptr; return 1; }
+  const long long key = (static_cast<long long>(M) << 20) | want_tile;
+  auto it = g_plans.find(key);
+  if (it == g_plans.end()) it = g_plans.emplace(key, make_plan(M, want_tile)).first;
+  const LtPlan& p = it->second;
+  if (!p.ok) return 2;
+  const float alpha = 1.f, beta = 0.f;
+  return cublasLtMatmul(g_lt, p.op, &alpha, B, p.la, A, p.lb, &beta, C, p.lc, C, p.lc, &p.algo, nullptr, 0, stream) ==
+                 CUBLAS_STATUS_SUCCESS
+             ? 0
+             : 3;
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" void launch_skinny_m16(const void* A, const void* B, void* C, int M, cudaStream_t stream);
+extern "C" int launch_lt_tile(const void* A, const void* B, void* C, int M, int want_tile, cudaStream_t stream);
+
+namespace {
+constexpr int64_t N_DIM = 5120;
+constexpr int64_t K_DIM = 2048;
+
+bool aligned(const void* p, uintptr_t a) { return (reinterpret_cast<uintptr_t>(p) & (a - 1)) == 0; }
+
+// cublasLt tile ids measured faster than cuBLAS's default pick on B200 (harness timing, probe r1).
+int lt_tile_for(int64_t M) {
+  if (M >= 20 && M <= 48) return 314;    // M=25: 7.85 vs 8.45 us; M=34: 8.0 vs 8.7 us
+  if (M >= 150 && M <= 200) return 183;  // M=172: 9.7 vs 10.2 us
+  return -1;
+}
+}  // namespace
+
+// DPS entry: C = A @ B.T, A [M,2048] fp16, B [5120,2048] fp16, C [M,5120] fp16.
+void run(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
+  TORCH_CHECK(A.is_cuda() && B.is_cuda() && C.is_cuda(), "inputs must be CUDA tensors");
+  TORCH_CHECK(A.scalar_type() == torch::kHalf && B.scalar_type() == torch::kHalf && C.scalar_type() == torch::kHalf,
+              "fp16 expected");
+  TORCH_CHECK(A.dim() == 2 && B.dim() == 2 && C.dim() == 2, "2-D tensors expected");
+  const int64_t M = A.size(0);
+  TORCH_CHECK(A.size(1) == K_DIM && B.size(0) == N_DIM && B.size(1) == K_DIM && C.size(0) == M && C.size(1) == N_DIM,
+              "unexpected shape");
+  const at::cuda::OptionalCUDAGuard guard(A.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+  const bool contig = A.is_contiguous() && B.is_contiguous() && C.is_contiguous();
+  if (contig && M >= 1 && M <= 16 && aligned(A.data_ptr(), 32) && aligned(B.data_ptr(), 32)) {
+    launch_skinny_m16(A.data_ptr(), B.data_ptr(), C.data_ptr(), static_cast<int>(M), stream);
+    return;
+  }
+  const int tile = lt_tile_for(M);
+  if (contig && tile >= 0) {
+    if (launch_lt_tile(A.data_ptr(), B.data_ptr(), C.data_ptr(), static_cast<int>(M), tile, stream) == 0) return;
+  }
+  at::matmul_out(C, A, B.t());
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "GEMM C = A @ B.T (DPS)"); }
+
+
+--- parent r1-splitk4-cluster-m17-64 ---
+design card:
+id: r1-splitk4-cluster-m17-64
+parents: [r0-skinny16-cublas]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows32
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E2/H3: for 17 <= M <= 64, 640 CTAs of 32 B-rows x 512 k (split-K 4 across a 4-CTA cluster), B loaded up front
+  into registers with 256-bit loads, A slice staged once per CTA in shared memory, mma.sync with B as the m16
+  operand, and a DSMEM cluster reduction should reach the ~7 us read floor. MEASURED: refuted. Every CTA's data
+  lands near the end of the stream, so all the mma.sync work (~550 TF/s) runs after the stream ends instead of
+  overlapping it. Staging A through L2 costs (5120/BN)*M*4 KB of traffic, and the cluster reduction adds ~1.5 us.
+  Result: 10.4-21.1 us vs cuBLAS 7.8-8.6 us. Do not submit to the portal.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 48
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 96
+  smem_per_cta_bytes: 66560
+  threads_per_cta: 128
+  ctas_per_sm: 5
+  bytes_in_flight_per_sm: 141000
+  launches_per_call: 1
+knobs:
+  BN: 32
+  SPLIT: 4
+  KC: 512
+  WARPS: 4
+  loads_per_lane: 8
+  SPLITK_MAX_M: 64
+dispatch:
+  - {max_tokens: 16, kernel: skinny_m16_kernel, meta: {BN: 8, WARPS: 8}}
+  - {max_tokens: 64, kernel: splitk_kernel, meta: {BN: 32, SPLIT: 4, cluster: 4, threads: 128}}
+  - {max_tokens: null, kernel: at::matmul_out (cuBLAS nvjet), meta: {}}
+tests: [H3, H4]
+findings:
+  - "run_tests: 25/25 pass; split-K path M=17 10.4 us vs 7.8 cuBLAS (+33%), 25 11.8 vs 8.5, 32 12.2 vs 7.9, 34 13.5 vs 8.6, 63/64 21.1 vs 8.0 (+165%); predicted portal 0.443 vs 0.487 [run_tests]"
+  - "mma.sync m16n8k16 dependent-issue latency on B200 is only 21 cycles, so latency chains are not the problem [probe_b200]"
+  - "key mechanism: when every B load is issued up front, data lands at the end for all CTAs, so the whole mma.sync workload (~M*21 MFLOP / 550 TF/s: 0.9 us at M=17, 1.8 at 34, 3.4 at 64) is serialized after the stream; measured compute-stage increments +1.4/+2.0/+5 us match. The same effect explains r0's ~0.6 us above the read floor at M<=16 [probe_b200]"
+  - "consequence: any up-front-load design for M>=24 with mma.sync cannot beat cuBLAS (~7.9-8.6 us); the band needs a pipelined stream (compute chunk j while j+1..j+D load) so tensor work overlaps DRAM, plus tcgen05 from M~93 (H4) [INFERRED from probes]"
+  - "staging the A slice per CTA via cp.async costs 0.4 us at M=17 and ~2 us at M=34 on top of the B stream (stream+stage-only 7.4/7.7/9.2/11.7 us at M=17/25/34/64): L2->SM traffic (5120/BN)*M*4 KB is as large as B's DRAM traffic at M~32 with BN=32 [probe_b200]"
+  - "4-CTA cluster DSMEM reduction (2 cluster barriers + 4 remote float2 reads per output pair) adds ~1.5 us over local-only reduction at M=17-34: above the 1 us refutation threshold [probe_b200]"
+  - "8-CTA cluster variant (BN=64, SPLIT=8) cost +3 us for the cluster reduce when CTAs ran in 2 waves [probe_b200]"
+  - "dead end: fp32 atomicAdd on shared memory compiles to ATOMS.CAST.SPIN CAS loops on sm_100a (no native shared f32 add); split-K with smem atomics 12.8-105 us [probe_b200]"
+  - "occupancy is decisive: 640 one-shot CTAs need 5 CTAs/SM. 256-thread CTAs with 4x32 B per lane can't hold MMA state in 48 regs (launch_bounds(256,5) gives 24-72 B stack spills, +2-8 us); 128-thread CTAs with 8x32 B per lane fit in 90-96 regs without spills. Above ~41 KB smem/CTA (M>40 at KC=512) the grid falls to 2 waves [probe_b200]"
+  - "dead end for r0 (M<=16): splitting the mma accumulator chain into 2/4 independent accumulators raises regs to 60/72, gives 4/3 CTAs/SM, and is slower (8.0-9.2 vs 6.9-7.1 us) [probe_b200]"
+  - "swapped mma roles (B rows as the m16 operand, A rows as n8) pad M to 8 instead of 16 and keep the r0 k-permutation trick; correct (max err 0.06 vs fp32 ref) [probe_b200]"
+paths:
+  - {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 64, lang: cuda, width: 256, threads: 128, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 4, note: "split-K 4, A slice via cp.async into smem, DSMEM reduction"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cuBLAS nvjet via at::matmul_out"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "256-bit ld.global.v8 is sm_100 only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Slower than cuBLAS at every M it serves (+33% to +165% rented); submitting it would cost about 0.04 of portal score. Kept only as the recorded E2 result."
+  - "Cluster launch through the __cluster_dims__ attribute with up to 66.5 KB dynamic smem: 2 waves at M>40"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 7.4/12.6/66.2
+B200 portal: score not submitted, geomean - µs
+
+sm_100a static features: [{"kernel": "_ZN41_GLOBAL__N__cf757803_9_kernel_cu_77587d0c13splitk_kernelEPK6__halfS2_PS0_i", "num_warps": null, "regs": 95, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"LDG.NA.CONSTANT.256": 12, "LDGSTS.128": 5, "LDGDEPBAR": 2, "STG": 6, "LDG.CONSTANT.256": 8}}, {"kernel": "_ZN41_GLOBAL__N__cf757803_9_kernel_cu_77587d0c17skinny_m16_kernelEPK6__halfS2_PS0_i", "num_warps": null, "regs": 46, "smem": 5120, "local": 0, "resident_per_sm": null, "ops": {"LDG.NA.CONSTANT.256": 12, "LDGSTS.128": 5, "LDGDEPBAR": 2, "STG": 6, "LDG.CONSTANT.256": 8}}]
+source:
+--- file kernel.cu ---
+// 009_gemm_n5120_k2048: C[M,5120] = A[M,2048] @ B[5120,2048]^T, fp16 in/out, fp32 accumulate.
+// Skinny path (M <= 16): r0's one-CTA-per-8-rows kernel (640 CTAs, 256-bit B loads straight into mma.sync).
+// Split-K path (17 <= M <= 64, experiment E2/H3): 640 CTAs of 128 threads in clusters of 4 along K.
+// CTA = 32 rows of B x 512 k; each warp owns 128 k and loads 8 x 32 B of B per lane into registers.
+// The A slice [M,512] is staged in shared memory with cp.async; mma.sync runs with B as the m16 operand and
+// A as the n8 operand (M padded to 8). Each warp overwrites its own A slab with its fp32 partials, the 4 warp
+// slabs are summed locally, then the 4 CTAs of the cluster are summed through DSMEM and written as fp16.
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+
+namespace {
+
+constexpr int N_DIM = 5120;
+constexpr int K_DIM = 2048;
+
+template <int BN, int WARPS>
+__device__ __forceinline__ void skinny_body(const __half* __restrict__ A, const __half* __restrict__ B,
+                                            __half* __restrict__ C, int M) {
+  constexpr int KS = K_DIM / WARPS;
+  constexpr int CH = KS / 64;
+  constexpr int NT = BN / 8;
+  __shared__ float red[WARPS][16][BN];
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+  const int n0 = blockIdx.x * BN;
+  const int kw = warp * KS;
+
+  unsigned bq[CH][NT][8];
+#pragma unroll
+  for (int c = 0; c < CH; ++c)
+#pragma unroll
+    for (int nt = 0; nt < NT; ++nt) {
+      const __half* p = B + (long)(n0 + 8 * nt + g) * K_DIM + kw + 64 * c + 16 * t;
+      asm volatile("ld.global.nc.L1::no_allocate.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(bq[c][nt][0]), "=r"(bq[c][nt][1]), "=r"(bq[c][nt][2]), "=r"(bq[c][nt][3]),
+                     "=r"(bq[c][nt][4]), "=r"(bq[c][nt][5]), "=r"(bq[c][nt][6]), "=r"(bq[c][nt][7])
+                   : "l"(p));
+    }
+
+  float acc[NT][4];
+#pragma unroll
+  for (int nt = 0; nt < NT; ++nt)
+#pragma unroll
+    for (int j = 0; j < 4; ++j) acc[nt][j] = 0.f;
+
+  const bool r0 = g < M, r1 = (g + 8) < M;
+#pragma unroll
+  for (int c = 0; c < CH; ++c) {
+    unsigned a0[8], a1[8];
+    const __half* pa0 = A + (long)g * K_DIM + kw + 64 * c + 16 * t;
+    const __half* pa1 = pa0 + 8l * K_DIM;
+    if (r0)
+      asm volatile("ld.global.nc.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(a0[0]), "=r"(a0[1]), "=r"(a0[2]), "=r"(a0[3]), "=r"(a0[4]), "=r"(a0[5]), "=r"(a0[6]), "=r"(a0[7])
+                   : "l"(pa0));
+    else {
+#pragma unroll
+      for (int j = 0; j < 8; ++j) a0[j] = 0u;
+    }
+    if (r1)
+      asm volatile("ld.global.nc.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                   : "=r"(a1[0]), "=r"(a1[1]), "=r"(a1[2]), "=r"(a1[3]), "=r"(a1[4]), "=r"(a1[5]), "=r"(a1[6]), "=r"(a1[7])
+                   : "l"(pa1));
+    else {
+#pragma unroll
+      for (int j = 0; j < 8; ++j) a1[j] = 0u;
+    }
+#pragma unroll
+    for (int s = 0; s < 4; ++s)
+#pragma unroll
+      for (int nt = 0; nt < NT; ++nt)
+        asm volatile(
+            "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+            : "+f"(acc[nt][0]), "+f"(acc[nt][1]), "+f"(acc[nt][2]), "+f"(acc[nt][3])
+            : "r"(a0[2 * s]), "r"(a1[2 * s]), "r"(a0[2 * s + 1]), "r"(a1[2 * s + 1]), "r"(bq[c][nt][2 * s]),
+              "r"(bq[c][nt][2 * s + 1]));
+  }
+
+#pragma unroll
+  for (int nt = 0; nt < NT; ++nt) {
+    red[warp][g][8 * nt + 2 * t] = acc[nt][0];
+    red[warp][g][8 * nt + 2 * t + 1] = acc[nt][1];
+    red[warp][g + 8][8 * nt + 2 * t] = acc[nt][2];
+    red[warp][g + 8][8 * nt + 2 * t + 1] = acc[nt][3];
+  }
+  __syncthreads();
+  for (int e = threadIdx.x; e < 16 * BN; e += WARPS * 32) {
+    const int m = e / BN, n = e % BN;
+    if (m < M) {
+      float s = 0.f;
+#pragma unroll
+      for (int w = 0; w < WARPS; ++w) s += red[w][m][n];
+      C[(long)m * N_DIM + n0 + n] = __float2half_rn(s);
+    }
+  }
+}
+
+__global__ void __launch_bounds__(256) skinny_m16_kernel(const __half* __restrict__ A, const __half* __restrict__ B,
+                                                         __half* __restrict__ C, int M) {
+  skinny_body<8, 8>(A, B, C, M);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Split-K cluster kernel (17 <= M <= 64).
+constexpr int SK_BN = 32;               // B rows per CTA
+constexpr int SK_SPLIT = 4;             // K split = cluster size
+constexpr int SK_KC = K_DIM / SK_SPLIT; // 512 k per CTA, 128 per warp
+constexpr int SK_SA = SK_KC + 8;        // smem row stride in halves (16 B pad: conflict-free LDS/STS)
+
+__device__ __forceinline__ unsigned smem_u32(const void* p) { return (unsigned)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ void cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\nbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+
+__global__ void __cluster_dims__(SK_SPLIT, 1, 1) __launch_bounds__(128, 5)
+    splitk_kernel(const __half* __restrict__ A, const __half* __restrict__ B, __half* __restrict__ C, int M) {
+  extern __shared__ __align__(16) unsigned char smem[];
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31, g = lane >> 2, t = lane & 3;
+  const int ks = blockIdx.x % SK_SPLIT;  // == cluster rank for a 1-D cluster
+  const int n0 = (blockIdx.x / SK_SPLIT) * SK_BN, kc0 = ks * SK_KC;
+
+  // B fragments first: lane (g,t) holds rows n0+16i+8h+g, k = kc0 + 128*warp + 64c + 16t .. +15
+  unsigned bq[2][2][2][8];
+#pragma unroll
+  for (int c = 0; c < 2; ++c)
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+#pragma unroll
+      for (int h = 0; h < 2; ++h) {
+        const __half* p = B + (long)(n0 + 16 * i + 8 * h + g) * K_DIM + kc0 + 128 * warp + 64 * c + 16 * t;
+        asm volatile("ld.global.nc.L1::no_allocate.v8.b32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+                     : "=r"(bq[c][i][h][0]), "=r"(bq[c][i][h][1]), "=r"(bq[c][i][h][2]), "=r"(bq[c][i][h][3]),
+                       "=r"(bq[c][i][h][4]), "=r"(bq[c][i][h][5]), "=r"(bq[c][i][h][6]), "=r"(bq[c][i][h][7])
+                     : "l"(p));
+      }
+  // A slice [M, 512] -> smem
+  constexpr int CPR = SK_KC / 8;
+  for (int c = threadIdx.x; c < M * CPR; c += 128) {
+    const int m = c / CPR, col = c % CPR;
+    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(smem_u32(smem + (m * SK_SA + col * 8) * 2)),
+                 "l"(A + (long)m * K_DIM + kc0 + col * 8)
+                 : "memory");
+  }
+  asm volatile("cp.async.commit_group;\ncp.async.wait_all;" ::: "memory");
+  __syncthreads();
+
+  const int MT = (M + 7) >> 3;
+  unsigned char* slab = smem + warp * 256;  // this warp's 128 k columns (256 B per row)
+  for (int mt = 0; mt < MT; ++mt) {
+    const int mr = min(8 * mt + g, M - 1);  // rows >= M only feed discarded output columns
+    float acc[2][4];
+#pragma unroll
+    for (int i = 0; i < 2; ++i)
+#pragma unroll
+      for (int j = 0; j < 4; ++j) acc[i][j] = 0.f;
+#pragma unroll
+    for (int c = 0; c < 2; ++c) {
+      const uint4* pa = (const uint4*)(slab + mr * SK_SA * 2 + 128 * c + 32 * t);
+      const uint4 x0 = pa[0], x1 = pa[1];
+      const unsigned af[8] = {x0.x, x0.y, x0.z, x0.w, x1.x, x1.y, x1.z, x1.w};
+      // virtual k-step s uses elements 4s..4s+3 of each lane's 16-element chunk (same permutation for A and B)
+#pragma unroll
+      for (int s = 0; s < 4; ++s)
+#pragma unroll
+        for (int i = 0; i < 2; ++i)
+          asm volatile(
+              "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 {%0,%1,%2,%3},{%4,%5,%6,%7},{%8,%9},{%0,%1,%2,%3};"
+              : "+f"(acc[i][0]), "+f"(acc[i][1]), "+f"(acc[i][2]), "+f"(acc[i][3])
+              : "r"(bq[c][i][0][2 * s]), "r"(bq[c][i][1][2 * s]), "r"(bq[c][i][0][2 * s + 1]),
+                "r"(bq[c][i][1][2 * s + 1]), "r"(af[2 * s]), "r"(af[2 * s + 1]));
+    }
+    __syncwarp();
+    // D = C^T tile: rows n (16i+g, +8), cols m (8mt+2t, +1); written over this warp's consumed A rows
+    float* q0 = (float*)(slab + (8 * mt + 2 * t) * SK_SA * 2);
+    float* q1 = (float*)(slab + (8 * mt + 2 * t + 1) * SK_SA * 2);
+#pragma unroll
+    for (int i = 0; i < 2; ++i) {
+      q0[16 * i + g] = acc[i][0];
+      q0[16 * i + g + 8] = acc[i][2];
+      q1[16 * i + g] = acc[i][1];
+      q1[16 * i + g + 8] = acc[i][3];
+    }
+  }
+  __syncthreads();
+  // sum the 4 warp slabs into slab 0
+  for (int e = threadIdx.x; e < M * 16; e += 128) {
+    const int m = e >> 4, n = 2 * (e & 15);
+    float sx = 0.f, sy = 0.f;
+#pragma unroll
+    for (int w = 0; w < 4; ++w) {
+      const float2 v = *(const float2*)(smem + m * SK_SA * 2 + w * 256 + n * 4);
+      sx += v.x;
+      sy += v.y;
+    }
+    *(float2*)(smem + m * SK_SA * 2 + n * 4) = make_float2(sx, sy);
+  }
+  cluster_sync();
+  // cluster rank ks reduces rows [ks*RP, ks*RP+RP) over the 4 CTAs through DSMEM
+  const int RP = (M + SK_SPLIT - 1) / SK_SPLIT;
+  const int mb = ks * RP, me = min(M, mb + RP);
+  for (int e = threadIdx.x; e < (me - mb) * 16; e += 128) {
+    const int m = mb + (e >> 4), n = 2 * (e & 15);
+    const unsigned a = smem_u32(smem + m * SK_SA * 2 + n * 4);
+    float sx = 0.f, sy = 0.f;
+#pragma unroll
+    for (int q = 0; q < SK_SPLIT; ++q) {
+      unsigned ra;
+      float vx, vy;
+      asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(ra) : "r"(a), "r"(q));
+      asm volatile("ld.shared::cluster.v2.f32 {%0,%1}, [%2];" : "=f"(vx), "=f"(vy) : "r"(ra) : "memory");
+      sx += vx;
+      sy += vy;
+    }
+    *(__half2*)(C + (long)m * N_DIM + n0 + n) = __floats2half2_rn(sx, sy);
+  }
+  cluster_sync();  // keep this CTA's smem alive until the other CTAs have read it
+}
+
+}  // namespace
+
+extern "C" void launch_skinny_m16(const void* A, const void* B, void* C, int M, cudaStream_t stream) {
+  skinny_m16_kernel<<<N_DIM / 8, 256, 0, stream>>>(reinterpret_cast<const __half*>(A),
+                                                   reinterpret_cast<const __half*>(B),
+                                                   reinterpret_cast<__half*>(C), M);
+}
+
+extern "C" void launch_splitk(const void* A, const void* B, void* C, int M, cudaStream_t stream) {
+  static bool configured = false;
+  if (!configured) {
+    cudaFuncSetAttribute(splitk_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, 227 * 1024);
+    configured = true;
+  }
+  const int MP = (M + 7) & ~7;
+  const size_t smem = (size_t)MP * SK_SA * 2;
+  splitk_kernel<<<(N_DIM / SK_BN) * SK_SPLIT, 128, smem, stream>>>(reinterpret_cast<const __half*>(A),
+                                                                  reinterpret_cast<const __half*>(B),
+                                                                  reinterpret_cast<__half*>(C), M);
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" void launch_skinny_m16(const void* A, const void* B, void* C, int M, cudaStream_t stream);
+extern "C" void launch_splitk(const void* A, const void* B, void* C, int M, cudaStream_t stream);
+
+namespace {
+constexpr int64_t N_DIM = 5120;
+constexpr int64_t K_DIM = 2048;
+constexpr int64_t SPLITK_MAX_M = 64;  // E2 split-K kernel range (17..64)
+
+bool aligned32(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 31) == 0; }
+}  // namespace
+
+// DPS entry: C = A @ B.T, A [M,2048] fp16, B [5120,2048] fp16, C [M,5120] fp16.
+void run(torch::Tensor A, torch::Tensor B, torch::Tensor C) {
+  TORCH_CHECK(A.is_cuda() && B.is_cuda() && C.is_cuda(), "inputs must be CUDA tensors");
+  TORCH_CHECK(A.scalar_type() == torch::kHalf && B.scalar_type() == torch::kHalf && C.scalar_type() == torch::kHalf,
+              "fp16 expected");
+  TORCH_CHECK(A.dim() == 2 && B.dim() == 2 && C.dim() == 2, "2-D tensors expected");
+  const int64_t M = A.size(0);
+  TORCH_CHECK(A.size(1) == K_DIM && B.size(0) == N_DIM && B.size(1) == K_DIM && C.size(0) == M && C.size(1) == N_DIM,
+              "unexpected shape");
+  const at::cuda::OptionalCUDAGuard guard(A.device());
+
+  const bool layout_ok = A.is_contiguous() && B.is_contiguous() && C.is_contiguous() && aligned32(A.data_ptr()) &&
+                         aligned32(B.data_ptr()) && aligned32(C.data_ptr());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  if (layout_ok && M >= 1 && M <= 16) {
+    launch_skinny_m16(A.data_ptr(), B.data_ptr(), C.data_ptr(), static_cast<int>(M), stream);
+  } else if (layout_ok && M >= 17 && M <= SPLITK_MAX_M) {
+    launch_splitk(A.data_ptr(), B.data_ptr(), C.data_ptr(), static_cast<int>(M), stream);
+  } else {
+    at::matmul_out(C, A, B.t());
+  }
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "GEMM C = A @ B.T (DPS)"); }
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

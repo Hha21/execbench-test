@@ -1,0 +1,107 @@
+id: r2-ring-mma
+parents:
+  - r1b-lt-tiles
+  - r1-splitk4-cluster-m17-64
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: cpasync
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows80
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E1/H16: a pipelined cp.async ring (separate B and A rings, 8 chunks of k=64 in flight each, padded 144 B rows
+  for conflict-free ldmatrix) feeding mma.sync, with B as the m16 operand, should overlap the tensor work with the
+  B stream and reach <= 7.5 us at M=17-64. MEASURED: refuted. The B-only ring reaches 6.85-7.2 us. Adding the A
+  ring makes it 7.7/8.1/8.9 us at M=17/32/64 with no MMA at all, which is already at or above cuBLAS (7.8-8.0).
+  The real MMA loop and the split-K epilogue add a further 6-10 us: 13.9-18.8 us in harness timing. MAXM by the
+  4% rule = 0. The ring path is enabled for M=17-64 only to record the result; do not submit.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 57
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 116
+  smem_per_cta_bytes: 207360
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 166000
+  launches_per_call: 1
+knobs:
+  BN: 80
+  SPLIT: 2
+  KC: 64
+  DB: 8
+  DA: 8
+  NW: 8
+  WK: 2
+  WM: 4
+  RING_MIN_M: 17
+  RING_MAX_M: 64
+dispatch:
+  - max_tokens: 16
+    kernel: skinny_m16_kernel
+    meta: {BN: 8, WARPS: 8}
+  - max_tokens: 64
+    kernel: ring_kernel
+    meta: {BN: 80, SPLIT: 2, KC: 64, DB: 8, DA: 8, threads: 256, grid: 128}
+  - max_tokens: 149
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: 200
+    kernel: cublasLtMatmul tile 183
+    meta: {}
+  - max_tokens: null
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+tests:
+  - H16
+  - H4
+findings:
+  - "run_tests: 25/25 pass. Ring path vs r0 path: M=17 13.9 vs 7.9 us, 25 15.0 vs 8.4, 32 15.2 vs 7.8, 34 16.2 vs 8.4, 63 18.6 vs 7.9, 64 18.8 vs 8.0 (+76..+137%). Predicted portal 0.4285 [run_tests]"
+  - "H16 refuted by the loads alone. Ring with B and A cp.async and no MMA (BN=80, split 2, 128 CTAs, DB=DA=8): 7.68/8.10/8.87 us at M=17/32/64 vs cuBLAS 7.79/7.79/7.97 in harness timing. Even with free compute there is no >= 4% win at any M in 17-64 [probe_b200]"
+  - "B-only cp.async ring: needs >= ~80-100 KB of B in flight per CTA. BN=80 split 2 DB=12 (KC=64): 6.85-7.24 us; DB=8: 8.0-8.1 us; BN=32 full-K 160 CTAs DB=8: 7.7 us (M=17) but 10.5 us once smem forces 2 waves; BN=32 4 stages x KC=128: 8.4 us [probe_b200]"
+  - "A ring prefetch depth matters: DA=2 costs +1.8/+3 us over B-only at M=17/64 (loaded L2 latency > 2 chunks); DA=8 cuts that to +0.5-1.7 us [probe_b200]"
+  - "raw mma.sync m16n8k16 on B200 at 1965 MHz, 148 CTAs: 1 accumulator chain 116-407 TF/s (4-16 warps; ~41 clk latency); 5 chains 446-520; 10 chains 502-544 TF/s (8.8-9.5 clk per HMMA per SMSP). H4's 550 TF/s needs >= 5 independent chains per warp [probe_b200]"
+  - "ring MMA loop (one __syncthreads per 64-k chunk, 10 ldmatrix.x4 of B + 1 of A per tile, 10-20 HMMA per warp per chunk) reaches only ~30 clk per HMMA: compute-only 4.9 us at M=17 (~100-180 TF/s). Barrier plus ldmatrix latency per chunk dominate; needs bigger chunks per barrier, mbarrier stages and fragment double-buffering [probe_b200]"
+  - "split-K epilogue is expensive at the tail: smem reduce + direct C stores +1.1-2 us; global fp32 partials + __threadfence + atomic counter + __ldcg partner read another +1.5-5.6 us (several L2 round trips under the dirty-L2 write-back load) [probe_b200]"
+  - "BN=80 x split 2 = 128 CTAs (1/SM, up to 220 KB smem) is the only shape that avoids a second wave with deep rings; 160-CTA grids (BN=32 full K, BN=64 split 2) fall to 2 waves once smem > 113 KB [probe_b200]"
+  - "conclusion for the band: any smem-staged A path for M >= 17 pays ~0.5-1.7 us of A ingress, and mma.sync with per-chunk barriers cannot hide its work in a 5 us stream. cuBLAS's 7.8-8.0 us at M=17-64 is within ~0.3-0.9 us of the read floor; remaining mid-band upside is small (H14 Lt enumeration or tcgen05) [INFERRED]"
+paths:
+  - {max_tokens: 16, lang: cuda, width: 256, threads: 256, rows: 8, grid: oneshot, mem: ldg, launches: 1, cluster: 1}
+  - {max_tokens: 64, lang: cuda, width: 128, threads: 256, rows: 80, grid: oneshot, mem: cpasync, launches: 1, prefetch: true, cluster: 1, note: "split-K 2 with global partials + last-CTA counter; 128 CTAs"}
+  - {max_tokens: 149, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cuBLAS default via at::matmul_out"}
+  - {max_tokens: 200, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cublasLt forced tile id 183"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, note: "cuBLAS default via at::matmul_out"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "skinny path uses sm_100-only 256-bit loads"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Slower than cuBLAS by 76-137% at M=17-64 on the rented B200; submitting it would cost ~0.06 of portal score. Kept only as the E1 record; production should stay on r1b-lt-tiles."
+  - "Split-K scratch and counters are static __device__ arrays (zeroed at module load, counter reset each call); correct only for single-stream use, which the harness guarantees."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

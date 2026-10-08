@@ -1,0 +1,201 @@
+id: r2-wholewave-mcastA-mid
+parents:
+  - r1b-lt-tiles
+  - r1-cutlass256-lt-tiles
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E3 exploration (H15, H17). r1b-lt-tiles plus whole-wave CUTLASS sm100 1-SM tiles for M=200-1500, with A
+  TMA-multicast along an N-cluster to cut the bytes each SM issues. Result: refuted. Whole-wave tiles are 17-62%
+  slower than cuBLAS at M=289/492/952, whatever the BK (64/128) or multicast (1x1/1x2/1x4). Single-wave CUTLASS
+  tiles fit t = bytes received per SM / ~90 GB/s + 1.5 us to within 1 us. The SM-side bound is the bytes each SM
+  receives, and multicast does not reduce them. Only cuBLAS's 2-CTA tiles, which split B across an SM pair, get
+  under it. This candidate is a recorded negative result; do not spend a portal slot on it.
+expected_effect:
+  S:
+    pct: 4
+    confidence: high
+  M:
+    pct: 62
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 46
+  smem_per_cta_bytes: 200000
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 180000
+  launches_per_call: 1
+knobs:
+  MID_TILE_M200_400: 128x112x64 1SM cluster 1x4
+  MID_TILE_M400_700: 128x144x64 1SM cluster 1x2
+  MID_TILE_M700_1500: 128x144x64 1SM cluster 1x4
+  RASTER: AlongN
+  LT_TILE_M20_48: 314
+  LT_TILE_M150_200: 183
+dispatch:
+  - max_tokens: 16
+    kernel: skinny_m16_kernel
+    meta:
+      BN: 8
+      WARPS: 8
+  - max_tokens: 19
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: 48
+    kernel: cublasLtMatmul tile 314
+    meta: {}
+  - max_tokens: 149
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+  - max_tokens: 200
+    kernel: cublasLtMatmul tile 183
+    meta: {}
+  - max_tokens: 400
+    kernel: CUTLASS 1SM 128x112x64 cluster 1x4 (A multicast)
+    meta: {}
+  - max_tokens: 700
+    kernel: CUTLASS 1SM 128x144x64 cluster 1x2 (A multicast)
+    meta: {}
+  - max_tokens: 1500
+    kernel: CUTLASS 1SM 128x144x64 cluster 1x4 (A multicast)
+    meta: {}
+  - max_tokens: null
+    kernel: at::matmul_out (cuBLAS default)
+    meta: {}
+tests:
+  - H15
+  - H17
+findings:
+  - "H15 probe (1-D cp.async.bulk ring, 32 MB L2-resident buffer, event timing, 1965 MHz): per-SM ingress from L2 is 149 GB/s with 32 KB x 6 stages per SM, and identical with 16, 74 or 148 CTAs (aggregate 2.4 to 22 TB/s). The limit is on the SM side, not L2 bandwidth. Peak seen: 182 GB/s per SM (93 B/clk, 27 TB/s aggregate) with 64 KB x 3 stages [probe_b200]"
+  - "H15 probe: one issuing thread is capped by copy count, not ring depth. 16 KB copies: ST=1 44, ST=2 84.5, ST=4/8/12 86-90 GB/s. 32 KB: ST=1 72.5, ST=2 134, ST=4 167, ST=6 149 GB/s. Two issuing warps x 16 KB x 4 stages: 144 GB/s. 2-4 CTAs/SM with 16/8 KB copies: 149 GB/s per SM [probe_b200]"
+  - "probe: cp.async 16 B (LDGSTS, 256 thr, 8 per thread per stage) from L2: 37 GB/s per CTA at 148 CTAs (5.5 TB/s), 62 GB/s per SM at 296 CTAs (9.3 TB/s) [probe_b200]"
+  - "probe: DRAM-cold (flush_l2) 1-D bulk read, 148 x 32 KB x 6 or 296 x 16 KB x 6: 35 GB/s per SM, 5.2-5.3 TB/s aggregate [probe_b200]"
+  - "probe pitfall: an mbarrier.arrive.release.cluster per chunk (empty barrier) serialises the issuing thread's bulk copies (42 GB/s per CTA at any depth). Multicast probe with release arrives: 37-40 GB/s per SM. The relaxed-arrive multicast variant died with 'unspecified launch failure', so the multicast ingress probe is inconclusive [probe_b200]"
+  - "H17 refuted, CUTLASS 1SM BK=64 whole-wave tiles vs cuBLAS (harness_time, 3 interleaved repeats, max err 0.0). M=289: cuBLAS 11.2; 128x112 (138 CTAs) 13.1; 128x144 14.5; 128x160 14.6. M=492: cuBLAS 11.6; 128x112 18.9; 128x144 (144 CTAs) 14.8; 128x160 14.8. M=952: cuBLAS 17.7-18.0; 128x112 25.4; 128x144 (288 tiles) 22.9; 128x160 23.4 [probe_b200]"
+  - "dead end: BK=128 (32 KB TMA boxes, 3 stages) makes CUTLASS slower: 128x112 at 289 14.3 us, 128x144 at 492 18.8, at 952 29.5. Large 1-D bulk copies are fast, but bigger tensor-TMA boxes with fewer stages are not [run_tests]"
+  - "dead end: A multicast with a 1-SM tile and cluster (1,CN): 128x112 1x4 at 289 18.2 us (vs 13.1 without a cluster), 128x144 1x2 at 492 14.8 (unchanged), 128x144 1x4 at 952 29.6 (vs 22.9). Multicast does not cut the bytes each SM receives and adds cluster sync [run_tests]"
+  - "CUTLASS 2SM 256x144 (cluster 2x1) does not compile in the CollectiveBuilder (static assert, N/2=72); use 160/192/256 [probe_b200]"
+  - "Part 3 residuals, expected = (bytes received per CTA)/90 GB/s x rounds + 1.5 us (per-SM fp16 peak 16.1 TF/s at 1965 MHz; compute <= 4.7 us per tile, never binding). Single-wave cases: 289 128x112 exp 12.4 / meas 13.1 (+0.7); 128x144 13.9/14.5 (+0.6); 128x160 14.6/14.6 (0.0); r1 128x128 13.2/13.6 (+0.4); 492 128x144 13.9/14.8 (+0.9); 128x160 14.6/14.8 (+0.2). Against the raw 182 GB/s ingress the residual is +5 to +7 us [INFERRED from probe + run_tests]"
+  - "Part 3: multi-round cases beat the 90 GB/s model (492 128x112 exp 23.3 / meas 18.9; 952 128x144 26.3/22.9; 128x160 27.7/23.4). Later rounds ingest ~105-150 GB/s per SM. Likely cause: round 1 waits on DRAM-cold B with a fixed ~180 KB smem ring (Little's law), while later rounds hit B in L2 [INFERRED]"
+  - "implication for r3: cuBLAS wins because its 2-CTA tiles cut the bytes each SM receives (A 128 rows + half of B), not because of wave count. A custom tcgen05 kernel needs (a) fewer received bytes per SM (2SM pair; blocked above 300 tokens by the cluster constraint), (b) more first-round bytes in flight (several producer threads, deeper ring), or (c) cp.async.bulk.prefetch.L2 of B so round 1 hits L2. Untested: the 2SM 256x160 (M=492) and 256x256 (M=952) run_tests was cut off by the budget [INFERRED]"
+  - "run_tests: 25/25 pass for both tested variants (BK=128 and A-multicast); predicted portal 0.4665 and 0.4679 vs best 0.4870 [run_tests]"
+paths:
+  - max_tokens: 16
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 8
+    grid: oneshot
+    mem: ldg
+    launches: 1
+    cluster: 1
+  - max_tokens: 19
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+  - max_tokens: 48
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 64
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cublasLt forced tile id 314, no workspace"
+  - max_tokens: 149
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+  - max_tokens: 200
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cublasLt forced tile id 183, no workspace"
+  - max_tokens: 400
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 4
+    note: "CUTLASS 1SM 128x112x64, cluster 1x4 A multicast, 144 CTAs at M=289"
+  - max_tokens: 700
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    note: "CUTLASS 1SM 128x144x64, cluster 1x2 A multicast, 144 CTAs at M=492"
+  - max_tokens: 1500
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 4
+    note: "CUTLASS 1SM 128x144x64, cluster 1x4 A multicast, 288 tiles at M=952"
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    note: "cuBLAS default via at::matmul_out"
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "sm_100a tcgen05 CUTLASS kernels and 256-bit loads; B200 only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Measured slower than cuBLAS at M=289 (+69%), 492 (+27%) and 952 (+62%) on the rented B200; predicted portal 0.468 vs best 0.487. Exploration record only, not a portal candidate"
+  - "Uses clusters at M=492/952, which breaks the ledger rule 'clusters only at <= 300 tokens'"
+  - "Three CUTLASS instantiations add ~45 s of parallel build time"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

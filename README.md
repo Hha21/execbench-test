@@ -11,6 +11,7 @@ a day). The first problem is #38; more are planned.
 | Problem | Best | How | Public #1 |
 |---|---|---|---|
 | **#38 `038_flux_multi_head_rmsnorm_qk`** (per-head RMSNorm of Q and K, fp32, 16 sizes, 13-805 MB) | **0.6125** (`c2-cluster2-s-only`) | one-shot 256-bit kernel, outputs kept in L2, 3 tokens per thread at 1024 tokens, cluster-of-2 launch at the smallest sizes | 0.6275 |
+| **#218 `FlashInfer-Bench/009_gemm_n5120_k2048`** (fp16 GEMM `A @ B.T`, N=5120, K=2048, M 1-16294, 25 sizes) | **0.4870** (`r0-skinny16-cublas`); `r1b-lt-tiles` (~0.489) ready | 256-bit streaming mma.sync kernel at M <= 16, cuBLAS elsewhere (forced cublasLt tiles at M 20-48 and 150-200 in r1b). Parked after r2: cuBLAS is within ~0.3-0.9 us of the read floor at mid sizes and the large-M baseline is a stored time 6-9% below cuBLAS on the portal | ? |
 
 <details><summary>#38 history</summary>
 

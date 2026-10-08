@@ -144,6 +144,26 @@ faster than cuBLAS under the portal's conditions. Portal/rented time
 ratio: 1.07-1.13 for M <= 16 (memory-bound), 1.18-1.23 for 93-952, 1.22-1.26 for the compute band (clock ratio
 1965/1500 = 1.31). The reference's portal/rented ratio is 1.06-1.23 (noisy at small M, 1.16-1.21 at large M).
 
+**r1 portal (62881) r1-cutlass256-lt-tiles: 0.4847.** cublasLt tile 314 -7/-10% at M=25/34 (transferred), tile 183
+-1% at 172 (rented said -7%), CUTLASS 256x256 2-CTA +1.1-2.5% slower than cuBLAS at M >= 8828 (rented said 1-3%
+faster: the power-capped rented box cannot rank large-M kernels). `r1b-lt-tiles` = r0 + the tiles, no CUTLASS:
+25/25 rented, expected ~0.489 from the two pages.
+
+**r2 (all negative):**
+- Pipelined cp.async ring + mma.sync for M = 17-64: 1.8-2.4x slower than cuBLAS. Streaming B and A through smem with
+  *no* MMA already takes 7.7-8.9 us vs cuBLAS 7.8-8.0; a B-only ring reaches 6.85-7.2 us. mma.sync needs >= 5
+  independent accumulator chains per warp to reach ~520 TF/s; per-chunk barriers + ldmatrix leave it at ~30 clk per
+  HMMA. Split-K epilogues cost +1-5.6 us. cuBLAS is within ~0.3-0.9 us of the read floor at M = 17-64.
+- cublasLt beyond the heuristic: nothing new >= 4% at any mid size (heuristic indices 0-2 with a 32 MB workspace;
+  split-K 2 is +48-141%). Not run: the full template enumeration (634 tiles x custom option 0-7 x cluster ids;
+  start from a heuristic-returned algo, since a bare AlgoInit never passes AlgoCheck).
+- CUTLASS 1-SM whole-wave tiles at M = 289-952: 17-62% slower than cuBLAS with any BK or A multicast. Per-SM ingress
+  is capped at ~150-180 GB/s whatever the L2 aggregate, so single-wave tiles follow
+  `t = bytes received per SM / ~90 GB/s + 1.5 us`; cuBLAS's 2-CTA tiles win by halving the B bytes each SM receives.
+
+**Status: parked at r2.** Realistic remaining upside ~+0.01 (cublasLt enumeration, a 2-SM tcgen05 kernel at
+289-952 with L2 prefetch of B). Large M is blocked by the stored Tb.
+
 ## 8. Open questions
 
 - The exact atol/rtol of this definition (both cuBLAS and mma.sync pass; relevant only if a reduction order gets

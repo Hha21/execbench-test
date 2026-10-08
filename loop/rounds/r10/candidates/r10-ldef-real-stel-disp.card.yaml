@@ -1,0 +1,107 @@
+id: r10-ldef-real-stel-disp
+parents:
+  - r6-s-ldef-nc-disp
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Exploration of the L2 end state. The store side is already at its limit: evict_last on every store
+  is as good as any "last X MB evict_last", fractional or reordered variant (all within 1%). The real
+  extra cost is that reads evict the dirty lines the harness flush leaves in L2. evict_first on the x
+  loads recovers 13-15% on a read-only kernel, but with evict_last stores only 1-2% at 256-1024 tokens
+  (8% at 586, which r6 already had). So the candidate is r6 with evict_first x loads extended from
+  B*S <= 600 to B*S <= 1024, plain loads above. Measured on the rented B200 vs r6: S -0.8%, M -1.2%,
+  L +0.3% (noise). The predicted portal score is 0.611 +- 0.009.
+expected_effect:
+  S:
+    pct: -0.5
+    confidence: medium
+  M:
+    pct: -1
+    confidence: low
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  EF_MAX_TOKENS: 1024
+  x_load_policy: "ld.global.L2::evict_first for B*S<=1024, default above"
+  store_policy: "createpolicy.fractional.L2::evict_last 1.0, all sizes"
+dispatch:
+  - max_tokens: 1024
+    kernel: qk_rms_kernel<true>
+    meta:
+      x: "L2::evict_first"
+      st: "evict_last"
+  - max_tokens: 1000000000
+    kernel: qk_rms_kernel<false>
+    meta:
+      x: "default"
+      st: "evict_last"
+findings:
+  - "probe: under harness timing, evict_last stores (createpolicy) beat plain stores by 8% at 128 tokens, 12% at 256, 14% at 586, 19% at 1024, 12% at 2048, 5% at 4096 and 2.5% at 8192 tokens; r5's mechanism reproduces on the rented B200 [probe_b200]"
+  - "dead end: evict_last on only the last 48/80/112 MB of output blocks (earlier stores evict_normal or evict_first) is within +-1% of all-evict_last at 2048-8192 tokens; fractional evict_last 0.5/0.75 is the same or up to 5% worse (0.5 at 1024 tokens). The store-side end state is at its limit [probe_b200]"
+  - "dead end: block order (reversed, K first, Q/K interleaved) is within 1% at 128-256 tokens, so the harness's input copies leave no useful L2 residency; the 586-8192 token sizes were not measured because a harness_time CUPTI error ended the run [probe_b200]"
+  - "probe: the dirty zero-fill flush costs reads, not writes. Event timing after a zero_ flush vs a zero_+read flush: read-only kernels +7..11 us at 100-400 MB, copy +5..6 us, write-only +-1 us [probe_b200]"
+  - "probe: read-only 100/400 MB under harness timing: plain/.nc/.cs/.lu/L1::no_allocate/L2::evict_last 21.9/75.4 us; ld.global.L2::evict_first or createpolicy evict_first 18.6/65-66 us (-15%/-13%); createpolicy evict_unchanged no gain [probe_b200]"
+  - "caveat: the CUTLASS EVICT_FIRST constant 0x12F0000000000000 was a no-op when passed as a kernel argument (read-only and full kernel), but works like the qualifier when written into the instruction as an immediate (r6's form). r6's S-band evict_first was therefore real. Cause unknown; prefer the qualifier or createpolicy [probe_b200]"
+  - "probe: full kernel with evict_last stores plus evict_first x loads vs default loads: 256 tokens -1.3%, 586 -8.7%, 1024 -1.5..-2%, 2048 +1.5%, 4096/8192 about 0. Weights through .nc: no effect [probe_b200]"
+  - "result: run_tests vs r6: S -0.8%, M -1.2% (1024 tokens -1.7..-2.4%), L +0.3%; predicted portal 0.6112 +- 0.0088 [run_tests]"
+  - "open: evict_last saves only 3-4 us (about 25-30 MB of write-back) at every size from 1024 to 8192 tokens, not the 126 MB L2; the rest of L2 may be held by the harness's dirty lines or capped for evict_last. Untested idea: anything that stops reads from evicting the harness's dirty lines while stores stay evict_last"
+paths:
+  - max_tokens: 1024
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    x: ef
+    w: none
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    x: none
+    w: none
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; 50 MB L2, so the end state differs"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The gain is about 1-2% at 256-1024 tokens, below the portal's noise; one submission cannot confirm it."
+  - "Extending evict_first loads to 1024 tokens could act differently at the portal's locked 1500 MHz SM clock than on the bench."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

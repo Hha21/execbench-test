@@ -1,0 +1,119 @@
+id: r10-ws-l-steal-disp
+parents:
+  - r6-s-ldef-nc-disp
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  A persistent single wave (148 x 8 CTAs of 256 threads) takes tiles from an atomic counter. Tiles are
+  16 rows, with Q and K interleaved. Each thread issues the next tile's 256-bit loads before reducing the
+  current tile. The idea was to remove the tail and the per-CTA launch cost. The counter is reset with no
+  fence and no extra launch: the CTA whose grab returns the largest possible value makes the last access
+  and resets it. Measured on the rented B200, this loses to one-shot at every size. The atomic round trip
+  plus __syncthreads serialises each CTA's tiles, while one-shot launches are cheap and overlap. Only L
+  uses stealing here; S/M run the parent unchanged. Run_tests vs r6: S -1.0% (noise), M -0.2%, L +1.8%
+  (805 MB +5.6%). Predicted portal score 0.605 +/- 0.010.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 2
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 1032
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  S_MAX_TOKENS: 600
+  M_MAX_TOKENS: 2100
+  steal_grid: "SMs x occupancy (148 x 8)"
+  steal_unit: "one 16-row tile, Q/K interleaved, 1 unit per grab, 1-unit software prefetch"
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_kernel<true>
+    meta:
+      note: "parent S path (x evict_first, w nc, evict_last stores)"
+  - max_tokens: 2100
+    kernel: qk_rms_kernel<false>
+    meta:
+      note: "parent one-shot"
+  - max_tokens: 1000000000
+    kernel: qk_rms_steal_kernel
+    meta:
+      grid: "148 x 8 persistent"
+      note: "work stealing, fence-free counter reset"
+findings:
+  - "probe: work-stealing CTAs that had only their static tile (one failing atomic + __syncthreads each) cost 5.2 vs 4.1 us at 12.6 MB; striping the counter over 32 addresses did not help, so the cost is atomic round-trip latency under load (~1 us), not contention [probe_b200]"
+  - "probe: one fire-and-forget atomicAdd per CTA on a single address costs +8% at 805 MB (49k CTAs: 124.1 vs 114.5 us); over 32 addresses +1.5% [probe_b200]"
+  - "probe: work stealing without loads issued ahead is +14-18% at 101 MB and about +3% at 805 MB vs one-shot [probe_b200]"
+  - "probe: pipelined work stealing (next tile's loads before current reduce), 8 CTAs/SM, 32 regs: +9% at 12.6 MB (4.48 vs 4.10 us), +10% at 101 MB (16.4 vs 14.8 us), +0.7% at 805 MB (116.9 vs 116.2 us) vs one-shot [probe_b200]"
+  - "probe: at L, stealing beats a static persistent stride by about 3% (117.2 vs 120.7 us, 6 CTAs/SM), but neither beats one-shot; 4 CTAs/SM or 128-thread CTAs are 15-30% worse [probe_b200]"
+  - "probe: interleaving Q/K tiles in a one-shot grid is neutral (-1% to +3%) [probe_b200]"
+  - "fence-free reset: every grabbing CTA makes exactly one failing grab, so the CTA whose grab returns Lw+m-1 makes the last access and resets the counter with atomicExch; counter was 0 after every probe run; 16/16 pass [probe_b200, run_tests]"
+  - "run_tests vs r6: S -1.0%, M -0.2%, L +1.8% (1x8192 +5.6%, 4x1657 +2.2%); predicted portal 0.605 +/- 0.010 vs 0.610 [run_tests]"
+  - "dead end: on B200, persistent/work-stealing grids cannot beat one-shot 8 KB CTAs for #38; CTA launch cost is not the bottleneck at any size"
+paths:
+  - max_tokens: 600
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    x: ef
+    w: nc
+    st: el
+  - max_tokens: 2100
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: persistent
+    prefetch: true
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; different occupancy and atomic latency"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "Measured slower at L on the rented B200 (+1.8%); the portal's lower SM clock likely makes the serial atomic + barrier step costlier."
+  - "The counter lives in a __device__ global; if a kernel is ever aborted mid-run the counter stays stale (not possible in normal harness flow)."
+  - "Overlapping calls on different streams would share the counter (the harness uses one stream)."
+measure_first:
+  - H200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,0 +1,100 @@
+id: r10-bulk1d-ring-stel
+parents:
+  - r6-s-ldef-nc-disp
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  Exploration of explore:bulk-pipeline. Hypothesis: a 1-D TMA ring (cp.async.bulk + mbarrier) moves bytes with
+  fewer SM instructions, which the portal's 1500 MHz SM clock should reward. Refuted on the rented B200.
+  The TMA bulk-store path is about 27% slower than STG.256 for a write-only stream. Bulk loads are about 3% slower
+  than LDG.256 at 805 MB and add about 0.3-0.4 us of fixed cost. A persistent ring also adds about 0.8 us of
+  per-CTA serialisation at small sizes. The best variant uses bulk loads, a 4 x 8 KB ring, and STG.256 stores with
+  evict_last. It passes 16/16 but is slower than r6 in every band: rented S +18.8%, M +7.1%, L +1.6%;
+  predicted portal score 0.58. The LDG kernel already runs at plain-copy speed, so there are no SM cycles for TMA
+  to save.
+expected_effect:
+  S:
+    pct: 17
+    confidence: high
+  M:
+    pct: 7
+    confidence: medium
+  L:
+    pct: 2
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 33824
+  threads_per_cta: 256
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  STAGES: 4
+  THREADS: 256
+  CTAS_PER_SM: "4 if tokens <= 2048 else 2"
+  tile_order: strided (tile = blockIdx + j*grid)
+  store: "st.global.v8 L2::cache_hint evict_last"
+findings:
+  - "probe: pure TMA copy (bulk load -> bulk store, single-thread CTAs, contiguous chunks 4-32 KB) vs LDG.256/STG.256 copy: 12.6 MB 4.4 vs 3.9 us, 25 MB 5.7 vs 5.25, 101 MB 14.8-16.4 vs 14.1, 805 MB 126-131 vs 116 [probe_b200]"
+  - "probe: loads only, bulk vs LDG.256: 805 MB 74.9 vs 72.6 us (+3%), 101 MB 12.4 vs 11.7, 12.6 MB 4.00 vs 3.68 [probe_b200]"
+  - "probe: stores only, bulk store (evict_last hint) vs STG.256 evict_last: 805 MB 69.1 vs 54.6 us (+27%), 101 MB 8.6 vs 7.5, 12.6 MB 2.55 vs 2.18. Bulk stores are the main bottleneck of a full-TMA pipeline [probe_b200]"
+  - "probe: bulk stores without the L2 hint are slower still (101 MB copy 18.6 vs 15.0 us with evict_last) [probe_b200]"
+  - "probe: rmsnorm ring with bulk stores (in-place smem write-back) is 5-40% slower than with direct STG stores at every size [probe_b200]"
+  - "probe: more bytes in flight hurts the ring at 805 MB: S4 strided x2 CTAs/SM 117.3 us; x3 127; x4 131; S8/S12 124-134; contiguous per-CTA ranges are no better than strided. base LDG kernel 115.7 [probe_b200]"
+  - "probe: at 12.6 MB even a ring that issues all loads up front (r8, S6, 8 CTAs/SM, 1-2 tiles per CTA) is 4.83 us vs 4.04 for one-shot LDG.256; TMA plus mbarrier setup adds about 0.8 us [probe_b200]"
+  - "run_tests: this kernel 16/16 pass; rented B200 vs r6: S +18.8%, M +7.1%, L +1.6%; predicted portal 0.5815 +- 0.012 [run_tests]"
+  - "dead end: bulk/TMA paths for #38 on B200; the one-shot LDG.256/STG.256 kernel already runs at plain-copy speed, so there is no SM work for TMA to save. Do not revisit unless a new store mechanism appears"
+  - "tooling: b200probe harness_time sometimes reports 'No timing results' on its first call in a process; retry once [probe_b200]"
+paths:
+  - max_tokens: 2048
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: persistent
+    mem: tma
+    w: nc
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: persistent
+    mem: tma
+    w: nc
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "bulk copies run on sm_90, but stores fall back to 128-bit and the L2 is smaller"
+  A100:
+    runs: false
+    representative: false
+    note: "no cp.async.bulk / mbarrier tx on sm_80"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Slower than the current best in every band; do not submit for score. It exists as the bulk1d niche record."
+  - "The portal's lower SM clock could narrow the gap slightly at L, but the bulk-load path itself is slower than LDG even in a loads-only test"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

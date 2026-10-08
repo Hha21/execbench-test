@@ -1,0 +1,105 @@
+id: r10-onewave-gs-sdisp
+parents:
+  - r6-s-ldef-nc-disp
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Exploration of "one resident wave of fat CTAs" (explore:one-wave-fat). The idea: launching and retiring
+  CTAs costs time on B200, so a grid of exactly 148 x resident CTAs, each streaming many rows, should cut
+  fixed cost and CTA overhead. Probes on the rented B200 (harness timing) falsified it. The one-shot grid
+  already hides CTA launch and retire. One-wave grids tie at 12.6-101 MB and are 11-15% slower at 201-805 MB.
+  That holds whether a CTA streams a contiguous chunk or strides across the grid, with 1, 2 or 4 rows in
+  flight per thread, and with a register prefetch ring 1-3 rows deep. So this candidate keeps the one-wave
+  grid-stride path only for B*S <= 600, where it ties. That path uses r6's S-band load policy: x loads
+  evict_first, weights .nc. Larger sizes run r6's one-shot kernel. A portal run tests whether the one-wave
+  path changes the S band under locked clocks. Expect about 0.
+expected_effect:
+  S:
+    pct: 0
+    confidence: medium
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 31
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  ROWS: 16
+  THREADS: 256
+  ONEWAVE_MAX_TOKENS: 600
+  CTAS_PER_SM: 8
+  wave_grid: "min(2*n_tiles, SMs*8)"
+dispatch:
+  - max_tokens: 600
+    kernel: qk_rms_onewave
+    meta:
+      grid: "min(2*n_tiles, 1184)"
+      loads: "x evict_first, w nc"
+      stores: "evict_last"
+  - max_tokens: 1000000000
+    kernel: qk_rms_oneshot
+    meta:
+      note: "same as r6 M/L path"
+findings:
+  - "probe: one wave of fat CTAs (contiguous chunk per CTA, 1/2/4 rows per thread per step) vs one-shot, 805 MB: 132-137 us vs 114.9 us; 101 MB: 16.4-16.8 vs 14.4; 12.6 MB: 4.3-5.2 vs 4.15. Contiguous chunks were the worst layout [probe_b200]"
+  - "probe: one-wave grid-stride (1184 CTAs, one row per thread per iteration) vs one-shot: 256 tok 5.65 vs 5.53; 586 tok 9.2 vs 9.15-9.4; 1024 tok 14.5-14.8 vs 14.5; 2048 tok 30.9 vs 27.4-28.1; 4096 tok 64.8 vs 57.7; 8192 tok 131-132 vs 114-116 [probe_b200]"
+  - "probe: register prefetch ring (next 1-3 tiles' x loaded before current compute), 805 MB: P1/592 CTAs 124.1, P1/888 130.5, P2/592 123.8, P2/444 138.4, P3/296 170.6, P3/444 142.7 us vs one-shot 114.2. Prefetch does not recover the persistent loss; fewer CTAs make it much worse [probe_b200]"
+  - "dead end: one-wave persistent grids lose 11-15% once traffic exceeds about 200 MB (above the 126 MB L2). One-shot CTA turnover on B200 is not a bottleneck: the empty-grid span of 26 us at 49k CTAs overlaps fully with memory work [probe_b200, inferred]"
+  - "probe: plain stores vs evict_last stores in one-shot: 805 MB 118.6 vs 114.2 us; 101 MB 17.6 vs 14.5; 12.6 MB 4.30 vs 4.16. Re-confirms the evict_last store lever, biggest at M [probe_b200]"
+  - "run_tests: this dispatcher vs r6, band geomeans S -0.2%, M -0.3%, L -0.3% (noise; M/L run identical code); predicted portal 0.6109 +- 0.0088 [run_tests]"
+  - "tooling: harness_time sometimes raises 'No timing results for methodology: cupti'; retrying fixes it [probe_b200]"
+paths:
+  - max_tokens: 600
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: persistent
+    x: ef
+    w: nc
+    st: el
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 256
+    rows: 16
+    grid: oneshot
+    st: el
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "128-bit fallback; 50 MB L2"
+  A100:
+    runs: true
+    representative: false
+  L40S:
+    runs: true
+    representative: false
+risks:
+  - "The S-band one-wave path ties at best on the bench. The grid-stride loop adds SM work per byte, which the lower portal clock may penalise slightly at 586 tokens (+0-2%)."
+  - "S-band portal noise of about 5% cannot resolve an effect this small."
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

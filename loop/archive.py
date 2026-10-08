@@ -116,11 +116,17 @@ def read_traces(path):
 
 
 def portal_rows(path):
-    """Rows of a portal CSV that belong to the current problem."""
+    """Rows of a portal CSV that belong to the current problem. The per-workload CSV has no definition column, so its
+    rows are matched to a problem through their submission's row in the summary CSV."""
     if not path.exists():
         return []
     name = P().name
-    return [r for r in csv.DictReader(open(path)) if r.get("definition", name) == name]
+    prob = lambda r: r.get("kernel") or r.get("definition")          # summary CSV: the problem is in 'kernel'
+    rows = list(csv.DictReader(open(path)))
+    if rows and prob(rows[0]) is None:                                # per-workload CSV: match via the submission
+        defs = {r["vid"]: prob(r) for r in csv.DictReader(open(PORTAL))} if PORTAL.exists() else {}
+        return [r for r in rows if defs.get(r["vid"]) == name]
+    return [r for r in rows if prob(r) == name]
 
 
 def ingest_portal(arc):

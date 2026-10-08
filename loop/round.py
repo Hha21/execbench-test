@@ -53,7 +53,9 @@ def ssh(cmd):
 
 
 def get_archive():
-    arc = archive.load() or archive.seed()
+    arc = archive.load()
+    if not arc and problem.current().name == "038_flux_multi_head_rmsnorm_qk":
+        arc = archive.seed()                       # #38's history (proof of concept, generation 2); no other problem has one
     archive.ingest_portal(arc)
     return arc
 
@@ -86,6 +88,12 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
     cfg = sdir / f"{name}.mcp.json"
     cfg.write_text(json.dumps({"mcpServers": {"solx": {"command": str(ROOT / ".venv" / "bin" / "python"),
                                                        "args": [str(ROOT / "loop" / "mcp_tools.py"), *mcp_args]}}}))
+    # A tool server that fails to start leaves Claude running with no tools (it then writes tool calls as text):
+    # check it starts before spending anything on the session.
+    chk = subprocess.run([str(ROOT / ".venv" / "bin" / "python"), str(ROOT / "loop" / "mcp_tools.py"), *mcp_args,
+                          "--check"], capture_output=True, text=True, timeout=300)
+    if chk.returncode:
+        raise RuntimeError(f"the MCP tool server does not start:\n{chk.stderr[-2500:]}")
     cmd = ["claude", "-p", "--model", model, "--effort", effort, "--mcp-config", str(cfg), "--strict-mcp-config",
            "--tools", "", "--allowedTools", "mcp__solx", "--output-format", "json"]
     if system_file:

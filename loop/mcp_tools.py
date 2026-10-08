@@ -38,6 +38,7 @@ ap.add_argument("--gpu-calls", type=int, default=6)
 ap.add_argument("--probes", type=int, default=12)
 ap.add_argument("--b200-minutes", type=float, default=10)
 ap.add_argument("--no-gpu", action="store_true", help="research lead: archive and score-model tools only")
+ap.add_argument("--check", action="store_true", help="load everything the server needs, then exit (start-up test)")
 A = ap.parse_args()
 A.dir.mkdir(parents=True, exist_ok=True)
 
@@ -116,4 +117,8 @@ if not A.no_gpu:
 
 
 if __name__ == "__main__":
+    if A.check:
+        print(f"ok: {len(ARC)} archive records, best {BEST['id'] if BEST else None}, emulator {EMU is not None}",
+              file=sys.stderr)
+        sys.exit(0)
     server.run("stdio")

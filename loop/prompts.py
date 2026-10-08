@@ -109,6 +109,7 @@ def dynamic_prompt(arc, round_id, operation, parents, n=1, band="all", niche="an
         f"exactly. Give every candidate a new unique id starting with '{round_id}-'.\n{extra}",
         "=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) "
         f"===\n{table(arc)}\nB200 results so far:\n{calib or 'none'}",
+        f"=== HYPOTHESIS LEDGER ===\n{(CTX.parent / 'ledger.yaml').read_text() if (CTX.parent / 'ledger.yaml').exists() else 'none'}",
         f"=== LAB NOTEBOOK ===\n{lab_notebook(arc)}",
         "=== PARENTS ===\n" + ("\n".join(parent_block(arc[p]) for p in parents) if parents else "none"),
         f"=== FEEDBACK FROM LAST ATTEMPT ===\n{feedback}",

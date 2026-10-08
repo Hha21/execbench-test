@@ -73,6 +73,164 @@ def call_llm(static, dyn, task, round_id, i, a):
     return text, info
 
 
+CLAUDE_NOTE = """=== RUNNING AS A HEADLESS CLAUDE CODE SESSION ===
+The design tools are MCP tools named mcp__solx__<tool> (compile_b200, run_tests, probe_b200, predict_score,
+get_kernel, read_example). No other tools are available. When you are done, your final message must contain the
+candidate in the OUTPUT CONTRACT format (fenced blocks), with its design card including paths and findings."""
+
+
+def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout_s, resume=None):
+    """One headless `claude -p` run with our MCP tools only. Returns the parsed JSON result (or an error dict)."""
+    cfg = sdir / f"{name}.mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {"solx": {"command": str(ROOT / ".venv" / "bin" / "python"),
+                                                       "args": [str(ROOT / "loop" / "mcp_tools.py"), *mcp_args]}}}))
+    cmd = ["claude", "-p", "--model", model, "--effort", effort, "--mcp-config", str(cfg), "--strict-mcp-config",
+           "--tools", "", "--allowedTools", "mcp__solx", "--output-format", "json"]
+    if system_file:
+        cmd += ["--append-system-prompt-file", str(system_file)]
+    if resume:
+        cmd += ["--resume", resume]
+    t0 = time.time()
+    try:
+        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout_s, cwd=sdir)
+        out = json.loads(p.stdout) if p.stdout.strip().startswith("{") else dict(is_error=True, result=p.stdout[-3000:],
+                                                                                   stderr=p.stderr[-3000:])
+    except subprocess.TimeoutExpired:
+        out = dict(is_error=True, result="", subtype="timeout")
+    out["seconds"] = round(time.time() - t0, 1)
+    return out
+
+
+def claude_sessions(round_id, jobs, static, a, sdir):
+    """Design sessions as headless Claude Code runs on the user's plan, in parallel; each has its own MCP tool server
+    (and its own Modal B200 container, opened on its first GPU call)."""
+    import designer
+    sdir.mkdir(parents=True, exist_ok=True)
+    system_file = sdir / "briefing.txt"
+    protocol = designer.PROTOCOL.format(gpu="a rented NVIDIA B200 (Modal; unlocked clocks)", gpu_calls=a.gpu_calls,
+                                        turns="about 15")
+    system_file.write_text(static + "\n\n" + protocol + "\n\n" + CLAUDE_NOTE)
+    minutes = max(3.0, a.b200_minutes / max(1, len(jobs)))
+
+    def one(job):
+        i, t, dyn, name = job
+        mcp_args = ["--name", name, "--round", round_id, "--dir", str(sdir), "--gpu-calls", str(a.gpu_calls),
+                    "--probes", str(a.probes), "--b200-minutes", str(minutes)]
+        model = t.get("model") or a.session_model
+        out = run_claude(dyn, system_file, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60)
+        text = out.get("result") or ""
+        if not reply.candidates(text) and out.get("session_id"):          # one nudge for the contract
+            more = run_claude("Reply now with exactly one candidate in the OUTPUT CONTRACT format.", None,
+                              model, a.effort, mcp_args, sdir, name, 900, resume=out["session_id"])
+            text = more.get("result") or text
+            out["total_cost_usd"] = (out.get("total_cost_usd") or 0) + (more.get("total_cost_usd") or 0)
+        (sdir / f"{name}.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+        u = out.get("usage") or {}
+        info = dict(model=f"claude:{model}", finish=out.get("subtype") or ("error" if out.get("is_error") else
+                    "stop"), seconds=out.get("seconds"), turns=out.get("num_turns"), gpu_calls="-",
+                    prompt_tokens=(u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                    + (u.get("cache_creation_input_tokens") or 0), cached_tokens=u.get("cache_read_input_tokens"),
+                    completion_tokens=u.get("output_tokens"), reasoning_tokens=None,
+                    cost_usd=round(out.get("total_cost_usd") or 0, 4))
+        with open(ROOT / "loop" / "runs" / "usage.jsonl", "a") as f:
+            f.write(json.dumps(dict(info, time=time.strftime("%Y-%m-%dT%H:%M:%S"), tag=f"{round_id}/{name}",
+                                    billing="claude-plan (cost is the API-equivalent estimate)")) + "\n")
+        return i, (text, info)
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        return dict(pool.map(one, jobs))
+
+
+LEDGER = ROOT / "loop" / "ledger.yaml"
+LEAD_PROTOCOL = """=== RESEARCH LEAD PROTOCOL ===
+You are the research lead of this project. You do not write kernels. Each round you:
+1. Read the evidence below: the lab notebook (portal vs bench outcomes and findings recorded by design sessions),
+   the archive, the hypothesis ledger, and the emulator's learned portal-vs-bench effects. Use mcp__solx__get_kernel
+   to read any kernel's code and results, mcp__solx__read_example for public SOTA kernels, and
+   mcp__solx__predict_score to see what a change per size band is worth.
+2. Update the ledger: change a status only on evidence; add hypotheses that findings suggest; cite evidence (kernel
+   ids, portal numbers, probe findings); keep each entry short. Keep the constraints.
+3. Design the next round: {n} experiments for design sessions. Each session is a Claude agent with a rented B200
+   (probes take seconds, full tests 10-20 s, and run_tests predicts the portal score with about +-0.01 error;
+   bench noise is about 1% per size, so small effects need repeated, interleaved probes). Each experiment tests one
+   hypothesis (or a new idea you add to the ledger) and states what to build or measure, the success criterion, and
+   what result would refute it. Prefer experiments that could move the portal score by 0.005 or more, or that
+   settle an open hypothesis blocking a large gain. Avoid tweaks worth about 1%. Exploration is encouraged.
+4. Give each experiment a model: opus for open-ended design and debugging, sonnet for well-specified work.
+Output, in this order:
+### Assessment
+(at most 250 words: where the remaining score is, what we now know, what this round tests and why)
+```yaml ledger
+(the complete updated ledger, same schema)
+```
+```json tasks
+[{{"id": "E1", "hypothesis": "H8", "title": "...", "operation": "new_design", "parents": ["<archive id>"],
+  "band": "S|M|L|all", "instructions": "what to build or measure, step by step", "success": "...",
+  "refuted_if": "...", "model": "opus|sonnet"}}]
+```"""
+
+
+def cmd_lead(a):
+    """Run the research lead: update the hypothesis ledger and write the round's experiments to plan.json."""
+    import designer
+    import emulator
+    arc = get_archive()
+    d = rdir(a.round)
+    sdir = d / "lead"
+    sdir.mkdir(parents=True, exist_ok=True)
+    system_file = sdir / "briefing.txt"
+    system_file.write_text(prompts.static_prompt() + "\n\n" + LEAD_PROTOCOL.format(n=a.max_tasks))
+    measured = [r for r in arc.values() if r.get("b200")]
+    calib = "\n".join(f"- {r['id']}: portal {r['b200']['score']:.4f}, S/M/L {archive.fmt(archive.band_geomeans(r['b200'].get('timings', {})))} µs"
+                       for r in sorted(measured, key=lambda r: -r["b200"]["score"]))
+    try:
+        effects = emulator.effects_markdown(emulator.Emulator(arc))
+    except Exception as e:
+        effects = f"(unavailable: {e})"
+    prompt = "\n\n".join([
+        f"=== TASK ===\nRound {a.round}: update the hypothesis ledger and design {a.max_tasks} experiments.",
+        f"=== HYPOTHESIS LEDGER (loop/ledger.yaml) ===\n{LEDGER.read_text()}",
+        f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=80)}",
+        f"=== PORTAL RESULTS (best first) ===\n{calib}",
+        f"=== EMULATOR: portal minus bench, by design feature ===\n{effects}",
+        f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}",
+    ])
+    (sdir / "prompt.txt").write_text(prompt)
+    out = run_claude(prompt, system_file, a.lead_model, a.effort,
+                     ["--name", "lead", "--round", a.round, "--dir", str(sdir), "--no-gpu"], sdir, "lead",
+                     a.session_timeout * 60)
+    text = out.get("result") or ""
+    (sdir / "reply.md").write_text(text)
+    (sdir / "lead.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+    blocks = {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
+    ledger = next((v for k, v in blocks.items() if k.startswith("yaml") and "ledger" in k), None)
+    tasks_js = next((v for k, v in blocks.items() if k.startswith("json") and "tasks" in k), None)
+    if not (ledger and tasks_js):
+        raise SystemExit(f"lead reply had no ledger or tasks block; see {sdir / 'reply.md'}")
+    import yaml
+    yaml.safe_load(ledger)                                  # must parse before it replaces the ledger
+    LEDGER.write_text(ledger)
+    tasks = []
+    for e in json.loads(tasks_js)[:a.max_tasks]:
+        parents = [p for p in (e.get("parents") or []) if p in arc] or [planner.best_kernel(arc)["id"]]
+        tasks.append(dict(operation=e.get("operation") or "new_design", parents=parents, band=e.get("band") or "all",
+                          niche=f"exp:{e.get('id', '?')}:{e.get('hypothesis', '-')}", model=e.get("model"),
+                          instructions=(f"Experiment {e.get('id')} (tests {e.get('hypothesis')}): {e.get('title', '')}. "
+                                        f"{e.get('instructions', '')} Success: {e.get('success', '')} Refuted if: "
+                                        f"{e.get('refuted_if', '')}" + planner.EXPLORE_COMMON +
+                                        " Set the card's tests: field to the hypothesis id(s).")))
+    best = planner.best_kernel(arc)
+    (d / "plan.json").write_text(json.dumps(dict(best=best["id"], best_score=best["b200"]["score"], tasks=tasks,
+                                                 lead=dict(model=a.lead_model, cost_usd=out.get("total_cost_usd"))),
+                                            indent=1))
+    print(text.split("```")[0].strip()[:3000])
+    for i, t in enumerate(tasks):
+        print(f"  task {i}: {t['niche']} parents={t['parents']} band={t['band']} model={t.get('model')}")
+    u = out.get("usage") or {}
+    print(f"lead: {out.get('num_turns')} turns, {out.get('seconds')} s, API-equivalent ${out.get('total_cost_usd') or 0:.2f}")
+    return dict(tasks=tasks)
+
+
 def propose_tasks(round_id, tasks, a):
     arc = get_archive()
     d = rdir(round_id)
@@ -92,9 +250,12 @@ def propose_tasks(round_id, tasks, a):
         for i, t, dyn, name in jobs:
             print(f"dry run {name}: static ~{len(static) // 4:,} tokens (cached), dynamic ~{len(dyn) // 4:,} tokens")
         return
-    if a.interactive:
+    if a.backend == "claude":
+        results = claude_sessions(round_id, jobs, static, a, d / "sessions")
+    elif a.interactive:
         import designer
-        sync_remote()
+        if a.tool_gpu != "B200":
+            sync_remote()
         results = designer.run_sessions(round_id, jobs, static, a, SLURM, d / "sessions")
     else:
         results = {}
@@ -163,10 +324,10 @@ def cmd_plan(a):
 
 
 def cmd_auto(a):
-    p = make_plan(a)
+    p = cmd_lead(a) if a.lead else make_plan(a)
     propose_tasks(a.round, p["tasks"], a)
     if not a.dry_run and any((rdir(a.round) / "candidates").glob("*.json")):
-        a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" else "A100,H200")
+        a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" or a.backend == "claude" else "A100,H200")
         cmd_test(a)
         print(f"next: python3 loop/round.py collect --round {a.round} (after any CSF3 jobs finish); then shortlist")
 
@@ -302,6 +463,12 @@ def main():
     llm_args.add_argument("--effort", default="high")
     llm_args.add_argument("--max-tokens", type=int, default=64000)
     llm_args.add_argument("--dry-run", action="store_true")
+    llm_args.add_argument("--backend", choices=("openrouter", "claude"), default="openrouter",
+                          help="claude: run design sessions as headless Claude Code on your Claude plan (implies "
+                          "interactive tools on the rented B200)")
+    llm_args.add_argument("--session-model", default="opus", help="claude backend: model for design sessions")
+    llm_args.add_argument("--lead-model", default="fable", help="claude backend: model for the research lead")
+    llm_args.add_argument("--session-timeout", type=int, default=60, help="claude backend: minutes per session")
     llm_args.add_argument("--interactive", action="store_true",
                           help="design sessions with tools (compile, test, score model) on a CSF3 GPU tool server")
     llm_args.add_argument("--tool-gpu", default="A100,L40S", help="GPU type(s) for the session tool server: CSF3 types "
@@ -324,11 +491,13 @@ def main():
     p.add_argument("--band", default="all")
     p.add_argument("--niche", default="any empty niche")
     p.add_argument("--instructions", default="")
-    for name in ("plan", "auto"):
+    for name in ("plan", "auto", "lead"):
         q = sub.add_parser(name, parents=[llm_args])
         q.add_argument("--round", required=True)
         q.add_argument("--max-tasks", type=int, default=3)
         q.add_argument("--last-round", help="round whose failures get repair tasks")
+        q.add_argument("--lead", action="store_true", help="auto: let the research lead (claude backend) update "
+                       "the hypothesis ledger and choose the experiments instead of the planner")
         q.add_argument("--mode", choices=("exploit", "explore"), default="exploit",
                        help="exploit: improve the best kernel band by band; explore: one big idea per session")
         q.add_argument("--gpus", help="where to test the final candidates: B200 (rented, Modal) and/or CSF3 GPUs; "
@@ -342,7 +511,7 @@ def main():
     a = ap.parse_args()
     if getattr(a, "round", None) and not re.fullmatch(r"[a-z0-9-]+", a.round):
         sys.exit("--round must be lowercase letters, digits and dashes")
-    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, test=cmd_test, status=cmd_status, collect=cmd_collect,
+    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, test=cmd_test, status=cmd_status, collect=cmd_collect,
          shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
 
 

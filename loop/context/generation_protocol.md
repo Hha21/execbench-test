@@ -111,6 +111,7 @@ resources_sm100a:                # estimates; the loop overwrites them with the 
 knobs: {ROWS: 16, STAGES: 4, PROGS_PER_SM: 2, num_warps: 4}
 dispatch:                        # only for dispatch:size designs
   - {max_tokens: 600, kernel: _qk_rms, meta: {ROWS: 4, num_warps: 2}}
+tests: [H8]                      # hypothesis ids from the ledger this candidate tests ([] if none)
 findings:                        # REQUIRED in design sessions: what you measured or learned, one line each, with the
   - "probe: one wave of 1184 fat CTAs copies 805 MB in 117 us vs 120 us for 49k small CTAs [probe_b200]"
   - "dead end: prefetching the next tile into L2 evicts evict_last outputs at M sizes (+3%) [run_tests]"

@@ -1,0 +1,49 @@
+# Hypothesis ledger for #38, maintained by the research lead (round.py lead) and read by every design session.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+# Seeded 8 October from rounds r1-r10 and the portal results; the research lead updates it each round.
+
+constraints:
+  - "No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness's measurement, not kernel speed. Off-limits unless NVIDIA approves."
+  - "Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call."
+
+hypotheses:
+  - id: H1
+    statement: "Output stores marked L2 evict_last keep output in L2 past the end of the timed window, so medium sizes gain most."
+    status: supported
+    evidence: ["portal: r5 0.609 vs r3 0.588 (M -8%)", "probe r10: evict_last stores beat plain stores by 8-19% at 128-1024 tokens"]
+  - id: H2
+    statement: "evict_first on stores and evict_last on weights hurt on B200."
+    status: supported
+    evidence: ["portal: r2 0.576 (hinted 256-bit) = g2 0.577 (hinted 128-bit); d1 0.582 (no hints)", "quack sm100 regression"]
+  - id: H3
+    statement: "256-bit loads/stores help medium and large sizes a little."
+    status: supported
+    evidence: ["portal: r3 (256-bit, no hints) vs d1 (128-bit, no hints): M -2.4%, L -1.2%"]
+  - id: H4
+    statement: "CTA launch/retire overhead is a bottleneck, so fewer, fatter CTAs or one resident wave help."
+    status: refuted
+    evidence: ["probe r10: one-wave grids tie at 12.6-101 MB and lose 11-15% above 200 MB", "portal: r8 512-thread CTAs at L +3.2%"]
+  - id: H5
+    statement: "TMA / bulk-copy pipelines cut SM instructions per byte and win at the portal's 1500 MHz SM clock."
+    status: refuted
+    evidence: ["probe r10: bulk stores 27% slower than STG.256; TMA setup adds ~0.8 us at 12.6 MB", "portal: g2-tma 0.510"]
+  - id: H6
+    statement: "Persistent grids with work stealing remove the tail and beat one-shot."
+    status: refuted
+    evidence: ["probe r10: atomics cost +8-10% at 12.6-101 MB; neither stealing nor static persistent beats one-shot", "portal: v039, g2-ws, g2-tma all slower"]
+  - id: H7
+    statement: "The harness's zero-fill flush leaves L2 full of dirty lines; every line we allocate forces a write-back, costing 20-35% of in-kernel time at S/M."
+    status: supported
+    evidence: ["probe r10: in-kernel span after zero flush vs read-only flush: 12.6 MB 3.07 vs 2.56 us, 100 MB 16.6 vs 12.3 us"]
+  - id: H8
+    statement: "evict_first on the streamed loads makes later allocations evict our own clean lines instead of dirty flush lines, cutting H7's write-backs."
+    status: open
+    evidence: ["probe r10: read-only kernel -13 to -15% with evict_first loads; full kernel with evict_last stores only -1 to -2% (bench)", "portal: r8 (evict_first at M) +4.2% at M, but r8 also changed CTA shape at L", "r10: the CUTLASS EVICT_FIRST constant passed as a kernel argument is a no-op; only the instruction-immediate form works"]
+  - id: H9
+    statement: "The portal (SM 1500 MHz) penalises SM-bound designs more than the bench (~1940 MHz): kernels that lag a plain copy on the bench lose more on the portal."
+    status: supported
+    evidence: ["emulator fit on 18 kernels: about +5% portal time per 20% copy lag at L", "r8/r9 bench -1% -> portal +3-4%"]
+  - id: H10
+    statement: "At 12.6 MB the one-shot kernel already equals a plain copy; the remaining S time is ~1 us outside the CTAs, one DRAM round trip, and H7's write-backs."
+    status: supported
+    evidence: ["probe r10 timelines: all 768 CTAs start within 0.06 us, first load returns at 0.67 us", "probe: copy 4.4 us vs r5 4.2 us (bench)"]

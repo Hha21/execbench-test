@@ -39,6 +39,7 @@ ap.add_argument("--probes", type=int, default=12)
 ap.add_argument("--b200-minutes", type=float, default=10)
 ap.add_argument("--no-gpu", action="store_true", help="research lead: archive and score-model tools only")
 ap.add_argument("--check", action="store_true", help="load everything the server needs, then exit (start-up test)")
+ap.add_argument("--fresh", action="store_true", help="fresh-eyes session: no get_kernel (earlier designs stay hidden)")
 A = ap.parse_args()
 A.dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +74,8 @@ def call(fn, args):
                 return "GPU tools are not available to the research lead."
             gpu_server()
         out = SESSION.tool({"id": "mcp", "function": {"name": fn, "arguments": json.dumps(args)}})
+        if A.fresh and BEST:                      # the best kernel's id names its design: keep it out of fresh sessions
+            out = out.replace(BEST["id"], "current-best")
         with open(LOG, "a") as f:
             f.write(json.dumps({"tool": fn, "args": args, "result": out[:20000]}) + "\n")
         return out
@@ -86,9 +89,10 @@ server = MCPServer("solx", instructions="Tools for designing #38 kernels: archiv
                                         "sessions) a rented NVIDIA B200 for compiling, testing and probing.")
 
 
-@server.tool(description=describe("get_kernel"))
-def get_kernel(id: str) -> str:
-    return call("get_kernel", {"id": id})
+if not A.fresh:
+    @server.tool(description=describe("get_kernel"))
+    def get_kernel(id: str) -> str:
+        return call("get_kernel", {"id": id})
 
 
 @server.tool(description=describe("read_example"))

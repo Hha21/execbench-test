@@ -1,0 +1,38 @@
+{
+ "best": "c2-cluster2-s-only",
+ "best_score": 0.612457,
+ "tasks": [
+  {
+   "fresh": true,
+   "operation": "new_design",
+   "parents": [],
+   "band": "all",
+   "niche": "fresh:F1:simplest-first",
+   "model": "fable",
+   "instructions": "Experiment F1 (fresh eyes, simplest first). Build up from the simplest designs and let measurements decide. 1) Measure the obvious implementations against the reference on every workload: a plain Triton kernel, a textbook CUDA C++ kernel (vectorised loads, one row of head_dim per warp or per few threads), and torch.compile of the reference if the harness accepts it. 2) Find where the time goes at the smallest and the largest workloads (fixed per-call cost vs streaming rate) with probes. 3) Improve the best simple design only where a measurement says it pays; prefer the simplest code that reaches a given speed. One fact from the public scores: first place (0.6275) is equivalent to the time to beat minus about 0.55 us on every workload (or 3.7% off every workload); second place (0.6160) to about 0.15 us less per workload. The largest workloads already move data at ~6.95 TB/s, close to what the B200 sustains.  Budget: use probe_b200 for quick measurements (seconds each) and run_tests for complete solutions. Record every measurement under findings, dead ends included. Your candidate must pass every workload; submit the fastest version you tested."
+  },
+  {
+   "fresh": true,
+   "operation": "new_design",
+   "parents": [],
+   "band": "all",
+   "niche": "fresh:F2:harness-first",
+   "model": "opus",
+   "instructions": "Experiment F2 (fresh eyes, harness first). Start from how the call is timed, not from a kernel. 1) Read harness_scoring.md closely and measure what a minimal call costs inside the timed window on this harness (empty kernel, read-only, write-only and copy kernels at the smallest and largest workload sizes), and what the harness's flush, input copy and output zero-fill leave behind for your kernel. 2) Design the kernel around what dominates, within the rules (nothing that hides work from the timed window or touches memory you do not own). 3) Then make it as fast as you can on every workload. One fact from the public scores: first place (0.6275) is equivalent to the time to beat minus about 0.55 us on every workload (or 3.7% off every workload); second place (0.6160) to about 0.15 us less per workload. The largest workloads already move data at ~6.95 TB/s, close to what the B200 sustains.  Budget: use probe_b200 for quick measurements (seconds each) and run_tests for complete solutions. Record every measurement under findings, dead ends included. Your candidate must pass every workload; submit the fastest version you tested."
+  },
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "c2-cluster2-s-only"
+   ],
+   "band": "all",
+   "niche": "exp:A1:H21",
+   "model": "opus",
+   "instructions": "Experiment A1 (assumption audit, tests H21). 1) In at most 3 turns, list the 8-10 beliefs in the ledger that most limit the score and are treated as settled (e.g. H4, H6, H10, H15, H17, H18, H19, and 'no legitimate mechanism for the dirty-flush cost'), each with what it rests on (number of probes, portal confirmation, interleaved or not) and a strength rating; put the list under findings, weakest first. 2) Test H21 directly: does the previous call's evict_last output survive the harness's cudaCtxResetPersistingL2Cache plus the zero flush, and get written back inside the next call's timed window? Keep the measured call identical and alternate only the previous call's store policy (evict_last vs plain); at least 5 interleaved repeats at 128, 1024 and 8192 tokens. 3) If H21 holds, measure an end-of-kernel demotion of the call's own outputs (applypriority / evict_normal on its own output range only); any such candidate goes to the operator for a legitimacy check before a portal slot. 4) With remaining budget, retest the weakest settled belief from step 1 with interleaved repeats. Success: H21 confirmed or refuted with >= 5 interleaved repeats. Refuted if: the previous call's store policy moves the measured call by < 1%. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s)."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

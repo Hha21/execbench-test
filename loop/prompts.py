@@ -22,12 +22,28 @@ Optional "### Rationale" (<=150 words). Then, per candidate:
 No other fenced code blocks. Never use a forbidden behaviour; if the task needs one, return no candidate and explain."""
 
 
-def static_prompt():
+# Fresh-eyes sessions get the rules, the harness and the hardware, but none of the project's own design history
+# (problem card, playbook, SOTA notes with our results, ledger, notebook, archive kernels): every normal session reads
+# that history and tends to refine the existing design instead of looking for a different, possibly simpler one.
+FRESH_DOCS = ["core_brief.md", "harness_scoring.md", "b200_arch.md", "OUTPUT_FORMAT"]
+
+
+def protocol_section(n):
+    """Section n of generation_protocol.md (section 3 = the output format and design card schema)."""
+    text = (CTX / "generation_protocol.md").read_text()
+    m = re.search(rf"^## {n}\..*?(?=^## {n + 1}\.|\Z)", text, re.S | re.M)
+    return m.group(0).strip() if m else text
+
+
+def static_prompt(fresh=False):
     parts = ["You are the kernel-design step of an automated optimisation loop for NVIDIA's SOL-ExecBench B200 "
              "leaderboard. The documents below are your briefing; follow the output contract exactly."]
     import problem
     p = problem.current()
-    for name in STATIC_DOCS:
+    for name in (FRESH_DOCS if fresh else STATIC_DOCS):
+        if name == "OUTPUT_FORMAT":
+            parts.append(f"=== output format (generation_protocol.md section 3) ===\n{protocol_section(3)}")
+            continue
         if name == "PROBLEM_CARD":
             card = p.card.read_text() if p.card.exists() else "(no problem card yet: run round.py research first)"
             parts.append(f"=== problem card: {p.level}/{p.name} ===\n{card}")
@@ -100,6 +116,45 @@ def lab_notebook(arc, limit=40):
         lines.append("Findings recorded by earlier design sessions (most recent first):")
         lines.extend(n for _, n in sorted(notes, key=lambda x: x[0], reverse=True)[:limit])
     return "\n".join(lines) or "empty"
+
+
+def fresh_prompt(arc, round_id, extra=""):
+    """Task prompt for a fresh-eyes session: the problem itself and the times to beat, nothing about how."""
+    import planner
+    import problem
+    p = problem.current()
+    d = p.definition
+    anc = planner.anchors()
+    best = planner.best_kernel(arc)
+    bt = planner.b200_times(best) if best else {}
+    S = lambda k, t: (anc[k][0] - anc[k][1]) / ((t - anc[k][1]) + (anc[k][0] - anc[k][1]))
+    rows = ["| workload | MB moved | band | Tb (S=0.5) µs | Tsol (S=1) µs | time to beat µs | its score |",
+            "|---|---|---|---|---|---|---|"]
+    for k in sorted(anc, key=p.mbytes):
+        t = bt.get(k)
+        rows.append(f"| {', '.join(f'{a}={v}' for a, v in zip(p.var_axes, k.split(',')))} | {p.mbytes(k):.1f} | {p.band(k)} | {anc[k][0]:.1f} | "
+                    f"{anc[k][1]:.1f} | {t if t is None else f'{t:.1f}'} | {'' if t is None else f'{S(k, t):.3f}'} |")
+    try:
+        import yaml
+        rules = [r for r in yaml.safe_load(p.ledger.read_text()).get("constraints") or []
+                 if not r.startswith("Clusters only")]          # a performance finding, not a rule: keep it hidden
+    except Exception:
+        rules = []
+    io = {sect: {k: (v.get("shape"), v["dtype"]) for k, v in d[sect].items()} for sect in ("inputs", "outputs")}
+    return "\n\n".join([
+        f"=== TASK ===\nRound: {round_id}   Problem: {p.level}/{p.name}\nFRESH-EYES SESSION. You are deliberately "
+        f"given no earlier designs, notes or results beyond the times to beat below. Work from first principles and "
+        f"from your own measurements. Return 1 candidate following the OUTPUT CONTRACT, with an id starting with "
+        f"'{round_id}-', parents [] and operation new_design.\n{extra}",
+        f"=== PROBLEM DEFINITION ===\nname: {d['name']}\ndescription: {d.get('description', '')}\n"
+        f"axes: {json.dumps(d['axes'])}\ninputs/outputs (shape, dtype): {json.dumps(io)}\n\nreference:\n{d['reference']}",
+        "=== WORKLOADS AND TIMES TO BEAT (portal B200, µs) ===\n" + "\n".join(rows) +
+        f"\n\nThe score is the mean over workloads of S = (Tb - Tsol) / ((t - Tsol) + (Tb - Tsol)). The 'time to beat' "
+        + (f"is the current best submission (portal score {best['b200']['score']:.4f}). " if best else "") +
+        "On the rented B200 the reference and your kernel are timed side by side; run_tests reports both.",
+        "=== RULES OF THIS PROJECT (on top of the core brief's forbidden list) ===\n" +
+        ("\n".join(f"- {r}" for r in rules) or "- none"),
+    ])
 
 
 def dynamic_prompt(arc, round_id, operation, parents, n=1, band="all", niche="any empty niche", extra="",

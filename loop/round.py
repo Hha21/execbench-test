@@ -120,14 +120,22 @@ def claude_sessions(round_id, jobs, static, a, sdir):
     protocol = designer.PROTOCOL.format(gpu="a rented NVIDIA B200 (Modal; unlocked clocks)", gpu_calls=a.gpu_calls,
                                         turns="about 15")
     system_file.write_text(static + "\n\n" + protocol + "\n\n" + CLAUDE_NOTE)
+    if any(t.get("fresh") for _, t, _, _ in jobs):        # fresh-eyes sessions: no history, no get_kernel
+        fresh_file = sdir / "briefing_fresh.txt"
+        fresh_protocol = re.sub(r"- get_kernel returns.*?\n(?=- )", "- read_example shows annotated excerpts of public "
+                                "B200 norm kernels. This session has no get_kernel: earlier designs stay hidden.\n",
+                                protocol, flags=re.S)
+        fresh_file.write_text(prompts.static_prompt(fresh=True) + "\n\n" + fresh_protocol + "\n\n"
+                              + CLAUDE_NOTE.replace("get_kernel, ", ""))
     minutes = max(3.0, a.b200_minutes / max(1, len(jobs)))
 
     def one(job):
         i, t, dyn, name = job
         mcp_args = ["--name", name, "--round", round_id, "--dir", str(sdir), "--gpu-calls", str(a.gpu_calls),
-                    "--probes", str(a.probes), "--b200-minutes", str(minutes)]
+                    "--probes", str(a.probes), "--b200-minutes", str(minutes)] + (["--fresh"] if t.get("fresh") else [])
         model = t.get("model") or a.session_model
-        out = run_claude(dyn, system_file, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60)
+        brief = sdir / "briefing_fresh.txt" if t.get("fresh") else system_file
+        out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60)
         text = out.get("result") or ""
         if not reply.candidates(text) and out.get("session_id"):          # one nudge for the contract
             more = run_claude("Reply now with exactly one candidate in the OUTPUT CONTRACT format.", None,
@@ -372,9 +380,12 @@ def propose_tasks(round_id, tasks, a):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     jobs = []
     for i, t in enumerate(tasks):
-        dyn = prompts.dynamic_prompt(arc, round_id, t["operation"], t["parents"], n=1, band=t.get("band", "all"),
-                                     niche=t.get("niche", "any empty niche"), extra=t.get("instructions", ""),
-                                     feedback=t.get("feedback", "none"))
+        if t.get("fresh"):
+            dyn = prompts.fresh_prompt(arc, round_id, extra=t.get("instructions", ""))
+        else:
+            dyn = prompts.dynamic_prompt(arc, round_id, t["operation"], t["parents"], n=1, band=t.get("band", "all"),
+                                         niche=t.get("niche", "any empty niche"), extra=t.get("instructions", ""),
+                                         feedback=t.get("feedback", "none"))
         name = f"{stamp}_{slug(t, i)}"
         (d / "replies" / f"{name}.prompt.txt").write_text(dyn)
         jobs.append((i, t, dyn, name))

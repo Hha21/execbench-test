@@ -1,0 +1,1 @@
+{"mcpServers": {"solx": {"command": "/home/lain/execbench-test/.venv/bin/python", "args": ["/home/lain/execbench-test/loop/mcp_tools.py", "--name", "research", "--round", "r0", "--dir", "/home/lain/execbench-test/problems/084_silu_activation_backward/rounds/r0/research", "--gpu-calls", "8", "--probes", "16", "--b200-minutes", "30"]}}}

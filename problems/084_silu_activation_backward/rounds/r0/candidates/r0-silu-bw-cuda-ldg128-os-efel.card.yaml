@@ -1,0 +1,57 @@
+id: silu-bw-cuda-ldg128-os-efel
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: all
+hypothesis: >-
+  A pure 3-read/1-write fp32 stream is at the launch floor for S and bandwidth-bound for M/L; on B200 the harness's
+  dirty L2 makes cache policy the only lever, and evict_first loads plus evict_last stores cut in-window write-backs
+  by 10% at >= 34 MB while costing nothing at S. One float4 per thread, 256-thread CTAs, one-shot grid, exact
+  reference op order in IEEE fp32 (bit-identical output).
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: -3, confidence: medium}
+  L: {pct: -10, confidence: high}
+resources_sm100a:
+  regs_per_thread: 24
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs: {THREADS: 256, FLOATS_PER_THREAD: 4, ELEMS_PER_CTA: 1024, LOAD_HINT: evict_first, STORE_HINT: evict_last}
+tests: [H1, H2, H4, H8]
+findings:
+  - "probe: empty-kernel CUPTI span 1.57-1.66 us; float4/scalar one-shot kernels 2.2-2.4 us at 131-16384 elements for every block size, unroll and hint: S band is at the floor [probe_b200]"
+  - "probe: 256-bit loads tie 128-bit at 12.6-268 MB but cost +0.8 us at 131 elements (3.06 vs 2.29 us), repeatable across block sizes, cause unknown [probe_b200]"
+  - "probe: at 268 MB plain 43.0 us -> EL stores 40.2 -> EF loads + EL stores 38.8; 134 MB 23.65 -> 21.5 -> 20.1; 33.5 MB 7.83 -> 7.41 -> 7.10; S unchanged [probe_b200]"
+  - "probe: .cs loads, nc+EF, L1::no_allocate+EF all equal EF+EL within 0.1 us; L2::256B prefetch hint and nc alone give no gain over EL-only [probe_b200]"
+  - "probe: block 128/256/512/1024 x unroll 1/2/4 with EF+EL all within +-1% at 67-268 MB over 3 repeats; a 512x2 outlier (37.4 us) did not reproduce [probe_b200]"
+  - "probe: torch.compile(reference) is a plausible hidden baseline: 2.11 us at 131 elements (equal to ours), 8.13 at 33.5 MB, 25.8 at 134 MB, 46.6 at 268 MB (ours 7.3/20.0/38.5); eager reference 17.9-131.8 us [probe_b200]"
+  - "run_tests: 16/16 passed, bit-identical to eager; 2.1-2.5 us at S, 2.4-4.6 at M, 7.3-38.5 at L; 0.67-0.83x a plain copy at L, 1.05-1.2x at S/M [run_tests]"
+  - "compile: 24 regs, 0 smem, 0 spills, 3x LDG.128 + 1x STG.128 per thread on sm_100a [compile_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: true, note: "createpolicy/L2::cache_hint exist on sm_90a; dirty-L2 effect size differs with the 50 MB L2"}
+  A100: {runs: true, representative: false, note: "createpolicy needs sm_80+; L2::cache_hint on ld/st is sm_80+ too, but 40 MB L2 changes the write-back regime"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "If the hidden baseline is torch.compile-like, S workloads score ~0.5 no matter what; the problem score rides on M/L"
+  - "The tail thread for n % 4 != 0 (131, 2053, 3089) runs a 1-3 element scalar loop; measured cost is within noise but unverified at the portal's 1500 MHz"
+  - "The scalar fallback kernel is never launched under the harness (256-B aligned pointers); dispatch on alignment is pointer-derived, not value- or count-derived"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

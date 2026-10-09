@@ -35,10 +35,12 @@ def wkey(axes):
     return ",".join(str(v) for v in axes.values())
 
 
-FLAKE = "Expected kernel activity sequence not found"   # CUPTI dropped a whole iteration's records (seen on Modal)
+# CUPTI timing glitches on the rented B200 (Modal), after correctness has passed: a whole iteration's kernel records
+# dropped, or (with patch_harness_timing.py) every window discarded. Very short kernels (~2 us, #84) hit them often.
+FLAKE = ("Expected kernel activity sequence not found", "No timing results for methodology: cupti")
 
 
-def harness(problem, sol_path, trace, retries=2):
+def harness(problem, sol_path, trace, retries=3):
     """Run NVIDIA's harness on one solution; returns (records, console tail).
 
     Workloads that fail only because CUPTI recorded no kernels in one timing iteration are re-run on their own (a
@@ -46,7 +48,7 @@ def harness(problem, sol_path, trace, retries=2):
     """
     recs, console = harness_once(problem, sol_path, trace)
     for attempt in range(retries):
-        flaky = [r["workload"] for r in recs if r["status"] == "RUNTIME_ERROR" and FLAKE in r["log"]]
+        flaky = [r["workload"] for r in recs if r["status"] == "RUNTIME_ERROR" and any(f in r["log"] for f in FLAKE)]
         if not flaky:
             break
         sub = trace.parent / f"retry{attempt}"

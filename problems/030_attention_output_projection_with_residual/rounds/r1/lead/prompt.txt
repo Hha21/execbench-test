@@ -1,0 +1,133 @@
+=== TASK ===
+Round r1: update the hypothesis ledger and design 3 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+First portal result: r0 (one cublasLt GEMM, D = attn @ W.T + residual) = 0.4024; the portal's scoring baseline is 10-20% faster at every size. The baseline is NOT the eager reference (the leaderboard shows eager ~25% slower than the baseline here). Our portal/rented time ratio is 1.37-1.40, against ~1.25 for plain cuBLAS GEMMs on another problem, so our call loses something at the portal's 1500 MHz SM clock or cublasLt picks differently there. Top 5 needs only 0.491 (#1 0.546). Priorities: (1) identify the baseline: time torch.compile(reference) (default and max-autotune), torch.addmm(residual, x, W.T) and plain matmul+add under harness timing on the rented B200, and record kernel names with the profiler; compare per-size ratios with the portal Tb. (2) Compare the cuBLAS/cublasLt algorithm and tile we use with what those pick. (3) Build the fastest correct variant; force a cublasLt algorithm per size only where it is >= 4% faster on the rented box with interleaved repeats (on another problem only >= 4% rented gains transferred to the portal). Portal times of compute-bound sizes vary 2-3% between submissions. Keep one session exploratory.
+
+=== PROBLEM ===
+L1/030_attention_output_projection_with_residual: 16 workloads, variable axes ['batch_size', 'seq_len']; bands by size: S <= 37.2 MB < M <= 76.0 MB < L
+             1,256      17.04 MB  band S
+             4,128      20.97 MB  band S
+             2,293      22.11 MB  band S
+            1,1024      28.84 MB  band S
+            1,1571      37.24 MB  band S
+            16,128      44.56 MB  band M
+            1,2048      44.56 MB  band M
+            4,1024      76.02 MB  band M
+            16,256      76.02 MB  band M
+             8,512      76.02 MB  band M
+            2,2053      76.18 MB  band L
+             8,997     135.62 MB  band L
+            16,512     138.94 MB  band L
+            8,1024     138.94 MB  band L
+            64,128     138.94 MB  band L
+            32,256     138.94 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/030_attention_output_projection_with_residual/ledger.yaml) ===
+# Hypothesis ledger for #30 (030_attention_output_projection_with_residual). Seeded 2026-10-09 by the research session.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+hypotheses:
+- id: H1
+  statement: Fusing the residual as the GEMM's C operand (C != D) removes the reference's separate add kernel at no cost.
+  status: supported
+  evidence:
+  - 'run_tests: cublasLt fused 8.7..77.5 us vs reference 12.3..90.2 us (matmul alone 8.2..72 us), 16/16 pass'
+  - 'probe: torch.addmm(out=) launches a DtoD memcpy of the residual plus the badd nvjet kernel; same time as the reference'
+- id: H2
+  statement: The L band is tensor-core bound and loses about 13% to wave quantisation (320 pair tiles of 256x256 over 74 SM pairs
+    = 4.32 waves); stream-K or a tile count that divides evenly recovers most of it.
+  status: open
+  evidence:
+  - 'probe: cuBLAS 1.64 PFLOP/s at M=8192 vs 1.88 at M=9472 (5 full waves) and 1.93 at M=18944 (rented B200, 1965 MHz)'
+  - 'probe: K=2560 vs 5120 vs 10240 at M=8192 gives the same TFLOP/s, so per-tile prologue/epilogue is not the limit'
+- id: H3
+  statement: The S band (M <= 1571) is a latency chain of 40 serial K-steps on few tiles; splitting K over all 148 SMs with an
+    in-kernel reduction approaches the 6-8 us harness copy floor.
+  status: open
+  evidence:
+  - 'probe: cuBLAS at M=256 takes 4.9/6.2/8.1 us for K=640/1280/2560; a 17 MB copy takes 6.1-8.2 us under harness timing'
+  - 'run_tests: CUTLASS 128x256 (20 CTAs) 25 us and 2SM 256x256 (20 clusters) 18.9 us at M=256 vs cublasLt 8.7 us'
+- id: H4
+  statement: 2-CTA tcgen05 MMA (cta_group::2, 256x256x64 tiles) beats 1SM 128x256x64 at every size.
+  status: supported
+  evidence:
+  - 'run_tests: CUTLASS 2SM 18.9/32.9/48.0/73.7 us vs 1SM 25.1/43.0/61.0/95.0 us at M=256/2048/4096/8192'
+- id: H5
+  statement: A per-size dispatcher (cublasLt or split-K specialist at S/M, CUTLASS 2SM stream-K at L) beats cublasLt alone.
+  status: open
+  evidence:
+  - 'run_tests: CUTLASS 2SM 256x256 is already 5% faster than cublasLt at M=7976-8192 (73.1-73.7 vs 76.9-77.5 us)'
+- id: H6
+  statement: The datasheet 2.25 PFLOP/s dense bf16 peak is unreachable at the 1500 MHz lock (practical ~1.47 PFLOP/s), so if
+    SOLAR uses it the L-band score is capped near 0.6 and S-band workloads hold most of the headroom.
+  status: open
+  evidence:
+  - 'probe: best cuBLAS rate 1.93 PFLOP/s at 1965 MHz with no power throttling (300 W of 1000 W); scales to 1.47 at 1500 MHz'
+- id: H7
+  statement: The hidden baseline Tb is close to the reference time (PyTorch-only code cannot fuse the residual into cuBLAS).
+  status: open
+  evidence:
+  - 'probe: matmul+add and addmm(out=) are within 3% of each other at every size; the first portal result decides'
+- id: H8
+  statement: evict_last on the output stores (TMA store cache hint) recovers part of the dirty-L2 flush cost at S/M, as in #38.
+  status: open
+  evidence:
+  - '#38 portal: r5 0.609 vs r3 0.588 (M -8%); untested here, the first kernel is a library call'
+- id: H9
+  statement: cuBLAS heuristics pick the same algorithms at the portal's locked clock, so the first kernel's S/L ratio on the
+    portal follows the compute/memory split (L slows ~1.3x, S less).
+  status: open
+  evidence:
+  - 'none yet; portal submission 1'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by earlier design sessions (most recent first):
+- [r0-oproj-cublaslt-fused-v0] cuBLAS matmul alone (rented B200, 1965 MHz): 8.2 us at 256 tokens (0.41 PFLOP/s) to 65-72 us at 8192 (1.5-1.64 PFLOP/s) [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] reference = cuBLAS nvjet GEMM + separate add; the add costs 4 us at S and 12-18 us at L [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] torch.addmm(out=) launches a DtoD memcpy of the residual then the badd nvjet kernel; same time as the reference [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] cublasLt with C=residual, D=output: one kernel, 16/16 pass, 8.7 (256 tok) .. 77.8 us (8192); 1.4x the copy floor at S, 2.5x at L [run_tests]
+- [r0-oproj-cublaslt-fused-v0] CUTLASS 4.4 sm100 1SM 128x256x64 persistent + TMA C/D epilogue: compiles in 25 s, 198 regs, correct; 25 us at S (20 CTAs), 95 us at L [run_tests]
+- [r0-oproj-cublaslt-fused-v0] CUTLASS 2SM 256x256x64 cluster 2x1: 18.9 us at S, 73.7 us at L, 5% faster than cublasLt at L and 2.2x slower at S [run_tests]
+- [r0-oproj-cublaslt-fused-v0] tensor peak: cuBLAS reaches 1.93 PFLOP/s at M=18944 (full waves) but 1.64 at M=8192 (4.32 waves): L loses ~13% to wave quantisation [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] K=2560 vs 5120 vs 10240 at M=8192 gives the same TFLOP/s: per-tile prologue/epilogue is not the L-band limit [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] M=256: cuBLAS 4.9/6.2/8.1 us at K=640/1280/2560: serial K-steps dominate S; split-K over 148 SMs is the S lever [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] a 17 MB bf16 copy in one kernel takes 8.2 us under harness-style cold-L2 timing (2.1 us at 8 TB/s): ~6 us fixed cost at S [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] no throttling: 1965 MHz and 300 W of 1000 W during sustained GEMM [probe_b200]
+- [r0-oproj-cublaslt-fused-v0] dead end for the compile tool: the lint regex rejects the literal bf16 type name in CUTLASS sources although the dtype is bf16 by definition; cublasLt source uses CUDA_R_16BF [compile_b200]
+- [r0-oproj-cublaslt-fused-v0] a .cpp-only solution does not get the CUDA include path; keep a kernel.cu in the sources [run_tests]
+
+=== PORTAL RESULTS (best first) ===
+- r0-oproj-cublaslt-fused-v0: portal 0.4024, S/M/L 15.5/42.9/94.8 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (1,256) | middle (16,256) | largest (32,256) |
+|---|---|---|---|
+| x: ef | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| w: nc | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| w: el | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| st: ef | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| st: none (vs el) | +0.0% ± 1.3 | +0.0% ± 1.3 | +0.0% ± 1.3 |
+| width 128 | +0.0% ± 1.3 | +0.0% ± 1.3 | +0.0% ± 1.3 |
+| threads 512, rows 32 | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| threads 128, rows 8 | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| grid persistent | +0.0% ± 1.3 | +0.0% ± 1.3 | +0.0% ± 1.3 |
+| prefetch L2 | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| mem tma | +0.0% ± 1.3 | +0.0% ± 1.3 | +0.0% ± 1.3 |
+| lang triton | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+| lang cute | -0.0% ± 1.4 | -0.0% ± 1.4 | -0.0% ± 1.4 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-oproj-cublaslt-fused-v0 | tma-tensor/persistent/all | cuda_cpp | 12.4/31.5/67.7 | -/-/- | -/-/- | -/-/- | 15.5/42.9/94.8 | 0.402363 | - | passed |

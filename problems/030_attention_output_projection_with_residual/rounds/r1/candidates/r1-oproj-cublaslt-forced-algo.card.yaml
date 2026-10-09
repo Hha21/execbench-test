@@ -1,0 +1,70 @@
+id: r1-oproj-cublaslt-forced-algo
+parents: [r0-oproj-cublaslt-fused-v0]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  The fused cublasLt call loses 7-15% to plain matmul mostly because reading the residual (C != D) slows the
+  epilogue, not because of a wrong heuristic. The default L-band kernel (nvjet 128x256, cluster 2x2) suffers
+  most. Forcing nvjet 128x192 2cta with a 2x1 cluster (tile 32, cluster id 3) at M >= 6144 recovers about 6-8%
+  at L. Two S sizes gain about 8% from other heuristic entries. The M band is already on the best config.
+expected_effect:
+  S: {pct: -4, confidence: medium}
+  M: {pct: 0, confidence: high}
+  L: {pct: -6, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 0
+  smem_per_cta_bytes: 0
+  threads_per_cta: 0
+  ctas_per_sm: 0
+  bytes_in_flight_per_sm: 0
+  launches_per_call: 1
+knobs: {workspace_mb: 32, heuristics_requested: 32, L_rule: "M>=6144 -> tile32/cluster3", S_rule: "512 -> tile183/cluster5, 586 -> tile401/cluster3", alpha: 1, beta: 1}
+dispatch:
+  - {max_tokens: 511, kernel: cublasLt-heuristic0, meta: {}}
+  - {max_tokens: 512, kernel: cublasLt-forced, meta: {tile_id: 183, cluster_id: 5, name: nvjet_tst_144x64_64x12_1x2_2cta_h_bx_TNN}}
+  - {max_tokens: 585, kernel: cublasLt-heuristic0, meta: {}}
+  - {max_tokens: 586, kernel: cublasLt-forced, meta: {tile_id: 401, cluster_id: 3}}
+  - {max_tokens: 6143, kernel: cublasLt-heuristic0, meta: {}}
+  - {max_tokens: null, kernel: cublasLt-forced, meta: {tile_id: 32, cluster_id: 3, name: nvjet_tst_128x192_64x7_2x1_2cta_v_bx_TNT}}
+tests: [H10, H12]
+findings:
+  - "attribution (rented B200, harness_time, 3 interleaved rounds) at M=2048/4096/8192: plain matmul 20.6/35.7/70.6 us; fused C!=D 23.2/38.5/76.5; diagnostic C=D 21.2/36.4/71.5; beta=0 20.5/35.6/70.4 us. Same kernel apart from the bx/bz (beta) variant. The gap comes from reading the residual as a separate C tensor, not from the algorithm at M; at L the default 128x256 2x2 kernel is worst hit [probe_b200]"
+  - "heuristic-0 kernels: 2048 nvjet_tst_144x128_64x8_1x2_2cta_h_bx_TNN; 4096 128x192_64x7_2x1_2cta_v_bx_TNT; 8192 128x256_64x6_2x2_2cta_h_bx_TNT [probe_b200]"
+  - "cuBLASLt resolves to torch's pip library (/venv/.../nvidia/cu13/lib/libcublasLt.so.13, cublasLtGetVersion=130000), not the toolkit's 13.2.1.1, because torch loads it first [probe_b200]"
+  - "cublasLt returns only 8 heuristic results per shape even when 32 are requested; all are nvjet (algo id 66, stages id 35, splitK 1, no workspace) [probe_b200]"
+  - "per-size best vs heuristic 0 (median of 3 rounds): 256 none better (8.7); 512 tile183/cl5 9.7 vs 10.6 (-8%); 586 tile401/cl3 11.6 vs 12.1 (-4%); 1024 none (13.4); 1571 tile23/cl3 -2% (noise); 2048 none (23.2); 4096 h0 is tile32/cl3 already (39.1); 4106 none (39.2); 7976 tile29/cl3 71.4 or tile32/cl3 71.7 vs 78.1 (-8%); 8192 tile32/cl3 72.2 vs 78.2 (-8%) [probe_b200]"
+  - "union of heuristic algos from 160 proxy shapes (154 distinct configs) timed at M=2048/4096/7976/8192: no config beats the per-shape best above; M band cannot be improved by algorithm choice [probe_b200]"
+  - "dead end: hand-built nvjet algos (AlgoInit id 66 + TILE/CLUSTER set) pass AlgoCheck but are 3-8% slower than heuristic configs with the same tile; they lose hidden fields (custom option, TNT vs TNN epilogue variant) [probe_b200]"
+  - "dead end (H12 refuted): split-K 2/4 with fp32 reduction at M=256 takes 17-19 us vs 8.7 for heuristic 0 (nvjet splitK kernel + splitKreduce_kernel); CUPTI sequence matching also failed intermittently on the 2-kernel split-K path [probe_b200]"
+  - "run_tests 16/16: L 71.4-71.9 us vs r0 75.8-76.1 (-5.5 to -5.9%); 512 9.6 (-8.4%); 586 11.4 (-7.7%); M band unchanged (+-1%); target 4096 <= 36 us NOT met (38.2-38.9) [run_tests]"
+  - "H10 partly supported: algorithm choice recovers the L-band loss down to ~2% over plain matmul; at M the residual read (~3 us) is intrinsic to cublasLt's fused epilogue, so M-band plain-GEMM speed with a fused residual needs a custom (CUTLASS) epilogue (E3) [probe_b200]"
+paths:
+  - {max_tokens: 511, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 2}
+  - {max_tokens: 512, lang: cuda, width: 128, threads: 256, rows: 144, grid: persistent, mem: tma, launches: 1, cluster: 2}
+  - {max_tokens: 586, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 2}
+  - {max_tokens: 6143, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 2}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, cluster: 2}
+runs_on:
+  H200: {runs: true, representative: false, note: "tile table is B200-specific; on H200 the tiles are absent and it falls back to heuristic 0"}
+  A100: {runs: true, representative: false, note: "correctness only"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "portal runs SM at 1500 MHz: the heuristic list should be identical (same library, same GPU), but the relative benefit of 128x192 vs 128x256 at the lock is unmeasured (H9)"
+  - "if the portal's cuBLASLt build differs, the table entries may be missing; the code then falls back to heuristic 0 (r0 behaviour)"
+  - "586 gain (-4% probe, -7.7% run_tests) is near the noise level for S"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

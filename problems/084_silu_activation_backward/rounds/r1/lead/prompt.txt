@@ -1,0 +1,125 @@
+=== TASK ===
+Round r1: update the hypothesis ledger and design 3 experiments.
+
+=== PROBLEM ===
+L1/084_silu_activation_backward: 16 workloads, variable axes ['num_elements']; bands by size: S <= 0.3 MB < M <= 12.6 MB < L
+               131       0.00 MB  band S
+              2053       0.03 MB  band S
+              3089       0.05 MB  band S
+              4096       0.07 MB  band S
+             16384       0.26 MB  band S
+             40960       0.66 MB  band M
+            163840       2.62 MB  band M
+            262144       4.19 MB  band M
+            655360      10.49 MB  band M
+            786432      12.58 MB  band M
+           2097152      33.55 MB  band L
+           4194304      67.11 MB  band L
+           5242880      83.89 MB  band L
+           8388608     134.22 MB  band L
+          10485760     167.77 MB  band L
+          16777216     268.44 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/084_silu_activation_backward/ledger.yaml) ===
+# Hypothesis ledger for #084 silu_activation_backward, seeded 9 October 2026 by the research session.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+hypotheses:
+- id: H1
+  statement: L2 evict_last on the output stores cuts in-window dirty write-backs, gaining 5-7% at L and 3% at 12.6 MB.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: 268 MB plain 43.0 us vs EL stores 40.2; 134 MB 23.65 vs 21.5; 33.5 MB 7.83 vs 7.41; 12.6 MB 4.68 vs 4.51; S ties'
+- id: H2
+  statement: L2 evict_first on the three input streams adds a further 3-4% at L on top of EL stores, because reads are 75% of
+    the traffic here (unlike #38's 50%), so our own clean lines become the victims instead of the flush's dirty lines.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: 268 MB EL 40.2 -> EF+EL 38.8; 134 MB 21.5 -> 20.1; 83.9 MB 14.8 -> 13.8; 33.5 MB 7.41 -> 7.10; S ties'
+  - 'probe_b200 r0: ld.global.cs and nc+EF and L1::no_allocate+EF all equal EF (within 0.1 us); L2::256B prefetch hint = no gain'
+- id: H3
+  statement: 256-bit loads/stores do not beat 128-bit for this stream, and cost +0.8 us at 131 elements.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: k8 vs k4 tie at 12.6-268 MB (within 1%); at 131 elements k8 3.06 us vs k4 2.29, repeatable across block sizes; cause unknown'
+- id: H4
+  statement: The S band (<= 0.3 MB) is at the launch floor; no kernel-side change can gain more than ~0.2 us there.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: empty kernel 1.57-1.66 us; float4/scalar kernels 2.2-2.4 us at 131-16384 elements for every block size, unroll and hint tried'
+- id: H5
+  statement: The hidden baseline Tb is a torch.compile-fused kernel (~2.1 us at S, ~1.2x our time at L), so S workloads score
+    about 0.5 regardless and the problem score is decided by the 6 L workloads and 5 M workloads.
+  status: open
+  evidence:
+  - 'probe_b200 r0: torch.compile(reference) 2.11 us at 131, 2.72 at 163840, 4.67 at 786432, 8.13 at 2.1M, 25.8 at 8.4M, 46.6 at 16.8M; eager reference 17.9-131.8 us'
+  - 'needs the first portal submission (Tb per workload)'
+- id: H6
+  statement: More bytes in flight per thread (unroll 2-4, 512-1024 threads) raises L-band bandwidth.
+  status: refuted
+  evidence:
+  - 'probe_b200 r0: with EF+EL hints, block 128/256/512/1024 x unroll 1/2/4 all within +-1% at 67-268 MB over 3 repeats; the 512x2 37.4 us reading did not reproduce (38.4-38.5)'
+- id: H7
+  statement: The marginal bandwidth ceiling for this 3:1 read:write stream under the dirty-L2 flush is ~7.3 TB/s; the remaining
+    ~5 us at 268 MB (vs 8 TB/s) is dirty write-back traffic that no load/store hint removes.
+  status: open
+  evidence:
+  - 'run_tests r0: 134 MB 20.0 us, 268 MB 38.5 us -> marginal 7.25 TB/s; fit t = 2.1 us + bytes/7.3 TB/s'
+  - 'untested: a clean-flush comparison (as in #38 r12 E1) to size the dirty cost for this traffic mix'
+- id: H8
+  statement: Per-size dispatch is unnecessary; one config (256 threads, one float4 per thread, EF+EL) is within noise of the
+    best at every size.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: all configs tie at S/M; H6 ties at L; run_tests r0 16/16 with one config'
+- id: H9
+  statement: TMA/bulk rings, persistent grids, clusters or weight-style prefetch could help this problem.
+  status: parked
+  evidence:
+  - '#38 evidence: TMA +1-1.5 us fixed, persistent slower at every size, clusters lost 2-5%; nothing in this problem (no reduction, no reuse) changes that reasoning'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by earlier design sessions (most recent first):
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: empty-kernel CUPTI span 1.57-1.66 us; float4/scalar one-shot kernels 2.2-2.4 us at 131-16384 elements for every block size, unroll and hint: S band is at the floor [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: 256-bit loads tie 128-bit at 12.6-268 MB but cost +0.8 us at 131 elements (3.06 vs 2.29 us), repeatable across block sizes, cause unknown [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: at 268 MB plain 43.0 us -> EL stores 40.2 -> EF loads + EL stores 38.8; 134 MB 23.65 -> 21.5 -> 20.1; 33.5 MB 7.83 -> 7.41 -> 7.10; S unchanged [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: .cs loads, nc+EF, L1::no_allocate+EF all equal EF+EL within 0.1 us; L2::256B prefetch hint and nc alone give no gain over EL-only [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: block 128/256/512/1024 x unroll 1/2/4 with EF+EL all within +-1% at 67-268 MB over 3 repeats; a 512x2 outlier (37.4 us) did not reproduce [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: torch.compile(reference) is a plausible hidden baseline: 2.11 us at 131 elements (equal to ours), 8.13 at 33.5 MB, 25.8 at 134 MB, 46.6 at 268 MB (ours 7.3/20.0/38.5); eager reference 17.9-131.8 us [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] run_tests: 16/16 passed, bit-identical to eager; 2.1-2.5 us at S, 2.4-4.6 at M, 7.3-38.5 at L; 0.67-0.83x a plain copy at L, 1.05-1.2x at S/M [run_tests]
+- [r0-silu-bw-cuda-ldg128-os-efel] compile: 24 regs, 0 smem, 0 spills, 3x LDG.128 + 1x STG.128 per thread on sm_100a [compile_b200]
+
+=== PORTAL RESULTS (best first) ===
+- r0-silu-bw-cuda-ldg128-os-efel: portal 0.4941, S/M/L 2.8/3.7/17.7 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (131) | middle (655360) | largest (16777216) |
+|---|---|---|---|
+| x: ef | +0.0% ± 1.4 | +0.0% ± 0.9 | +0.0% ± 1.4 |
+| w: nc | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| w: el | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| st: ef | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| st: none (vs el) | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| width 128 | +0.0% ± 1.4 | +0.0% ± 0.9 | +0.0% ± 1.4 |
+| threads 512, rows 32 | +0.0% ± 1.4 | -0.0% ± 1.1 | +0.0% ± 1.4 |
+| threads 128, rows 8 | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| grid persistent | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| prefetch L2 | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| mem tma | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| lang triton | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+| lang cute | +0.0% ± 1.4 | -0.0% ± 1.0 | +0.0% ± 1.4 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-silu-bw-cuda-ldg128-os-efel | ldg128/oneshot/all | cuda_cpp | 2.4/3.3/16.8 | -/-/- | -/-/- | -/-/- | 2.8/3.7/17.7 | 0.494149 | 14/0/None; 24/0/None | passed |

@@ -1,12 +1,19 @@
 # Hypothesis ledger for #084 silu_activation_backward, seeded 9 October 2026; updated r1 (10 October 2026) by the research lead.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 constraints:
-- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
 - Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
-- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
-- 'Clusters only on one-wave grids (<= 1184 CTAs of 256 threads, i.e. n <= ~1.2M elements): clustered large grids lost 2-5% on the #38 portal and seemed to slow later plain launches (carried over from #38 H16).'
-- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot.'
-- 'torch.compile-based or inductor-derived Triton solutions are legitimate PyTorch/Triton code, but set dynamic=False and raise torch._dynamo cache_size_limit above 16, or extract the generated Triton kernel and launch it directly; never let a recompile or eager fallback happen inside the timed loop (CUPTI sequence must repeat).'
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only on one-wave grids (<= 1184 CTAs of 256 threads, i.e. n <= ~1.2M elements): clustered large grids lost 2-5%
+  on the #38 portal and seemed to slow later plain launches (carried over from #38 H16).'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot.'
+- 'torch.compile-based or inductor-derived Triton solutions are legitimate PyTorch/Triton code, but set dynamic=False and
+  raise torch._dynamo cache_size_limit above 16, or extract the generated Triton kernel and launch it directly; never let
+  a recompile or eager fallback happen inside the timed loop (CUPTI sequence must repeat).'
 hypotheses:
 - id: H1
   statement: L2 evict_last on the output stores cuts in-window dirty write-backs, gaining 5-7% at L and 3% at 12.6 MB.
@@ -14,7 +21,9 @@ hypotheses:
   evidence:
   - 'probe_b200 r0: 268 MB plain 43.0 us vs EL stores 40.2; 134 MB 23.65 vs 21.5; 33.5 MB 7.83 vs 7.41; 12.6 MB 4.68 vs 4.51; S ties'
 - id: H2
-  statement: L2 evict_first on the three input streams adds a further 3-4% at L on top of EL stores, because reads are 75% of the traffic here, so after each L2 set holds one of our EF lines our own clean lines become the victims instead of the flush's dirty lines.
+  statement: L2 evict_first on the three input streams adds a further 3-4% at L on top of EL stores, because reads are 75% of
+    the traffic here, so after each L2 set holds one of our EF lines our own clean lines become the victims instead of the
+    flush's dirty lines.
   status: supported
   evidence:
   - 'probe_b200 r0: 268 MB EL 40.2 -> EF+EL 38.8; 134 MB 21.5 -> 20.1; 83.9 MB 14.8 -> 13.8; 33.5 MB 7.41 -> 7.10; S ties'
@@ -32,7 +41,9 @@ hypotheses:
   - 'probe_b200 r0 (unlocked clocks): empty kernel 1.57-1.66 us; float4/scalar kernels 2.2-2.4 us at 131-16384 elements for every block size, unroll and hint tried'
   - 'portal r0 CHALLENGES this: ours 2.7-2.9 us at <= 40960 elements vs Tb 2.2-2.5 (Tb is itself a kernel), so a kernel 0.4-0.5 us faster than ours exists under portal conditions'
 - id: H5
-  statement: The hidden baseline Tb is one fused PyTorch/Triton kernel (torch.compile-like) at ~2.4 us at S; at L it is better than default torch.compile (43.1 us at 268 MB on the portal vs 46.6 bench default compile; 6.8 TB/s marginal), so it is probably a max-autotune or hand-tuned Triton config without cache hints.
+  statement: The hidden baseline Tb is one fused PyTorch/Triton kernel (torch.compile-like) at ~2.4 us at S; at L it is better
+    than default torch.compile (43.1 us at 268 MB on the portal vs 46.6 bench default compile; 6.8 TB/s marginal), so it is
+    probably a max-autotune or hand-tuned Triton config without cache hints.
   status: open
   evidence:
   - 'probe_b200 r0: torch.compile(reference) 2.11 us at 131, 2.72 at 163840, 4.67 at 786432, 8.13 at 2.1M, 25.8 at 8.4M, 46.6 at 16.8M; eager 17.9-131.8 us'
@@ -44,13 +55,15 @@ hypotheses:
   evidence:
   - 'probe_b200 r0: with EF+EL hints, block 128/256/512/1024 x unroll 1/2/4 all within +-1% at 67-268 MB over 3 repeats; the 512x2 37.4 us reading did not reproduce (38.4-38.5)'
 - id: H7
-  statement: The marginal bandwidth ceiling for this 3:1 read:write stream under the dirty-L2 flush is ~7.3 TB/s; the remaining ~5 us at 268 MB (vs 8 TB/s) is dirty write-back traffic that no load/store hint removes.
+  statement: The marginal bandwidth ceiling for this 3:1 read:write stream under the dirty-L2 flush is ~7.3 TB/s; the remaining
+    ~5 us at 268 MB (vs 8 TB/s) is dirty write-back traffic that no load/store hint removes.
   status: open
   evidence:
   - 'run_tests r0: 134 MB 20.0 us, 268 MB 38.5 us -> marginal 7.25 TB/s; fit t = 2.1 us + bytes/7.3 TB/s; portal 20.9/40.0'
   - 'untested: clean-flush (read-sweep) vs zero-fill flush comparison to size the in-window write-back cost (E3 r1)'
 - id: H8
-  statement: Per-size dispatch is unnecessary; one config (256 threads, one float4 per thread, EF+EL) is within noise of the best at every size.
+  statement: Per-size dispatch is unnecessary; one config (256 threads, one float4 per thread, EF+EL) is within noise of the
+    best at every size.
   status: supported
   evidence:
   - 'probe_b200 r0: all configs tie at S/M on the unlocked bench; H6 ties at L; run_tests r0 16/16 with one config'
@@ -62,33 +75,43 @@ hypotheses:
   - '#38 evidence: TMA +1-1.5 us fixed, persistent slower at every size, clusters on large grids lost 2-5%; nothing in this problem (no reduction, no reuse) changes that reasoning'
   - 'exception carried over from #38: cluster-of-2 launch on ONE-WAVE grids saved 0.13-0.16 us outside the CTAs (H12)'
 - id: H10
-  statement: The portal-vs-bench inflation (+0.4-0.5 us = +17% at S, +5% at L) is the 1500 MHz SM lock scaling the clock-bound part of the fixed cost (front-end launch, CTA dispatch, pre-load instructions, store drain), not the DRAM round trip. If so, a rented B200 with nvidia-smi -lgc 1500 reproduces the portal numbers, and every instruction before the first load matters more on the portal than on the unlocked bench.
+  statement: The portal-vs-bench inflation (+0.4-0.5 us = +17% at S, +5% at L) is the 1500 MHz SM lock scaling the clock-bound
+    part of the fixed cost (front-end launch, CTA dispatch, pre-load instructions, store drain), not the DRAM round trip. If so,
+    a rented B200 with nvidia-smi -lgc 1500 reproduces the portal numbers, and every instruction before the first load matters more
+    on the portal than on the unlocked bench.
   status: open
   evidence:
   - 'portal r0 vs rented r0: S 2.8-2.9 vs 2.1-2.5; M 2.8-5.0 vs 2.4-4.6; L 7.9-40.0 vs 7.3-38.5 (+4-8%)'
   - 'to test: E1 r1 (clock lock on the rented B200)'
 - id: H11
-  statement: 'Tb''s 0.4-0.5 us S-band advantage over r0 on the portal comes from kernel structure or launch path (inductor-style Triton kernel: int32 offsets, no createpolicy/cache_hint, masked tail, 4-8 floats per thread, no tail branch), so a Triton port of r0 or an inductor-equivalent kernel that ties r0 on the unlocked bench would score ~2.4 us at S on the portal.'
+  statement: Tb's 0.4-0.5 us S-band advantage over r0 on the portal comes from kernel structure or launch path (inductor-style
+    Triton kernel: int32 offsets, no createpolicy/cache_hint, masked tail, 4-8 floats per thread, no tail branch), so a Triton
+    port of r0 or an inductor-equivalent kernel that ties r0 on the unlocked bench would score ~2.4 us at S on the portal.
   status: open
   evidence:
   - 'portal r0: Tb 2.2-2.5 at <= 40960 vs ours 2.7-2.9; bench: torch.compile 2.11 vs ours 2.1 at 131 (unlocked)'
   - 'alternative explanation to keep in mind: Tb is the minimum over many agentic attempts and so sits at the bottom of the portal noise band (Tb spread 2.2-2.5 across identical-work sizes)'
   - 'to test: E1 r1 (bench, locked if possible) then one portal slot for the Triton candidate'
 - id: H12
-  statement: A cluster-of-2 launch (cudaLaunchAttributeClusterDimension = {2,1,1}) on one-wave grids (n <= ~1.2M elements) cuts 0.13-0.16 us of per-launch overhead outside the CTAs, as measured on #38 with the same harness and GPU.
+  statement: A cluster-of-2 launch (cudaLaunchAttributeClusterDimension = {2,1,1}) on one-wave grids (n <= ~1.2M elements) cuts
+    0.13-0.16 us of per-launch overhead outside the CTAs, as measured on #38 with the same harness and GPU.
   status: open
   evidence:
   - '#38 (same harness, same rented B200): cluster-of-2 saved ~0.13-0.16 us for one-wave grids; large clustered grids lost 2-5% on the portal'
   - 'to test: E2 r1'
 - id: H13
-  statement: The M-band excess over fixed + bytes/7.3 TB/s is the write-back of the flush's dirty lines evicted by our first loads (about one line per L2 set, ~L2/ways ~= 8 MB, ~1 us at 12.6 MB, proportionally less below), and no load/store policy can remove it because every L2 miss must allocate a line.
+  statement: The M-band excess over fixed + bytes/7.3 TB/s is the write-back of the flush's dirty lines evicted by our first loads
+    (about one line per L2 set, ~L2/ways ~= 8 MB, ~1 us at 12.6 MB, proportionally less below), and no load/store policy can
+    remove it because every L2 miss must allocate a line.
   status: open
   evidence:
   - 'portal r0: Tb and ours share the same M slope (~4.8 TB/s effective from 0.66 to 12.6 MB) despite different hints'
   - 'bench r0: 12.6 MB 4.6 us vs 2.1 + 12.6 MB / 7.3 TB/s = 3.8 us predicted: ~0.8 us unexplained'
   - 'to test: E3 r1 clean-flush vs dirty-flush probe at 2.6-268 MB'
 - id: H14
-  statement: Fractional eviction policies (EF loads at 0.25-0.75, EL stores at 0.5, evict_unchanged) or ordering output stores before the next tile's loads in a persistent 2-tile software pipeline change which lines are victimised and recover part of the L-band write-back cost (<= 3%).
+  statement: Fractional eviction policies (EF loads at 0.25-0.75, EL stores at 0.5, evict_unchanged) or ordering output stores
+    before the next tile's loads in a persistent 2-tile software pipeline change which lines are victimised and recover part of
+    the L-band write-back cost (<= 3%).
   status: open
   evidence:
   - 'only worth testing if E3 r1 finds an in-window write-back cost >= 2 us at 268 MB'

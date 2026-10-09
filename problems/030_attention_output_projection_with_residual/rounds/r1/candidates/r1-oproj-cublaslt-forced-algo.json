@@ -1,0 +1,39 @@
+{
+ "name": "r1-oproj-cublaslt-forced-algo",
+ "definition": "030_attention_output_projection_with_residual",
+ "author": "solx-loop",
+ "description": "The fused cublasLt call loses 7-15% to plain matmul mostly because reading the residual (C != D) slows the epilogue, not because of a wrong heuristic. The default L-band kernel (nvjet 128x256, cluster 2x2) suffers most. Forcing nvjet 128x192 2cta with a 2x1 cluster (tile 32, cluster id 3) at M >= 6144 recovers about 6-8% at L. Two S sizes gain about 8% from other heuristic entries. The M band is already on the best config.",
+ "spec": {
+  "languages": [
+   "cuda_cpp"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "binding.cpp::run",
+  "dependencies": [],
+  "destination_passing_style": true,
+  "compile_options": {
+   "cuda_cflags": [
+    "-O3",
+    "--use_fast_math",
+    "-std=c++17"
+   ],
+   "ld_flags": [
+    "-lcuda",
+    "-lcublasLt"
+   ]
+  }
+ },
+ "sources": [
+  {
+   "path": "kernel.cu",
+   "content": "#include <cuda_runtime.h>\n#include <cublasLt.h>\n#include <mutex>\n\n// D[M,N] = A[M,K] * W[N,K]^T + R[M,N], all bf16 row-major, fp32 accumulate, one cublasLt matmul\n// with C = residual and D = output (C != D is allowed by cublasLt, so the residual add is fused).\n// cuBLAS is column-major: D^T[N,M] = op_T(W_col)[N,K] * op_N(A_col)[K,M] + R^T.\n//\n// Algorithm choice is keyed by M only. Where an nvjet config measurably beats heuristic 0 (rented\n// B200, harness timing, interleaved repeats), we take the first heuristic result of the actual\n// shape whose (TILE_ID, CLUSTER_SHAPE_ID) matches the table; otherwise heuristic 0.\n\nnamespace {\ncublasLtHandle_t get_handle() {\n    static cublasLtHandle_t h = nullptr;\n    static std::once_flag once;\n    std::call_once(once, [] { cublasLtCreate(&h); });\n    return h;\n}\n\n// Returns the wanted (tile id, cluster shape id) for this M, or tile = 0 for heuristic 0.\nvoid pick(int M, unsigned& tile, unsigned& cluster) {\n    tile = 0; cluster = 0;\n    if (M >= 6144) { tile = 32; cluster = 3; }        // nvjet 128x192 2cta, cluster 2x1: -8% at 7976/8192\n    else if (M == 512) { tile = 183; cluster = 5; }   // nvjet 144x64 2cta, cluster 1x2: -8%\n    else if (M == 586) { tile = 401; cluster = 3; }   // -4%\n}\n}  // namespace\n\nextern \"C\" int oproj_launch(const void* A, const void* R, const void* W, void* D,\n                             int M, int N, int K, void* ws, size_t ws_bytes, cudaStream_t stream) {\n    cublasLtHandle_t handle = get_handle();\n    cublasLtMatmulDesc_t op = nullptr;\n    cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr, ld = nullptr;\n    cublasLtMatmulPreference_t pref = nullptr;\n    cublasStatus_t st;\n#define LT(x) st = (x); if (st != CUBLAS_STATUS_SUCCESS) goto done;\n    LT(cublasLtMatmulDescCreate(&op, CUBLAS_COMPUTE_32F, CUDA_R_32F));\n    {\n        cublasOperation_t tA = CUBLAS_OP_T, tB = CUBLAS_OP_N;\n        LT(cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSA, &tA, sizeof(tA)));\n        LT(cublasLtMatmulDescSetAttribute(op, CUBLASLT_MATMUL_DESC_TRANSB, &tB, sizeof(tB)));\n    }\n    // \"A\" operand = W viewed column-major: K rows x N cols, ld = K; transposed by the op.\n    LT(cublasLtMatrixLayoutCreate(&la, CUDA_R_16BF, K, N, K));\n    // \"B\" operand = attn viewed column-major: K rows x M cols, ld = K.\n    LT(cublasLtMatrixLayoutCreate(&lb, CUDA_R_16BF, K, M, K));\n    // C (residual) and D (output) viewed column-major: N rows x M cols, ld = N.\n    LT(cublasLtMatrixLayoutCreate(&lc, CUDA_R_16BF, N, M, N));\n    LT(cublasLtMatrixLayoutCreate(&ld, CUDA_R_16BF, N, M, N));\n    LT(cublasLtMatmulPreferenceCreate(&pref));\n    LT(cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws_bytes, sizeof(ws_bytes)));\n    {\n        cublasLtMatmulHeuristicResult_t heur[32];\n        int nret = 0;\n        LT(cublasLtMatmulAlgoGetHeuristic(handle, op, la, lb, lc, ld, pref, 32, heur, &nret));\n        if (nret == 0) { st = CUBLAS_STATUS_NOT_SUPPORTED; goto done; }\n        int sel = 0;\n        unsigned want_tile, want_cluster;\n        pick(M, want_tile, want_cluster);\n        if (want_tile) {\n            for (int i = 0; i < nret; ++i) {\n                uint32_t tile = 0, sk = 0; uint16_t cl = 0; size_t wr = 0;\n                cublasLtMatmulAlgoConfigGetAttribute(&heur[i].algo, CUBLASLT_ALGO_CONFIG_TILE_ID, &tile, sizeof(tile), &wr);\n                cublasLtMatmulAlgoConfigGetAttribute(&heur[i].algo, CUBLASLT_ALGO_CONFIG_CLUSTER_SHAPE_ID, &cl, sizeof(cl), &wr);\n                cublasLtMatmulAlgoConfigGetAttribute(&heur[i].algo, CUBLASLT_ALGO_CONFIG_SPLITK_NUM, &sk, sizeof(sk), &wr);\n                if (tile != want_tile || cl != want_cluster || sk > 1) continue;\n                cublasLtMatmulHeuristicResult_t chk{};\n                if (cublasLtMatmulAlgoCheck(handle, op, la, lb, lc, ld, &heur[i].algo, &chk) == CUBLAS_STATUS_SUCCESS &&\n                    chk.workspaceSize <= ws_bytes) { sel = i; break; }\n            }\n        }\n        const float alpha = 1.0f, beta = 1.0f;\n        LT(cublasLtMatmul(handle, op, &alpha, W, la, A, lb, &beta, R, lc, D, ld,\n                          &heur[sel].algo, ws, ws_bytes, stream));\n    }\ndone:\n    if (pref) cublasLtMatmulPreferenceDestroy(pref);\n    if (ld) cublasLtMatrixLayoutDestroy(ld);\n    if (lc) cublasLtMatrixLayoutDestroy(lc);\n    if (lb) cublasLtMatrixLayoutDestroy(lb);\n    if (la) cublasLtMatrixLayoutDestroy(la);\n    if (op) cublasLtMatmulDescDestroy(op);\n    return (int)st;\n#undef LT\n}\n"
+  },
+  {
+   "path": "binding.cpp",
+   "content": "#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <c10/cuda/CUDAGuard.h>\n#include <cuda_runtime.h>\n\nextern \"C\" int oproj_launch(const void* A, const void* R, const void* W, void* D,\n                             int M, int N, int K, void* ws, size_t ws_bytes, cudaStream_t stream);\n\nnamespace {\nconstexpr int64_t kWorkspace = 32ll << 20;  // 32 MB, the size cuBLAS recommends on Hopper/Blackwell\n}\n\nvoid run(torch::Tensor attn_output, torch::Tensor residual, torch::Tensor o_proj_weight, torch::Tensor output) {\n    TORCH_CHECK(attn_output.is_cuda() && residual.is_cuda() && o_proj_weight.is_cuda() && output.is_cuda());\n    TORCH_CHECK(attn_output.scalar_type() == at::kBFloat16 && residual.scalar_type() == at::kBFloat16 &&\n                o_proj_weight.scalar_type() == at::kBFloat16 && output.scalar_type() == at::kBFloat16);\n    TORCH_CHECK(attn_output.is_contiguous() && residual.is_contiguous() && o_proj_weight.is_contiguous() && output.is_contiguous());\n    const int64_t K = attn_output.size(-1);\n    const int64_t N = o_proj_weight.size(0);\n    const int64_t M = attn_output.numel() / K;\n    TORCH_CHECK(o_proj_weight.size(1) == K && residual.numel() == M * N && output.numel() == M * N);\n    TORCH_CHECK(M <= INT32_MAX && (K % 8) == 0 && (N % 8) == 0);\n\n    const c10::cuda::OptionalCUDAGuard guard(attn_output.device());\n    cudaStream_t stream = at::cuda::getCurrentCUDAStream();\n    // Workspace from the caching allocator: no kernel is launched by this.\n    auto ws = at::empty({kWorkspace}, attn_output.options().dtype(at::kByte));\n    int st = oproj_launch(attn_output.data_ptr(), residual.data_ptr(), o_proj_weight.data_ptr(), output.data_ptr(),\n                          (int)M, (int)N, (int)K, ws.data_ptr(), (size_t)kWorkspace, stream);\n    TORCH_CHECK(st == 0, \"cublasLt matmul failed with status \", st);\n}\n\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n    m.def(\"run\", &run, \"o_proj + residual via cublasLt (bf16 in, fp32 accumulate), shape-keyed algorithm\");\n}\n"
+  }
+ ]
+}

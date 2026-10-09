@@ -1,0 +1,3 @@
+{"id": "r1-oproj-cublaslt-forced-algo", "kernels": [], "error": ""}
+{"id": "r1-oproj-cutlass-t224-dispatch", "kernels": [], "error": "/tmp/tmpl1xf69sc/kernel.cu:11:10: fatal error: cutlass/util/packed_stride.hpp: No such file or directory\n   11 | #include \"cutlass/util/packed_stride.hpp\"\n      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\ncompilation terminated.\n"}
+{"id": "r1-oproj-e1-baseline-id", "kernels": [], "error": ""}

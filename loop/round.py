@@ -239,20 +239,25 @@ def cmd_lead(a):
         f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}",
     ])
     (sdir / "prompt.txt").write_text(prompt)
-    out = run_claude(prompt, system_file, a.lead_model, a.effort,
-                     ["--name", "lead", "--round", a.round, "--dir", str(sdir), "--no-gpu"], sdir, "lead",
-                     a.session_timeout * 60)
-    text = out.get("result") or ""
-    (sdir / "reply.md").write_text(text)
-    (sdir / "lead.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
-    blocks = {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
+    if getattr(a, "from_reply", False):             # re-parse a saved reply (e.g. after a ledger YAML error)
+        text, out = (sdir / "reply.md").read_text(), json.loads((sdir / "lead.claude.json").read_text())
+    else:
+        out = run_claude(prompt, system_file, a.lead_model, a.effort,
+                         ["--name", "lead", "--round", a.round, "--dir", str(sdir), "--no-gpu"], sdir, "lead",
+                         a.session_timeout * 60)
+        text = out.get("result") or ""
+        (sdir / "reply.md").write_text(text)
+        (sdir / "lead.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+    blocks = reply.named_blocks(text) or {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
     ledger = next((v for k, v in blocks.items() if k.startswith("yaml") and "ledger" in k), None)
     tasks_js = next((v for k, v in blocks.items() if k.startswith("json") and "tasks" in k), None)
     if not (ledger and tasks_js):
         raise SystemExit(f"lead reply had no ledger or tasks block; see {sdir / 'reply.md'}")
-    import yaml
-    yaml.safe_load(ledger)                                  # must parse before it replaces the ledger
-    problem.current().ledger.write_text(ledger)
+    try:                                                    # must parse before it replaces the ledger
+        problem.current().ledger.write_text(load_ledger_text(ledger))
+    except Exception as e:                                  # keep the old ledger and the plan; save the raw text
+        (sdir / "ledger.raw.yaml").write_text(ledger)
+        print(f"lead ledger is not valid YAML ({str(e)[:200]}); kept the old ledger, raw text in {sdir / 'ledger.raw.yaml'}")
     tasks = []
     for e in json.loads(tasks_js)[:a.max_tasks]:
         best0 = planner.best_kernel(arc)
@@ -310,8 +315,20 @@ def load_ledger_text(text):
         return text
     except yaml.YAMLError:
         pass
-    fixed = []
+    # Fold continuation lines of plain multi-line values into their parent line first ("statement: ... with a\n
+    #   Triton kernel: int32 ..." is invalid YAML), leaving block scalars (| and >) alone.
+    folded = []
+    key_or_item = re.compile(r"^\s*(- |[\w-]+:(\s|$)|#)")
     for line in text.splitlines():
+        prev = folded[-1] if folded else ""
+        indent = lambda l: len(l) - len(l.lstrip())
+        if (folded and line.strip() and not key_or_item.match(line) and indent(line) > indent(prev)
+                and not re.search(r":\s*[|>][-+]?\s*$", prev) and not prev.rstrip().endswith(":")):
+            folded[-1] = prev.rstrip() + " " + line.strip()
+        else:
+            folded.append(line)
+    fixed = []
+    for line in folded:
         m = re.match(r"^(\s*(?:- )?(?:[\w-]+: |- ))(.*)$", line)
         if m and ": " in m.group(2) and not m.group(2).lstrip().startswith(("'", '"', "[", "{", "|", ">")):
             line = m.group(1) + "'" + m.group(2).replace("'", "''") + "'"
@@ -670,6 +687,8 @@ def main():
     q = sub.add_parser("research", parents=[llm_args], help="research phase for a new problem")
     q.add_argument("--remeasure", action="store_true", help="redo the B200 copy-floor and reference measurements")
     q.add_argument("--from-reply", action="store_true", help="finish from the saved research reply (no agent run)")
+    for q in (sub.choices["lead"],):
+        q.add_argument("--from-reply", action="store_true", help="re-parse the saved lead reply (no agent run)")
     for name in ("test", "status", "collect", "shortlist"):
         q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)

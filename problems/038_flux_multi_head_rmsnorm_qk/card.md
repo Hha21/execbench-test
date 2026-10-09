@@ -291,3 +291,12 @@ passed, with 0.15% run-to-run noise.
   unexplained by them.
 - H21 refuted (40 interleaved reps plus a positive control): the harness reset makes the evict_last gain free.
 - Gap arithmetic: #2 (0.6160) = 0.9% or ~0.15 us off every workload; #1 (0.6275) = 3.7% or ~0.55 us.
+
+### x1 shape-split portal A/B (submission x1-shape-ab, 0.6104)
+Effects vs c2 on equal-B*S shapes in the same run (loop/shape_ab.py; +-1 sd of the usual shape offset):
+R=3 at 2048 tok **-1.7% (+-0.5)**, faster; c2 with EF x + nc w at 4096 tok +2.5% (+-0.2); F1 simple kernel +2.1% at
+1024 and +2.8% at 4096 tok; r7 (R=1 EF+nc+prefetch) +0.5% at 1024 tok; r7 at 256 tok no clear difference.
+The rented B200 had r7 at 1024 tok -4% and F1 at 4096 tok +-0: **the bench misranks 1-3% effects**, the size of
+every remaining gain. EF loads at L cost ~2.5% on the portal (H2 at L confirmed); our tuned kernel beats the
+fresh-eyes simple kernel by 2-3% on the portal although they tie on the bench.
+

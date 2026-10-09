@@ -24,3 +24,4 @@ r11-e3-cluster2-rtok-disp,0.023438,0.605464,16,1.355,62670,038_flux_multi_head_r
 c2-cluster2-s-only,0.023122,0.612457,16,1.373,62679,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/62679_c2-cluster2-s-only.html
 r0-skinny16-cublas,0.020001,0.486960,9,1.001,62765,009_gemm_n5120_k2048,B200,v1.1,Private,AC,portal_html/62765_r0-skinny16-cublas.html
 r1-cutlass256-lt-tiles,0.019969,0.484724,10,1.003,62881,009_gemm_n5120_k2048,B200,v1.1,Private,AC,portal_html/62881_r1-cutlass256-lt-tiles.html
+r1b-lt-tiles,0.020068,0.481823,10,0.998,62899,009_gemm_n5120_k2048,B200,v1.1,Private,AC,portal_html/62899_r1b-lt-tiles.html

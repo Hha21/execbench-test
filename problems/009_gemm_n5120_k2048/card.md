@@ -161,6 +161,11 @@ faster: the power-capped rented box cannot rank large-M kernels). `r1b-lt-tiles`
   is capped at ~150-180 GB/s whatever the L2 aggregate, so single-wave tiles follow
   `t = bytes received per SM / ~90 GB/s + 1.5 us`; cuBLAS's 2-CTA tiles win by halving the B bytes each SM receives.
 
+**r1b portal (62899) r1b-lt-tiles: 0.4818**, below r0 although its large-M code is r0's exact cuBLAS call: the
+compute band drifted slower with each submission (r0 -> r1 +2%, -> r1b +2.6%), while M <= 172 repeated within
+0.1 us. **Portal run-to-run variance is ~2-3% for compute-bound sizes**, so r1's "CUTLASS 1-2.5% slower" is
+within noise, and a large-M comparison needs both kernels in one submission or repeated pages.
+
 **Status: parked at r2.** Realistic remaining upside ~+0.01 (cublasLt enumeration, a 2-SM tcgen05 kernel at
 289-952 with L2 prefetch of B). Large M is blocked by the stored Tb.
 

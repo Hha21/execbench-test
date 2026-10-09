@@ -282,3 +282,12 @@ passed, with 0.15% run-to-run noise.
 | TMA ring vs pointer loads on HBM3e at large sizes? | H200 timing of `mem:tma-*` against `mem:ldg128` niches, then 1–2 B200 submissions |
 | Do 256-bit accesses (CUDA C++) beat 128-bit on B200? | B200 only (H200 has no 256-bit); one paired submission |
 | Exact per-workload Tb and Tsol? | unknown (hidden). If the portal's result page shows per-workload latency and score (unknown until the first result), back out Tb_i assuming Tsol_i ∝ bytes |
+
+### r14 (fresh eyes + assumption audit, 2026-10-09)
+- Two fresh-eyes sessions (briefing without our history; Fable, Opus) independently reached our design family:
+  one-shot LDG.256/STG.256, `L2::evict_first` loads, `L2::evict_last` stores. Textbook kernel 16 threads/row:
+  `t = 2.4 us + bytes / 6.93 TB/s` plain; with the two hints, predicted 0.611 vs our 0.6125. Plain Triton with the
+  same hints ties the CUDA kernel; `torch.compile` of the reference is 5x slower. Our S edge (0.1-0.3 us) stays
+  unexplained by them.
+- H21 refuted (40 interleaved reps plus a positive control): the harness reset makes the evict_last gain free.
+- Gap arithmetic: #2 (0.6160) = 0.9% or ~0.15 us off every workload; #1 (0.6275) = 3.7% or ~0.55 us.

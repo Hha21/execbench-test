@@ -1,0 +1,67 @@
+id: r14-plain256-ef-el
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: all
+hypothesis: >-
+  The simplest one-shot kernel (16 threads per 512-B row, one LDG.256 and one STG.256 per thread, 4 shuffles)
+  already streams at the B200's practical rate; the only measurable lever is L2 policy, because the harness's
+  write-flush leaves L2 full of dirty lines and every line we allocate forces a write-back. L2::evict_first on
+  input loads and L2::evict_last on output stores cut 3-24% per size on the rented B200. The current best
+  evidently uses equivalent hints: this candidate is level with it, not ahead.
+expected_effect:
+  S: {pct: +3, confidence: medium}
+  M: {pct: +1, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {THREADS: 256, THREADS_PER_ROW: 16, ROWS_PER_CTA: 16, LOAD_HINT: L2_evict_first, STORE_HINT: L2_evict_last}
+tests: []
+findings:
+  - "plain textbook kernel (16 thr/row, LDG.256/STG.256, 256 thr/CTA, 30 regs): 4.22/6.30/10.87/17.25/32.3/61.0/90.9/118.7 us at 12.6/25/58/101/201/403/608/805 MB on the rented B200; eager reference 59-882 us [probe_b200]"
+  - "fit over sizes for the plain kernel: t = 2.4 us + bytes / 6.93 TB/s; 805 MB runs at 6.8 TB/s [probe_b200]"
+  - "dead end: 2 or 4 rows per thread (46/78 regs), 128/512/1024 threads, L1::no_allocate loads, ld.cs, st.cs, st L2::evict_first, L1::no_allocate stores, L2::256B prefetch: all within +-1% of plain (noise) [probe_b200]"
+  - "empty-kernel CUPTI span 1.45 us for 1-768 CTAs, 4.3 us for 6144 CTAs, 26.5 us for 49152 CTAs: empty CTAs dispatch at about 2000 per us [probe_b200]"
+  - "one dependent read+write per CTA on 148 CTAs: 2.12 us, so a DRAM round trip adds about 0.67 us over the empty floor [probe_b200]"
+  - "at 12.6 MB: read-only 3.75 us, write-only 2.27 us, full 4.25 us; at 805 MB: read-only 72.9 us (5.5 TB/s), write-only 54.4 us (7.4 TB/s), full 118.6 (sum of the two) [probe_b200]"
+  - "harness order read from timing.py: inputs copied and outputs zeroed first, then the 2xL2 zero flush; so inputs are cold and L2 is full of dirty flush lines when run() starts [probe_b200]"
+  - "event-timed clean flush (read 252 MB) vs dirty flush (zero 252 MB): read-only 805 MB 67.8 vs 85.7 us, full 124.9 vs 132.0 us, full 101 MB 25.7 vs 30.5 us: the dirty L2 costs 5-20% [probe_b200]"
+  - "ld.global.L2::evict_first on reads: read-only 72.9 -> 62.0 us at 805 MB, 11.9 -> 10.5 us at 101 MB, no change at 12.6 MB; evict_last, ld.cs, L2::256B prefetch: no effect [probe_b200]"
+  - "full kernel hint matrix: loads evict_first alone no change; stores L2::evict_last: 101 MB 17.6 -> 14.0 us (-20%), 403 MB 60.9 -> 57.8, 805 MB 118.5 -> 115.5, 12.6 MB 4.26 -> 4.04; stores L2::evict_first +2% at L; weight loads evict_last no change [probe_b200]"
+  - "all 16 workloads, evict_first loads + evict_last stores vs plain: 4.16/4.11/5.47/5.47/8.66/14.26/14.26/14.21/28.73/28.95/57.83/56.22/57.88/86.12/93.44/115.21 vs 4.29/4.35/6.14/6.05/11.35/17.54/17.57/17.60/32.77/32.59/61.00/61.05/61.05/90.46/96.30/118.84 us [probe_b200]"
+  - "dead end: looping 2/4/8 row-blocks per CTA is worse at every size (IT=2: +13% at S, +2% at L; IT=8: +100% at S); 64-thread CTAs +6% at S; 1024-thread CTAs +6% at S, +-1% at L; 128 = 256 threads [probe_b200]"
+  - "plain Triton (ROWS=8, 4 warps, LDG.128, same hints via eviction_policy): 4.06/8.51/14.18/57.89/115.54 us, equal to the CUDA 256-bit kernel; ROWS=16 nw=4 is +10% at S; 256-bit loads buy nothing over 128-bit here [probe_b200]"
+  - "dead end: torch.compile(dynamic=True) of the reference: 21.4 us at 12.6 MB (5x slower, several kernels) and an Inductor subprocess error on the second shape [probe_b200]"
+  - "run_tests vs current best (same GPU): this kernel S +3.3%, M +0.4%, L -0.0%, predicted 0.6110 +- 0.006; 128-thread variant S +3.8%, M +1.2%, L +0.2% (0.6098); per-shape CTA size chosen to even out rows per SM (224 thr at 1x128, 352 at 1x131) S +2.8%, M +1.2%, L +0.1% (0.6104): all level with the current best, which keeps a consistent 0.1-0.2 us edge at S and about 0.3 us at 200 MB [run_tests]"
+  - "first run_tests reported 'Timing failed: No timing results for methodology: cupti' on one workload with correct outputs; a rerun of the identical files passed 16/16, so it was transient [run_tests]"
+  - "probe-tooling note: b200probe's launcher passes Python ints as 4-byte values; kernel parameters declared long/long long that are not last read garbage upper halves (illegal address); declare probe kernel scalars as int [probe_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, mem: ldg, launches: 1, x: ef, w: none, st: el}
+runs_on:
+  H200: {runs: false, representative: false, note: "ld/st .L2::evict_first/.L2::evict_last qualifiers and v8.f32 need sm_100; would need a 128-bit fallback to build for sm_90"}
+  A100: {runs: false, representative: false, note: "sm_100-only PTX"}
+  L40S: {runs: false, representative: false, note: "sm_100-only PTX"}
+risks:
+  - "Uses eviction-priority qualifiers (L2::evict_first on our input loads, L2::evict_last on our output stores) inside the kernel on the current call's own buffers only; no applypriority or createpolicy. Flag for the legitimacy review if the operator wants it, since the gain comes from deferring write-back of our own output lines past the kernel end."
+  - "Level with the current best, not ahead: P(beats it) about 36% from the emulator; the remaining 0.1-0.2 us gap at S was not found within this session's budget."
+  - "Requires 32-byte aligned pointers (checked; the harness guarantees 256-byte alignment)."
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

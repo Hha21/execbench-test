@@ -1,0 +1,76 @@
+=== TASK ===
+Round: r14   Problem: L1/038_flux_multi_head_rmsnorm_qk
+FRESH-EYES SESSION. You are deliberately given no earlier designs, notes or results beyond the times to beat below. Work from first principles and from your own measurements. Return 1 candidate following the OUTPUT CONTRACT, with an id starting with 'r14-', parents [] and operation new_design.
+Experiment F1 (fresh eyes, simplest first). Build up from the simplest designs and let measurements decide. 1) Measure the obvious implementations against the reference on every workload: a plain Triton kernel, a textbook CUDA C++ kernel (vectorised loads, one row of head_dim per warp or per few threads), and torch.compile of the reference if the harness accepts it. 2) Find where the time goes at the smallest and the largest workloads (fixed per-call cost vs streaming rate) with probes. 3) Improve the best simple design only where a measurement says it pays; prefer the simplest code that reaches a given speed. One fact from the public scores: first place (0.6275) is equivalent to the time to beat minus about 0.55 us on every workload (or 3.7% off every workload); second place (0.6160) to about 0.15 us less per workload. The largest workloads already move data at ~6.95 TB/s, close to what the B200 sustains.  Budget: use probe_b200 for quick measurements (seconds each) and run_tests for complete solutions. Record every measurement under findings, dead ends included. Your candidate must pass every workload; submit the fastest version you tested.
+
+=== PROBLEM DEFINITION ===
+name: 038_flux_multi_head_rmsnorm_qk
+description: Per-head RMSNorm applied to query and key tensors after projection in Flux attention. Applies RMSNorm independently to each attention head's Q and K vectors, normalizing across head_dim (128) for each of the 48 heads. This dual variant processes both Q and K tensors together to enable kernel fusion opportunities.
+axes: {"batch_size": {"type": "var", "description": "Batch size"}, "seq_len": {"type": "var", "description": "Sequence length"}, "num_heads": {"type": "const", "value": 48, "description": "Number of attention heads"}, "head_dim": {"type": "const", "value": 128, "description": "Dimension of each attention head"}}
+inputs/outputs (shape, dtype): {"inputs": {"query": [["batch_size", "seq_len", "num_heads", "head_dim"], "float32"], "key": [["batch_size", "seq_len", "num_heads", "head_dim"], "float32"], "weight_q": [["num_heads", "head_dim"], "float32"], "weight_k": [["num_heads", "head_dim"], "float32"], "eps": [null, "float32"]}, "outputs": {"query_norm": [["batch_size", "seq_len", "num_heads", "head_dim"], "float32"], "key_norm": [["batch_size", "seq_len", "num_heads", "head_dim"], "float32"]}}
+
+reference:
+import torch
+
+@torch.no_grad()
+def run(query: torch.Tensor, key: torch.Tensor, weight_q: torch.Tensor, weight_k: torch.Tensor, eps: float):
+    """
+    Per-head RMSNorm for both query and key tensors.
+    
+    Args:
+        query: Query tensor [batch_size, seq_len, num_heads, head_dim]
+        key: Key tensor [batch_size, seq_len, num_heads, head_dim]
+        weight_q: Per-head scale for query [num_heads, head_dim]
+        weight_k: Per-head scale for key [num_heads, head_dim]
+        eps: Epsilon for numerical stability
+    
+    Returns:
+        Tuple of (normalized_query, normalized_key)
+    """
+    input_dtype = query.dtype
+    
+    # Compute RMS for query per head (normalize over head_dim dimension)
+    # variance shape: [batch, seq_len, num_heads, 1]
+    q_variance = query.to(torch.float32).pow(2).mean(dim=-1, keepdim=True)
+    query_norm = query * torch.rsqrt(q_variance + eps)
+    
+    # Compute RMS for key per head
+    k_variance = key.to(torch.float32).pow(2).mean(dim=-1, keepdim=True)
+    key_norm = key * torch.rsqrt(k_variance + eps)
+    
+    # Apply learnable scales
+    # weight shape: [num_heads, head_dim]
+    # Broadcast to [batch, seq_len, num_heads, head_dim]
+    query_norm = query_norm * weight_q.unsqueeze(0).unsqueeze(0)
+    key_norm = key_norm * weight_k.unsqueeze(0).unsqueeze(0)
+    
+    return query_norm.to(input_dtype), key_norm.to(input_dtype)
+
+
+=== WORKLOADS AND TIMES TO BEAT (portal B200, µs) ===
+| workload | MB moved | band | Tb (S=0.5) µs | Tsol (S=1) µs | time to beat µs | its score |
+|---|---|---|---|---|---|---|
+| batch_size=1, seq_len=128 | 12.6 | S | 9.3 | 1.2 | 4.6 | 0.706 |
+| batch_size=1, seq_len=131 | 12.9 | S | 9.4 | 1.2 | 4.7 | 0.700 |
+| batch_size=2, seq_len=128 | 25.2 | S | 10.4 | 2.0 | 6.4 | 0.656 |
+| batch_size=1, seq_len=256 | 25.2 | S | 10.5 | 2.0 | 6.4 | 0.659 |
+| batch_size=2, seq_len=293 | 57.7 | S | 17.5 | 4.2 | 10.5 | 0.678 |
+| batch_size=8, seq_len=128 | 100.7 | M | 22.5 | 7.1 | 16.3 | 0.626 |
+| batch_size=1, seq_len=1024 | 100.7 | M | 22.4 | 7.0 | 16.2 | 0.626 |
+| batch_size=4, seq_len=256 | 100.7 | M | 22.4 | 7.0 | 16.0 | 0.631 |
+| batch_size=4, seq_len=512 | 201.4 | M | 37.6 | 13.6 | 29.9 | 0.596 |
+| batch_size=8, seq_len=256 | 201.4 | M | 37.4 | 13.6 | 30.0 | 0.592 |
+| batch_size=4, seq_len=1024 | 402.7 | L | 66.7 | 26.7 | 58.4 | 0.558 |
+| batch_size=16, seq_len=256 | 402.7 | L | 66.5 | 26.8 | 58.4 | 0.557 |
+| batch_size=32, seq_len=128 | 402.7 | L | 66.6 | 26.7 | 58.4 | 0.557 |
+| batch_size=8, seq_len=773 | 608.0 | L | 102.7 | 40.1 | 87.5 | 0.569 |
+| batch_size=4, seq_len=1657 | 651.6 | L | 107.2 | 43.0 | 93.9 | 0.558 |
+| batch_size=1, seq_len=8192 | 805.4 | L | 123.4 | 53.0 | 115.7 | 0.529 |
+
+The score is the mean over workloads of S = (Tb - Tsol) / ((t - Tsol) + (Tb - Tsol)). The 'time to beat' is the current best submission (portal score 0.6125). On the rented B200 the reference and your kernel are timed side by side; run_tests reports both.
+
+=== RULES OF THIS PROJECT (on top of the core brief's forbidden list) ===
+- No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness's measurement, not kernel speed. Off-limits unless NVIDIA approves.
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- No overlap with the harness's own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.
+- Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call's own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).

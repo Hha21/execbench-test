@@ -1,0 +1,37 @@
+{
+ "name": "r14-plain256-ef-el",
+ "definition": "038_flux_multi_head_rmsnorm_qk",
+ "author": "solx-loop",
+ "description": "The simplest one-shot kernel (16 threads per 512-B row, one LDG.256 and one STG.256 per thread, 4 shuffles) already streams at the B200's practical rate; the only measurable lever is L2 policy, because the harness's write-flush leaves L2 full of dirty lines and every line we allocate forces a write-back. L2::evict_first on input loads and L2::evict_last on output stores cut 3-24% per size on the rented B200. The current best evidently uses equivalent hints: this candidate is level with it, not a",
+ "spec": {
+  "languages": [
+   "cuda_cpp"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "binding.cpp::run",
+  "dependencies": [
+   "torch"
+  ],
+  "destination_passing_style": true,
+  "compile_options": {
+   "cuda_cflags": [
+    "-O3",
+    "--use_fast_math",
+    "-std=c++17"
+   ]
+  }
+ },
+ "sources": [
+  {
+   "path": "kernel.cu",
+   "content": "// Per-head RMSNorm of Q and K (head_dim = 128, fp32).\n// One 512-byte row per 16 threads: each thread loads 8 floats with one 256-bit load,\n// reduces the sum of squares over the half-warp with 4 shuffles, scales and stores 256 bits.\n// Loads carry an L2 evict_first hint (streamed once); output stores carry L2 evict_last\n// (keeps our output lines resident instead of forcing them out behind the inputs).\n#include <cuda_runtime.h>\n\nstruct __align__(32) f8 { float4 a, b; };\n\n__device__ __forceinline__ f8 ld_stream(const f8* p) {\n    f8 v;\n    asm volatile(\"ld.global.L2::evict_first.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\"\n                 : \"=f\"(v.a.x), \"=f\"(v.a.y), \"=f\"(v.a.z), \"=f\"(v.a.w),\n                   \"=f\"(v.b.x), \"=f\"(v.b.y), \"=f\"(v.b.z), \"=f\"(v.b.w)\n                 : \"l\"(p));\n    return v;\n}\n\n__device__ __forceinline__ void st_keep(f8* p, const f8& v) {\n    asm volatile(\"st.global.L2::evict_last.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\"\n                 :: \"l\"(p), \"f\"(v.a.x), \"f\"(v.a.y), \"f\"(v.a.z), \"f\"(v.a.w),\n                    \"f\"(v.b.x), \"f\"(v.b.y), \"f\"(v.b.z), \"f\"(v.b.w)\n                 : \"memory\");\n}\n\n__global__ void __launch_bounds__(256)\nrmsnorm_qk_kernel(const float* __restrict__ q, const float* __restrict__ k,\n                  const float* __restrict__ wq, const float* __restrict__ wk,\n                  float* __restrict__ oq, float* __restrict__ ok,\n                  float eps, long long nrows)\n{\n    long long gt  = (long long)blockIdx.x * blockDim.x + threadIdx.x;\n    long long row = gt >> 4;              // 16 threads per row\n    const int lane = threadIdx.x & 15;\n    const float* x; const float* w; float* o;\n    if (row < nrows) { x = q; w = wq; o = oq; }\n    else { row -= nrows; if (row >= nrows) return; x = k; w = wk; o = ok; }\n    const int head = (int)(row % 48);\n\n    f8 v  = ld_stream(reinterpret_cast<const f8*>(x + row * 128) + lane);\n    f8 ww = *(reinterpret_cast<const f8*>(w + head * 128) + lane);\n\n    float s = v.a.x*v.a.x + v.a.y*v.a.y + v.a.z*v.a.z + v.a.w*v.a.w\n            + v.b.x*v.b.x + v.b.y*v.b.y + v.b.z*v.b.z + v.b.w*v.b.w;\n    s += __shfl_xor_sync(0xffffffffu, s, 1);\n    s += __shfl_xor_sync(0xffffffffu, s, 2);\n    s += __shfl_xor_sync(0xffffffffu, s, 4);\n    s += __shfl_xor_sync(0xffffffffu, s, 8);\n    const float r = rsqrtf(s * (1.0f / 128.0f) + eps);\n\n    f8 out;\n    out.a.x = v.a.x * r * ww.a.x; out.a.y = v.a.y * r * ww.a.y;\n    out.a.z = v.a.z * r * ww.a.z; out.a.w = v.a.w * r * ww.a.w;\n    out.b.x = v.b.x * r * ww.b.x; out.b.y = v.b.y * r * ww.b.y;\n    out.b.z = v.b.z * r * ww.b.z; out.b.w = v.b.w * r * ww.b.w;\n    st_keep(reinterpret_cast<f8*>(o + row * 128) + lane, out);\n}\n\nextern \"C\" cudaError_t launch_rmsnorm_qk(const float* q, const float* k,\n                                         const float* wq, const float* wk,\n                                         float* oq, float* ok, float eps,\n                                         long long nrows, cudaStream_t stream)\n{\n    if (nrows <= 0) return cudaSuccess;\n    long long total_threads = 2LL * nrows * 16;\n    unsigned grid = (unsigned)((total_threads + 255) / 256);\n    rmsnorm_qk_kernel<<<grid, 256, 0, stream>>>(q, k, wq, wk, oq, ok, eps, nrows);\n    return cudaGetLastError();\n}\n"
+  },
+  {
+   "path": "binding.cpp",
+   "content": "#include <torch/extension.h>\n#include <ATen/cuda/CUDAContext.h>\n#include <c10/cuda/CUDAGuard.h>\n#include <cuda_runtime.h>\n\nextern \"C\" cudaError_t launch_rmsnorm_qk(const float* q, const float* k,\n                                         const float* wq, const float* wk,\n                                         float* oq, float* ok, float eps,\n                                         long long nrows, cudaStream_t stream);\n\nstatic inline bool aligned32(const void* p) { return (reinterpret_cast<uintptr_t>(p) & 31) == 0; }\n\nvoid run(torch::Tensor query, torch::Tensor key, torch::Tensor weight_q, torch::Tensor weight_k,\n         double eps, torch::Tensor query_norm, torch::Tensor key_norm)\n{\n    TORCH_CHECK(query.is_cuda() && key.is_cuda() && weight_q.is_cuda() && weight_k.is_cuda(), \"cuda tensors expected\");\n    TORCH_CHECK(query.scalar_type() == torch::kFloat32 && key.scalar_type() == torch::kFloat32 &&\n                weight_q.scalar_type() == torch::kFloat32 && weight_k.scalar_type() == torch::kFloat32 &&\n                query_norm.scalar_type() == torch::kFloat32 && key_norm.scalar_type() == torch::kFloat32, \"fp32 expected\");\n    TORCH_CHECK(query.is_contiguous() && key.is_contiguous() && weight_q.is_contiguous() && weight_k.is_contiguous() &&\n                query_norm.is_contiguous() && key_norm.is_contiguous(), \"contiguous tensors expected\");\n    TORCH_CHECK(query.dim() == 4 && query.size(2) == 48 && query.size(3) == 128, \"expected [B,S,48,128]\");\n    TORCH_CHECK(key.sizes() == query.sizes() && query_norm.sizes() == query.sizes() && key_norm.sizes() == query.sizes(), \"shape mismatch\");\n    TORCH_CHECK(weight_q.numel() == 48 * 128 && weight_k.numel() == 48 * 128, \"weights must be [48,128]\");\n    TORCH_CHECK(aligned32(query.data_ptr()) && aligned32(key.data_ptr()) && aligned32(weight_q.data_ptr()) &&\n                aligned32(weight_k.data_ptr()) && aligned32(query_norm.data_ptr()) && aligned32(key_norm.data_ptr()),\n                \"32-byte alignment required\");\n\n    const c10::cuda::OptionalCUDAGuard guard(query.device());\n    cudaStream_t stream = at::cuda::getCurrentCUDAStream();\n    long long nrows = (long long)query.size(0) * query.size(1) * 48;\n    cudaError_t err = launch_rmsnorm_qk(query.data_ptr<float>(), key.data_ptr<float>(),\n                                        weight_q.data_ptr<float>(), weight_k.data_ptr<float>(),\n                                        query_norm.data_ptr<float>(), key_norm.data_ptr<float>(),\n                                        (float)eps, nrows, stream);\n    TORCH_CHECK(err == cudaSuccess, \"rmsnorm_qk launch failed: \", cudaGetErrorString(err));\n}\n\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {\n    m.def(\"run\", &run, \"Per-head RMSNorm of Q and K (DPS)\");\n}\n"
+  }
+ ]
+}

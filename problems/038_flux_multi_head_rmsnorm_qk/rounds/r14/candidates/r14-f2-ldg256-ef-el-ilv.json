@@ -1,0 +1,37 @@
+{
+ "name": "r14-f2-ldg256-ef-el-ilv",
+ "definition": "038_flux_multi_head_rmsnorm_qk",
+ "author": "solx-loop",
+ "description": "Built from harness measurements. A call costs a fixed 1.5 us (empty kernel). After that, time is set by cold DRAM reads competing with write-backs of the flush's dirty L2 lines, plus CTA dispatch. So: one launch of small low-register CTAs (16 per SM, LDG.256, one row per half-warp), evict_first loads, and evict_last stores on this call's own outputs, so the L2 keeps our outputs rather than the flush's lines (M -20%, L -3%). Q/K-interleaved CTA order for B*S <= 256. Ties the current best at M/L; ",
+ "spec": {
+  "languages": [
+   "cuda_cpp"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "binding.cpp::run",
+  "dependencies": [
+   "torch"
+  ],
+  "destination_passing_style": true,
+  "compile_options": {
+   "cuda_cflags": [
+    "-O3",
+    "--use_fast_math",
+    "-std=c++17"
+   ]
+  }
+ },
+ "sources": [
+  {
+   "path": "kernel.cu",
+   "content": "#include <cuda_runtime.h>\n\n// Per-head RMSNorm for Q and K. One row (128 fp32) per half-warp: 16 threads x 8 floats (256-bit access).\n// Loads: L2::evict_first (read once). Stores: L2::evict_last, so this call's outputs are preferred over the\n// flush's dirty lines when the L2 picks victims. Both hints apply only to this call's own buffers.\n// One-shot grid of small CTAs (31 regs, 16 CTAs/SM): beat persistent loops on every size in probes.\n\nstruct f8 { float v[8]; };\n\n__device__ __forceinline__ f8 ld_x(const float* p) {\n    f8 r;\n    asm volatile(\"ld.global.nc.L1::no_allocate.L2::evict_first.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\"\n                 : \"=f\"(r.v[0]), \"=f\"(r.v[1]), \"=f\"(r.v[2]), \"=f\"(r.v[3]),\n                   \"=f\"(r.v[4]), \"=f\"(r.v[5]), \"=f\"(r.v[6]), \"=f\"(r.v[7])\n                 : \"l\"(p));\n    return r;\n}\n\n__device__ __forceinline__ f8 ld_w(const float* p) {\n    f8 r;\n    asm volatile(\"ld.global.nc.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];\"\n                 : \"=f\"(r.v[0]), \"=f\"(r.v[1]), \"=f\"(r.v[2]), \"=f\"(r.v[3]),\n                   \"=f\"(r.v[4]), \"=f\"(r.v[5]), \"=f\"(r.v[6]), \"=f\"(r.v[7])\n                 : \"l\"(p));\n    return r;\n}\n\n__device__ __forceinline__ void st_y(float* p, const f8& r) {\n    asm volatile(\"st.global.L2::evict_last.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8};\"\n                 :: \"l\"(p), \"f\"(r.v[0]), \"f\"(r.v[1]), \"f\"(r.v[2]), \"f\"(r.v[3]),\n                    \"f\"(r.v[4]), \"f\"(r.v[5]), \"f\"(r.v[6]), \"f\"(r.v[7])\n                 : \"memory\");\n}\n\nconstexpr int THREADS = 128;\nconstexpr int ROWS_PER_CTA = THREADS / 16;\n\n// INTERLEAVE: even CTAs take Q rows, odd CTAs the matching K rows (better at small sizes);\n// otherwise CTAs walk all Q rows then all K rows.\ntemplate <bool INTERLEAVE>\n__global__ void __launch_bounds__(THREADS)\nqk_rmsnorm_kernel(const float* __restrict__ q, const float* __restrict__ k,\n                  const float* __restrict__ wq, const float* __restrict__ wk, float eps,\n                  float* __restrict__ qo, float* __restrict__ ko, int rows) {\n    const int l = threadIdx.x & 15;\n    const int h = threadIdx.x >> 4;\n    bool isq;\n    int r;\n    if (INTERLEAVE) {\n        isq = (blockIdx.x & 1) == 0;\n        r = (blockIdx.x >> 1) * ROWS_PER_CTA + h;\n        if (r >= rows) return;\n    } else {\n        const int g = blockIdx.x * ROWS_PER_CTA + h;\n        if (g >= 2 * rows) return;\n        isq = g < rows;\n        r = isq ? g : g - rows;\n    }\n    const f8 x = ld_x((isq ? q : k) + (long)r * 128 + l * 8);\n    const f8 w = ld_w((isq ? wq : wk) + (r % 48) * 128 + l * 8);\n    float s = 0.f;\n#pragma unroll\n    for (int j = 0; j < 8; j++) s = fmaf(x.v[j], x.v[j], s);\n    s += __shfl_xor_sync(0xffffffffu, s, 8);\n    s += __shfl_xor_sync(0xffffffffu, s, 4);\n    s += __shfl_xor_sync(0xffffffffu, s, 2);\n    s += __shfl_xor_sync(0xffffffffu, s, 1);\n    const float inv = rsqrtf(s * (1.f / 128.f) + eps);\n    f8 y;\n#pragma unroll\n    for (int j = 0; j < 8; j++) y.v[j] = x.v[j] * inv * w.v[j];\n    st_y((isq ? qo : ko) + (long)r * 128 + l * 8, y);\n}\n\n// rows = B*S*48 rows per tensor (always a multiple of 48, so of ROWS_PER_CTA).\nextern \"C\" void launch_qk_rmsnorm(const float* q, const float* k, const float* wq, const float* wk,\n                                  float eps, float* qo, float* ko, int rows, cudaStream_t stream) {\n    if (rows <= 0) return;\n    const int per_tensor = (rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA;\n    if (rows <= 256 * 48) {\n        qk_rmsnorm_kernel<true><<<2 * per_tensor, THREADS, 0, stream>>>(q, k, wq, wk, eps, qo, ko, rows);\n    } else {\n        const int grid = (2 * rows + ROWS_PER_CTA - 1) / ROWS_PER_CTA;\n        qk_rmsnorm_kernel<false><<<grid, THREADS, 0, stream>>>(q, k, wq, wk, eps, qo, ko, rows);\n    }\n}\n"
+  },
+  {
+   "path": "binding.cpp",
+   "content": "#include <torch/extension.h>\n#include <c10/cuda/CUDAGuard.h>\n#include <ATen/cuda/CUDAContext.h>\n\nextern \"C\" void launch_qk_rmsnorm(const float* q, const float* k, const float* wq, const float* wk,\n                                  float eps, float* qo, float* ko, int rows, cudaStream_t stream);\n\nvoid run(torch::Tensor query, torch::Tensor key, torch::Tensor weight_q, torch::Tensor weight_k,\n         double eps, torch::Tensor query_norm, torch::Tensor key_norm) {\n    TORCH_CHECK(query.is_cuda() && query.scalar_type() == torch::kFloat32 && query.is_contiguous());\n    TORCH_CHECK(key.is_contiguous() && query_norm.is_contiguous() && key_norm.is_contiguous());\n    TORCH_CHECK(query.size(-1) == 128 && query.size(-2) == 48);\n    TORCH_CHECK(weight_q.is_contiguous() && weight_k.is_contiguous());\n    const c10::cuda::CUDAGuard guard(query.device());\n    const int rows = (int)(query.numel() / 128);\n    launch_qk_rmsnorm(query.data_ptr<float>(), key.data_ptr<float>(), weight_q.data_ptr<float>(),\n                      weight_k.data_ptr<float>(), (float)eps, query_norm.data_ptr<float>(),\n                      key_norm.data_ptr<float>(), rows, at::cuda::getCurrentCUDAStream());\n}\n\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def(\"run\", &run, \"per-head RMSNorm of Q and K\"); }\n"
+  }
+ ]
+}

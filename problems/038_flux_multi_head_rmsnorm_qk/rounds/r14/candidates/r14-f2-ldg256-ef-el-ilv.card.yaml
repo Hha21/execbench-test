@@ -1,0 +1,69 @@
+id: r14-f2-ldg256-ef-el-ilv
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Built from harness measurements. A call costs a fixed 1.5 us (empty kernel). After that, time is set by
+  cold DRAM reads competing with write-backs of the flush's dirty L2 lines, plus CTA dispatch. So: one launch of
+  small low-register CTAs (16 per SM, LDG.256, one row per half-warp), evict_first loads, and evict_last
+  stores on this call's own outputs, so the L2 keeps our outputs rather than the flush's lines (M -20%, L -3%).
+  Q/K-interleaved CTA order for B*S <= 256. Ties the current best at M/L; about 4% slower at S.
+expected_effect:
+  S: {pct: +4, confidence: medium}
+  M: {pct: +0.5, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 29
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {THREADS: 128, ROWS_PER_CTA: 8, INTERLEAVE_MAX_ROWS: 12288}
+dispatch:
+  - {max_tokens: 256, kernel: qk_rmsnorm_kernel<true>, meta: {THREADS: 128, interleave: true}}
+  - {max_tokens: null, kernel: qk_rmsnorm_kernel<false>, meta: {THREADS: 128, interleave: false}}
+tests: []
+findings:
+  - "harness: empty kernel = 1.50 us in the CUPTI window for 1 or 592 CTAs; 1536x128 empty = 1.74, 3072x64 = 2.66, 3072x128 = 2.55, 7032x128 = 4.5 us (CTA dispatch is costly past about 2 waves) [probe_b200]"
+  - "harness order: setup copies inputs and zero-fills outputs BEFORE the 2xL2 zero flush, so inputs/outputs are cold and the L2 is full of dirty flush lines [probe_b200: timing.py source]"
+  - "raw LDG.256 streams at 805 MB: read-only 402 MB 72.7 us (5.5 TB/s), write-only 402 MB 54.6 us (7.4 TB/s), copy 805 MB 120 us; at 12.6 MB: read 3.78, write 2.23, copy 4.4 us. Reads pay for dirty-line write-backs [probe_b200]"
+  - "L2::evict_last on output stores (own buffers): 57.7 MB 11.0 -> 8.9 us, 100 MB 17.8 -> 14.4 us, 402 MB 61.6 -> 58.5, 805 MB 120 -> 116.5; small +-0 to -0.35 us [probe_b200]"
+  - "evict_first on input loads: neutral alone; with evict_last stores helps at 57.7 MB (9.4 -> 8.6 us) [probe_b200]"
+  - "dead end: partial evict_last (only the last 48-126 MB of output) = same as all-evict_last at 402/805 MB; evict_first for the earlier stores is +2-3% worse [probe_b200, 3 repeats]"
+  - "dead end: persistent grid (H%48==0 so weights stay in registers, double-buffered loads) uses 56-58 regs -> +5-8% at every size; 768-thread version +20% at L [probe_b200]"
+  - "dead end: 128-bit loads (32 threads/row) +6% S, +15% L; U=2/U=4 rows per thread at 48/90 regs worse; 64-thread CTAs worse; 1024-thread CTAs +5% at 1x128 [probe_b200, run_tests]"
+  - "dead end: 1-D bulk-copy (cp.async.bulk + mbarrier) tile path, 256 threads/16 rows: +6% to +13% at S/M, +1.4% at L [run_tests A/B]"
+  - "dead end: single-wave U=2 kernel with launch_bounds(128,12) for 24.6k-row sizes: 2x128 5.5 vs 5.6 control (noise), 2x293 +7% [run_tests A/B]"
+  - "dead end: cp.async.bulk.prefetch.L2 by early CTAs of late CTAs' 4 KB chunks at 1x128: no change (4.2 us) [run_tests A/B]"
+  - "timeline (globaltimer, 256 ns resolution) at 1x128: 1536 CTAs all start within 0.77 us; first-load latency 0.5-2.5 us (median 1.5 us); last CTA ends about 3.3 us after first start; kernel window 4.28 us [probe_b200]"
+  - "SASS: first LDG.256 at about instruction 20; 27-31 regs; LDG.E.ENL2.256/STG.256 emitted from ld/st .v8.f32 inline PTX [probe_b200]"
+  - "same-size workloads differ up to 3% run-to-run (e.g. 1x1024 vs 8x128), so cross-workload A/B only resolves effects of 5% or more; run_tests also hit one CUPTI 'No timing results' glitch on a control path [run_tests]"
+  - "unresolved: current best does 1x128 in 3.9 us vs this 4.1-4.2 us on the same rented B200; mechanism not found [run_tests]"
+paths:
+  - {max_tokens: 256, lang: cuda, width: 256, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: ef, w: nc, st: el, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: ef, w: nc, st: el, cluster: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "ld/st .v8.f32 (256-bit) is sm_100-only PTX; would need a 128-bit fallback"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "evict_last stores leave this call's outputs dirty in L2 at the end of the window; the hint is on our own buffers inside the kernel (store qualifier, no applypriority), but the operator should confirm legitimacy (r13 H21)"
+  - "S band about 4% slower than the current best on the rented B200; overall projection 0.6099 +- 0.006 vs 0.6125"
+  - "rented B200 runs unlocked clocks; at 1500 MHz SM-side dispatch costs may weigh more"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

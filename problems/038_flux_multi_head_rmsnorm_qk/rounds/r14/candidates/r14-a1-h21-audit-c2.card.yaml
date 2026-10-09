@@ -1,0 +1,79 @@
+id: r14-a1-h21-audit-c2
+parents:
+  - c2-cluster2-s-only
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+tests:
+  - H21
+  - H4
+hypothesis: >-
+  H21 (the previous call's evict_last outputs survive the harness reset plus zero flush and are written back in the next
+  timed window) tested directly and refuted: with the harness reset, the previous call's store policy moves the measured
+  call by <= 0.15% at 128-8192 tokens, while the same test without the reset shows +2/+4/+6 us, so the test was
+  sensitive. No end-of-kernel demotion is needed; the candidate is c2's code with comments changed and needs no portal slot.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs:
+  S_threshold_tokens: 600
+  cluster2_max_tokens: 300
+  R_1024band: 3
+paths:
+  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}
+  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}
+  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}
+findings:
+  - "A1 settled-belief audit, weakest first (strength 1-5): (1) H24 'the leader halves the dirty cost' - arithmetic only, no measurement, strength 1; (2) H11 'L ceiling is DRAM-side, no SM change lifts L' - r10/r11 read-only probes, not interleaved, and r13 itself notes clean-flush copies run at 8+ TB/s apparent, so the ceiling is a dirty-L2 ceiling as stated, strength 2; (3) H2 at L 'evict_first x loads hurt' - one non-interleaved portal pair (r7 vs c1 +2.4%) against bench +0.3..+0.5%, strength 2; (4) H9 'portal penalises SM work ~5% per 20% lag' - emulator fit on 18-22 kernels plus one pair (r8/r9), with r10-rtok R=3 as a counterexample, strength 3; (5) H4 'fatter CTAs refuted' - r10 one-wave probe plus portal r8 (confounded with L2 mode), yet R=3 at 1024 won on the portal (-2.4%), so the label was too broad; retested here, strength now 4; (6) H15 'about 25-30 MB evict_last cap, store end-state final' - r10/r12 probes at 900-8192 tokens, interleaved in r12, strength 3; (7) 'no legitimate mechanism for the dirty-flush cost' (H7/H22) - r13 E1 sweep with 5 interleaved reps per cell, and H23 bulk paths closed, but the mechanism is inferred, strength 4; (8) H6 'persistent/stealing loses' - r10 probes plus 3 portal results (Triton persistent, no evict_last) and bench r10-ws-l-steal, strength 4; (9) H10 'S at the copy floor' - medians of 105 (r11 E3) plus timelines, though r11-consol reports a 3-5% copy lag at S, strength 4; (10) H17/H19/H20 (S launch, L2 prefetch, tile order) - 5-15 interleaved reps each, strength 5 [ledger review]"
+  - "H21 direct test (step 2) [probe_b200]: harness-like sequence per call (shifted input copy, output zero, cudaCtxResetPersistingL2Cache, 265 MB zero flush), CUDA events around the measured c2 path (evict_last stores), previous call alternating evict_last vs plain store policy, 40 interleaved reps, 4 arms rotated. With reset, previous EL minus previous plain (paired median): 128 tok +0.03 us (+0.35%, 22/40 slower); 1024 -0.03 us (-0.15%, 9/40); 2048 0.00 (14/40); 8192 +0.03 us (+0.03%, 23/40). All under 1%, so H21 is refuted by its own criterion"
+  - "H21 positive control [probe_b200]: if the measured call's setup skips the reset, the previous call's evict_last outputs cost +2.05 us (+9.5%, 35/40) at 1024, +4.10 us (+12.1%, 39/40) at 2048, +6.10 us (+5.0%, 38/40) at 8192, and 0 at 128 (6 MB fits the clean room). With a plain previous call, skipping the reset costs 0. The harness reset demotes them and the flush then evicts them outside our window, which agrees with the r13-e2 latency probe. So the full evict_last gain (H1) is genuinely free and nothing is paid back across calls"
+  - "first H21 probe design flaw (fixed in the rerun): without a reset before the previous call, older measured calls' evict_last lines piled up and masked the previous call's policy; also, events must be preceded by torch.cuda._sleep so the CPU queues ahead [probe_b200]"
+  - "event timing caveat: CUDA-event spans include a constant ~5-7 us over the harness CUPTI times (128 tok 9.2 vs 4.0 us), fine for paired differences but not absolute; at 128 tok it may hide sub-0.1 us effects [probe_b200]"
+  - "step 3 skipped: H21 does not hold, so no demotion candidate; r13-e2 already measured applypriority demotion as +2..+30% [ledger]"
+  - "step 4, H4 retest with harness_time CUPTI, 7 interleaved reps, R tokens of the same head per thread, all with evict_last stores [probe_b200]: 586 tok R1-EF 8.64 us (base), R2-EF +13.7%, R3-EF +7.2%, R1-plain +9.3%. 1024: R3 14.19 (base), R1 +2.7%, R2 +6.2%, R4 +0.5%, R3-EF +0.1%. 2048: R1 28.55, R2 +3.8%, R3 +0.4%, R4 +0.4%. 4096: R1 58.02, R2 +1.7%, R3 +0.4%. 8192: R1 115.96, R2 +1.4%, R3 +0.8%. c2's dispatch is the best R at every size; R=2 is consistently the worst (cause unknown; 6 CTAs/SM by launch bounds). Fatter CTAs help only at 1024 tokens; H4 stands everywhere else"
+  - "dead end: nothing related to evict_last remains to be recovered across calls (H21 closed by two independent methods, latency in r13-e2 and timing here) [probe_b200]"
+  - "run_tests (c2 code, comments only): 16/16 pass; vs c2 S +0.6%, M +0.1%, L -0.1% (noise); predicted portal 0.6123 +- 0.0059 [run_tests]"
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "falls back to 128-bit accesses; no cluster/evict_last behaviour equivalent to B200's L2"
+  A100:
+    runs: false
+    representative: false
+    note: "cluster launch needs sm_90+"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "None new: code identical to c2 (portal 0.6125). Do not spend a portal slot on it"
+measure_first: []
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

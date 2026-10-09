@@ -2686,7 +2686,48 @@
   ],
   "round": "r13",
   "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r13/candidates/r13-e1-h22-residue-c2.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__650f2e91_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__650f2e91_9_kernel_cu_ba37c84a11qk_rms_rtokILi3ELb0ELi5EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__650f2e91_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M",
    "instructions": "Experiment E1 (tests H22): Synthetic dirty residue: model the flush cost as residue bytes evicted, per policy. Probe-only session on the rented B200 with b200probe (reuse the /tmp/e1lib.py pattern: monkey-patch sol_execbench.core.bench.timing._clear_cache). Build a flush variant 'clean+residue(X)': zero the 2xL2 buffer, read it back entirely (clean), then write X MB of a PRIVATE scratch buffer with plain stores (fresh addresses every call) for X in {0, 10, 20, 30, 40, 60, 90, 120}. Step 1: time the c2 paths (586 R=1+EF, 1024 R=3, 2048 R=1, 8192 R=1) and the read-only and write-only decompositions under each X, 5 interleaved reps, medians. Fit cost(X) per size; report the X that reproduces the harness's dirty flush (gives the real residue size) and whether cost saturates (residue fully evicted) or keeps rising. Step 2: under X = harness-equivalent and X = 120, measure dirty minus clean for these untested policy combinations at 586/1024/2048: (a) x loads evict_last via createpolicy + EL stores; (b) st.global.wt stores; (c) qualifier-form st.global.L2::evict_last instead of createpolicy; (d) EF loads + EL stores + applypriority.global.L2::evict_normal issued by each CTA over its OWN output tile 8 KB after the store (so the oldest outputs become normal and later EL stores can victimise them instead of residue); (e) same as (d) but applypriority on the input tile just read. Step 3: write the mechanism statement (one paragraph) that predicts every r12 E1 number within 10%, and the best combination's gain under the real harness flush. Record findings for the notebook. Success: A cost(X) curve that reproduces the harness dirty cost within 10% at three sizes, plus at least one policy combination that cuts dirty-minus-clean by >= 0.5 us at 1024 or >= 1.0 us at 2048 tokens (>= 3%) under the real harness flush, confirmed by run_tests 16/16. Refuted if: cost is independent of X (then the penalty is not residue write-back and H22 is wrong), or no combination in step 2 moves the dirty cost by more than 1% at 1024-2048 tokens. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -2697,7 +2738,26 @@
     "c2-cluster2-s-only"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.21,
+    "1,128": 4.02,
+    "1,131": 3.94,
+    "1,256": 5.26,
+    "1,8192": 116.17,
+    "16,256": 58.28,
+    "2,128": 5.38,
+    "2,293": 8.61,
+    "32,128": 58.26,
+    "4,1024": 58.47,
+    "4,1657": 93.62,
+    "4,256": 14.31,
+    "4,512": 28.74,
+    "8,128": 14.16,
+    "8,256": 28.5,
+    "8,773": 87.58
+   }
+  }
  },
  "r13-e2-h21-c2-control": {
   "card": "id: r13-e2-h21-c2-control\nparents:\n  - c2-cluster2-s-only\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\ntests:\n  - H21\nhypothesis: >-\n  H21 (refuted): our evict_last outputs survive cudaCtxResetPersistingL2Cache plus the 252 MB zero flush,\n  so each call writes back the previous call's outputs inside its own window. Measured: the reset demotes\n  createpolicy evict_last lines, and the zero flush then evicts them before the timed window starts. Demoting\n  our own outputs with applypriority.L2::evict_normal only throws away the evict_last benefit inside the window.\n  The candidate is c2 unchanged (comments only), returned as the control.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  S_max_tokens: 600\n  cluster2_max_tokens: 300\n  R3_max_tokens: 1100\ndispatch:\n  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}\n  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}\n  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3, LOAD_S: false, MINB: 5}}\n  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: false}}\nfindings:\n  - \"probe step 1 (first-load latency of each line, clock64, median of 5): a 16/30 MB buffer written with evict_last, then the 252 MB zero flush WITHOUT the reset: median 841/890 cycles, 90th percentile 1868/2770, against 664/527 for a hot hit. Most evict_last lines survive a 2xL2 zero flush when there is no reset [probe_b200]\"\n  - \"probe step 1: evict_last write, then cudaCtxResetPersistingL2Cache, then the zero flush: median 2263/1872 cycles at 16/30 MB, the same as plain stores (2227/1847) and as a never-written buffer (2226/1856). The reset demotes createpolicy evict_last lines and the flush evicts them, outside the timed window. H21's premise is false [probe_b200]\"\n  - \"probe step 1: the reset alone (no flush) leaves a 16 MB evict_last set hot (681 cycles) but at 30 MB the median rises to 1264 cycles (90th percentile 3494). The reset may evict or write back part of a large evict_last set itself; not investigated [probe_b200]\"\n  - \"probe step 2 (harness_time, 7 interleaved reps, c2 code paths): applypriority.global.L2::evict_normal on every output line after the store costs +30.4% (1024 tokens, R=3), +22.4% (1024, R=1), +12.8% (2048), +2.6% (8192). Demoting only in the last 1184 CTAs costs +19.8/+2.0/+1.5/+0.4%. The plain kernel won 7/7 everywhere. Demotion releases evict_last protection inside the window and brings back the dirty-flush write-backs (consistent with the H1/H7 mechanism) [probe_b200]\"\n  - \"dead end: H21 refuted on both counts. The evict_last gain is not paid back in the next window, and no demotion variant gains. Close H21; nothing evict_last-related remains to be recovered across calls [probe_b200]\"\n  - \"side fact for later work: the harness reset is what clears evict_last lines; without it they survive a 252 MB zero_. Do not try to exploit this (it would carry state across calls) [probe_b200]\"\n  - \"run_tests of the final code (c2 with comments changed): 16/16 pass; vs c2 S -0.6%, M -0.2%, L +0.3% (noise); predicted portal 0.6123 +- 0.006 [run_tests]\"\npaths:\n  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}\n  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"sm_90 fallback uses 128-bit accesses\"\n  A100:\n    runs: true\n    representative: false\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"identical to c2; no new risk. No applypriority in the shipped code, so no legitimacy check is needed\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -2719,7 +2779,48 @@
   ],
   "round": "r13",
   "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r13/candidates/r13-e2-h21-c2-control.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__8836aa48_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__8836aa48_9_kernel_cu_ba37c84a11qk_rms_rtokILi3ELb0ELi5EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__8836aa48_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E2 (tests H21): Do our evict_last outputs survive the reset+flush and get written back in the next window?. Probe session. Step 1 (survival test): write 30 MB of a private buffer with createpolicy evict_last stores; then run exactly the harness sequence (cudaCtxResetPersistingL2Cache, 252 MB zero_); then time a read of the 30 MB with clock64 per-line latency and total time. Compare with (i) the same buffer written with plain stores and (ii) the EL write without the reset. L2-hit latency (~250-325 cycles) or bandwidth far above 8 TB/s means the lines survived. Step 2 (cost test): in harness_time at 1024/2048/8192 tokens, 7 interleaved reps, compare c2 against c2-demote: identical kernel plus, after its stores, each CTA issues applypriority.global.L2::evict_normal over its own 8 KB output tile (R=3 path: all three tiles); and against c2-demote-last (only CTAs with blockIdx in the last resident wave demote, so parking within the window is kept but the leftovers are released). Also test the inverse ordering: demote issued by the SAME CTA before its EL store of the next tile. Step 3: if step 1 shows survival and step 2 gains >= 2% at any M/L size, ship a dispatch candidate (demotion only where it gains), compile_b200 (check regs unchanged, no spills), run_tests 16/16, and flag it in the card for the operator's legitimacy check before a portal slot. Either outcome is a finding: if the reset demotes EL lines, record that the 3-4 us EL parking is genuinely outside the window and close H21. Success: Step 1 shows EL lines surviving the reset+flush AND step 2 gains >= 2% at 2048 or 8192 tokens (>= 0.6 / 2.3 us) with run_tests 16/16 and predicted portal >= 0.618. Refuted if: The 30 MB reads at DRAM speed after the reset+flush (lines did not survive), or demotion changes the timed kernel by < 1% at every size. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -2730,7 +2831,26 @@
     "c2-cluster2-s-only"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.43,
+    "1,128": 4.06,
+    "1,131": 3.9700000000000006,
+    "1,256": 5.34,
+    "1,8192": 116.28,
+    "16,256": 58.33,
+    "2,128": 5.36,
+    "2,293": 8.61,
+    "32,128": 58.19,
+    "4,1024": 58.44,
+    "4,1657": 93.8,
+    "4,256": 14.29,
+    "4,512": 28.53,
+    "8,128": 14.19,
+    "8,256": 28.34,
+    "8,773": 87.54
+   }
+  }
  },
  "r13-e3-bulkstore-off": {
   "card": "id: r13-e3-bulkstore-off\nparents:\n  - c2-cluster2-s-only\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  H23 test: a cp.async.bulk store (8 KB smem tile per CTA, fence.proxy.async, one elected thread, wait_group.read 0)\n  would shorten the 0.67 us store/exit tail at 128-256 tokens, or pay less of the dirty-flush cost at 586-2048\n  tokens. Result: refuted. Bulk stores are slower than STG.256 with evict_last at every size, and pay the same\n  dirty-flush cost. The shipped kernel keeps the bulk path behind a template flag that is off everywhere, so it is\n  functionally c2 (identical regs and SASS in compile_b200).\ntests: [H23]\nexpected_effect:\n  S: {pct: 0, confidence: medium}\n  M: {pct: 0, confidence: medium}\n  L: {pct: 0, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs: {THREADS: 256, R_S: 1, R_1024: 3, BULK: false, cluster_max_tokens: 300}\ndispatch:\n  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}\n  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}\n  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3}}\n  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1}}\nfindings:\n  - \"probe (R=1 S path, cluster 2 at <=300 tok, 10 interleaved reps, harness CUPTI, medians, us), bulk_EL = bulk store with evict_last policy: 128 tok STG-EL 4.031, bulk_EL 4.382 (+8.7%), bulk no hint +8.0%, bulk EF +8.8%, bulk EL with full wait_group 0 +8.7%. 131 tok 4.161: bulk_EL +4.6%, no hint +5.3%, EF +5.4%. 256 tok 5.246: bulk_EL +7.4%, no hint +20.0%, EF +20.1%, wg0 +9.5%. 586 tok 8.721: bulk_EL +7.0%, no hint +24.2%, EF +24.5%, wg0 +9.7%. The 0.67 us store tail does not get shorter; the smem staging, fence and barrier cost more than they save [probe_b200]\"\n  - \"probe, 1024 and 2048 tok, R=1 default loads, 8 reps, dirty (harness zero flush) vs clean (zero then read of the same buffer), us: 1024 STG-EL 15.32/12.86 (d-c 2.47); bulk_EL 16.12/13.62 (d-c 2.50); bulk no hint 17.40/13.63 (d-c 3.77); bulk_EL wg0 16.51/14.19 (d-c 2.32). 2048 STG-EL 28.53/25.59 (2.93); bulk_EL 30.00/27.08 (2.92); bulk no hint 31.33/26.98 (4.35); bulk_EL wg0 30.80/28.09 (2.72). Bulk EL pays the same dirty cost as STG EL and is 0.8-1.5 us slower in absolute terms [probe_b200]\"\n  - \"H23 store half closed: the async proxy honours the evict_last policy the same way STG does. Without evict_last the bulk store avoids some of STG's dirty cost (3.77 vs about 5.0 us at 1024, 4.35 vs about 6.4-7.7 at 2048, the STG numbers being from the r12 E1 R=1 curve, not a same-run control), but it is still 2-3 us worse than STG with evict_last. No bulk variant wins at any size [probe_b200]\"\n  - \"LDG/STG add-ons for E1's sweep (S path, same sizes): st.global.L2::evict_last qualifier form equals the createpolicy evict_last store within noise (-0.2/0.0/+0.5/-0.4% at 128/131/256/586 tok). st.global.wt is worse (+3.2/+6.9/+15.9/+24.0%), so the write-through qualifier is not an alternative to evict_last [probe_b200]\"\n  - \"dead end: a bulk store of the whole 8 KB CTA tile needs __syncthreads plus a single issuing thread; the S path is latency-bound, so this serialises the store behind the slowest warp (and wait_group.read keeps the CTA resident until the smem has been read). Do not revisit bulk stores for this problem [probe_b200]\"\n  - \"tooling: harness_time raised 'No timing results' once in the first draft, probably the known CUPTI flake or a variant that failed to launch; retrying each timing up to 3 times fixed it. b200probe.cuda_kernel accepts __cluster_dims__(CL,1,1) compiled into the kernel, so cluster-2 variants need no launch attribute [probe_b200]\"\n  - \"run_tests returned 'Error executing tool run_tests' on both attempts (before any result), so 16/16 correctness and the projected portal score for this exact file are NOT verified. compile_b200 gave 30/48/30 regs, 0 B smem, 0 B local and the same LDG.256 x7, LDG.CONSTANT.256 x1, STG.256 x5 mix as c2 [compile_b200]\"\npaths:\n  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}\n  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\nruns_on:\n  H200: {runs: true, representative: false, note: \"256-bit loads fall back to 2x128-bit on sm_90\"}\n  A100: {runs: false, representative: false, note: \"cluster launch needs sm_90+\"}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"run_tests did not complete, so correctness on all 16 workloads is untested for this exact build; it relies on the generated code being identical to c2\"\n  - \"Dead BULK code could be flagged on review; it is compiled out for every instantiation\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -2752,7 +2872,48 @@
   ],
   "round": "r13",
   "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r13/candidates/r13-e3-bulkstore-off.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__8304824c_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8ELb0EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__8304824c_9_kernel_cu_ba37c84a11qk_rms_rtokILi3ELb0ELi5ELb0EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__8304824c_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb1ELi8ELb0EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 1,
+     "STG.256": 5
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "instructions": "Experiment E3 (tests H23): One-shot bulk-store path (st:bulk) at S and M: L2 allocation and exit-drain behaviour. Build a CUDA C++ variant of the c2 R=1 path that keeps the LDG.256 loads, half-warp reduction and register maths, but writes each thread's 8 outputs to a static shared tile (16 rows x 512 B = 8 KB per CTA), then fence.proxy.async.shared::cta, __syncthreads, and one elected thread issues cp.async.bulk.global.shared::cta.bulk_group [gmem], [smem], 8192 with .L2::cache_hint and the evict_last policy, then cp.async.bulk.commit_group and cp.async.bulk.wait_group.read 0 before the CTA exits. No mbarrier, no ring, no TMA loads. Keep __launch_bounds__(256, 8) and the cluster-2 launch at <= 300 tokens. Probes (b200probe, harness timing, 10 interleaved reps): (1) 128/131/256 tokens vs c2: CUPTI span and in-kernel globaltimer span (is the 0.67 us store tail shorter?); (2) 586/1024/2048 tokens dirty vs clean flush vs c2 (does the bulk store pay less of the dirty cost?); (3) variants: bulk store with no hint, with evict_first hint, and wait_group 0 (full completion) instead of .read. Also run two cheap LDG/STG add-ons at the same sizes for E1's sweep: st.global.wt and the qualifier form st.global.L2::evict_last. Then compile_b200 (regs, smem 8 KB, no spills), run_tests 16/16, dispatch the bulk store only where it wins. Success: >= 0.15 us (3%) at 128-256 tokens or >= 3% dirty-flush reduction at 1024-2048 tokens vs c2 on the same GPU, 16/16 pass, predicted portal >= 0.617. Refuted if: Bulk stores are within +-1% of STG.256 at S and pay the same dirty cost at M (then the async proxy allocates like STG and H23's store half is closed; the r10 27% L loss stands). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -2763,7 +2924,26 @@
     "c2-cluster2-s-only"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 14.37,
+    "1,128": 4.06,
+    "1,131": 3.94,
+    "1,256": 5.36,
+    "1,8192": 116.36,
+    "16,256": 58.21,
+    "2,128": 5.44,
+    "2,293": 8.66,
+    "32,128": 58.15,
+    "4,1024": 58.45,
+    "4,1657": 93.9,
+    "4,256": 14.37,
+    "4,512": 28.55,
+    "8,128": 14.18,
+    "8,256": 28.57,
+    "8,773": 87.35
+   }
+  }
  },
  "r13-e4-bulkld-t2-disp": {
   "card": "id: r13-e4-bulkld-t2-disp\nparents:\n  - c2-cluster2-s-only\n  - r10-bulk1d-ring-stel\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: bulk1d\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\ntests:\n  - H23\nhypothesis: >-\n  E4 / H23 (load half): async-proxy bulk loads (cp.async.bulk with no hint, evict_first or evict_last L2 hint) allocate\n  in L2 differently from LDG.256 and pay less of the dirty-flush cost at 586-2048 tokens. REFUTED on the rented B200.\n  Bulk loads are 4-13% slower than LDG.256 after a clean flush at 128-1024 tokens. Their dirty-minus-clean cost drops\n  only when the clean time rises (a slower kernel hides some write-backs; none are avoided). The evict_first bulk hint\n  recycles no better than evict_first LDG, and evict_last is the worst. The only competitive variant (2 x 8 KB tiles\n  per CTA, no hint) ties c2 at 2048-8192 tokens. This candidate puts it on the 1100-2100 token band (the two 2048-token\n  workloads) and keeps c2 everywhere else, as an exploration record. Expected portal result: a tie with c2.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 38\n  smem_per_cta_bytes: 17424\n  threads_per_cta: 256\n  ctas_per_sm: 6\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  TPC: 2\n  TILE_BYTES: 8192\n  bulk_policy: none\n  bulk_band_tokens: \"1100 < B*S <= 2100\"\ndispatch:\n  - {max_tokens: 300, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true, cluster: 2}}\n  - {max_tokens: 600, kernel: qk_rms_rtok, meta: {R: 1, LOAD_S: true}}\n  - {max_tokens: 1100, kernel: qk_rms_rtok, meta: {R: 3}}\n  - {max_tokens: 2100, kernel: qk_rms_bulk2, meta: {TPC: 2, policy: none}}\n  - {max_tokens: null, kernel: qk_rms_rtok, meta: {R: 1}}\nfindings:\n  - \"probe E4, 586 tok, 7 interleaved reps, harness CUPTI, dirty/clean/d-c us: c2 R=1 EF-LDG 8.74/8.23/0.51; R=1 plain LDG 9.40/8.24/1.16; bulk T=1 none/EF/EL 10.44/8.93/1.51, 9.71/8.91/0.80, 10.50/8.91/1.59; bulk T=2 none/EF/EL 9.92/8.81/1.12, 9.58/8.83/0.74, 9.79/8.80/0.99. Bulk loads +7-8% clean; the EF bulk hint recycles about like EF LDG (0.74-0.80 vs 0.51 us) and is not better [probe_b200]\"\n  - \"probe E4, 1024 tok (base c2 R=3 14.34/12.74/1.61): c2 R=1 +2.4% dirty (d-c 2.11); R=1 EF-LDG +0.0% (1.80); bulk T=1 none/EF/EL +13.5/+6.6/+14.9% dirty, +5-6% clean; bulk T=2 none/EF/EL +1.7/+2.2/+6.4% dirty, +3.8% clean, d-c 1.36/1.43/2.03. Repeat (9 reps): T=2 none +1.8% dirty, +3.5% clean, d-c 1.33 vs 1.52; T=4 none/EF +10.5/+7.8% [probe_b200]\"\n  - \"probe E4, 2048 tok (base c2 R=1 28.77/24.07/4.70): R=1 EF-LDG +1.3% dirty, -2.1% clean (d-c 5.57); bulk T=1 none/EF/EL +4.2/+3.7/+5.1% dirty, +11.8/+4.5/+11.9% clean (d-c 3.05/4.70/3.29); bulk T=2 none/EF/EL -0.6/+1.2/+4.3% dirty, -0.5/-2.3/-0.4% clean (d-c 4.66/5.60/6.02). Repeat (9 reps): T=2 none +0.6% dirty, -0.6% clean; T=4 none +1.7%, T=4 EF +4.8% [probe_b200]\"\n  - \"probe E4, 4096 tok (9 reps; c2 R=1 58.08/50.29/7.79): bulk T=2 none +0.3%/+0.9% (d-c 7.54); T=4 none +0.7/+1.5% (7.41); T=4 EF +1.6/+5.5% (5.93). 8192 tok dirty only: c2 116.11, T=2 116.56 (+0.4%), T=4 116.86 (+0.6%) [probe_b200]\"\n  - \"probe E4, 128 tok (5 reps; c2 S path 4.19/3.55/0.64): every bulk variant is +5.4..+7.7% dirty and +12.6..+13.5% clean, which confirms the ~0.45 us mbarrier/bulk setup penalty at one wave; keep c2's S path [probe_b200]\"\n  - \"H23 load-half verdict: refuted. No bulk variant cuts the dirty cost by >= 3% of total at 1024 or 2048 tokens without a larger clean-time loss. Lower d-c values appear only in variants that are slower after a clean flush: slowness hides write-backs, it does not avoid them. The evict_first bulk hint behaves like evict_first LDG (good at 586 tokens, a loss at 2048 dirty), and the evict_last bulk hint is the worst at every size. Close the load half of H23 and do not revisit async-proxy loads for #38 [probe_b200]\"\n  - \"more tiles per CTA help the bulk path (T=1 -> T=2 cuts clean time by 4-11% at 1024-2048 tokens), but T=4 (32 KB) is worse again at every size. T=2 no-hint is the best bulk configuration and only ties LDG.256 at >= 2048 tokens [probe_b200]\"\n  - \"compile sm_100a: bulk2 kernel 38 regs, 17,424 B static smem, 0 local, UBLKCP x2; c2 paths unchanged (30/48/30 regs) [compile_b200]\"\n  - \"run_tests: first run 14/16 (1x131 and 1x256 hit the known CUPTI 'No timing results' flake on unchanged c2 paths); rerun 16/16. vs c2 on the same GPU: S +0.3%, M -0.3%, L +0.3%; 2048-token workloads -0.1% / -0.7%; predicted portal 0.6125 +- 0.006, P(beats c2) = 50%: a tie [run_tests]\"\n  - \"tooling: a clean flush in probes = monkey-patch sol_execbench.core.bench.timing._clear_cache with zero_() then .view(torch.int64).max() over the same buffer; /tmp/e4lib.py (kernels plus a bench/report helper) persisted between probes in this session [probe_b200]\"\npaths:\n  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}\n  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}\n  - {max_tokens: 2100, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: tma, w: nc, st: el}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"bulk path runs on sm_90 but STG.256 falls back to 128-bit; smaller L2 changes the dirty-flush behaviour\"\n  A100:\n    runs: true\n    representative: false\n    note: \"sm_80 falls back to plain loads on the bulk path; correctness only\"\n  L40S:\n    runs: true\n    representative: false\nrisks:\n  - \"Ties c2 on the bench; it does not deserve a portal slot except as an A/B of the bulk path at 2048 tokens\"\n  - \"At the portal's 1500 MHz SM clock the mbarrier setup (~0.45 us at one wave) could cost slightly more at 2048 tokens\"\n  - \"38 regs on the bulk path limits it to 6 CTAs/SM (96 KB in flight); still enough at 2048 tokens on the bench\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -2786,7 +2966,65 @@
   ],
   "round": "r13",
   "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r13/candidates/r13-e4-bulkld-t2-disp.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN41_GLOBAL__N__74998917_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb0ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 3,
+     "STG.256": 7,
+     "UBLKCP": 2
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__74998917_9_kernel_cu_ba37c84a11qk_rms_rtokILi3ELb0ELi5EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 3,
+     "STG.256": 7,
+     "UBLKCP": 2
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__74998917_9_kernel_cu_ba37c84a11qk_rms_rtokILi1ELb1ELi8EEEvPKfS2_S2_S2_PfS3_iif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 3,
+     "STG.256": 7,
+     "UBLKCP": 2
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_ZN41_GLOBAL__N__74998917_9_kernel_cu_ba37c84a12qk_rms_bulk2EPKfS1_S1_S1_PfS2_if",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.256": 7,
+     "LDG.CONSTANT.256": 3,
+     "STG.256": 7,
+     "UBLKCP": 2
+    },
+    "regs": 38,
+    "resident_per_sm": null,
+    "smem": 17424
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M",
    "instructions": "Experiment E4 (tests H23): One-shot bulk-load path with an evict_first L2 cache hint at 586-2048 tokens. Build a CUDA C++ one-shot kernel for 586-2048 tokens: each 256-thread CTA owns 2 tiles of 16 rows (16 KB), thread 0 inits two mbarriers and issues two cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes 8 KB copies with .L2::cache_hint (policy variants: none, createpolicy evict_first, evict_last) at kernel start; warps wait on the parity, read a row's 8 floats per lane from shared memory, reduce in the half-warp, multiply by the weight (ld.global.nc as in c2) and store with STG.256 evict_last exactly as c2. 4 CTAs/SM by smem (16 KB + barriers) is fine; also try 1 tile per CTA (8 KB, 8 CTAs/SM). No ring, no persistence. Probes (harness timing, 7 interleaved reps, dirty AND clean flush): 586/1024/2048 tokens vs the c2 paths; report dirty-minus-clean per variant so the L2-allocation question is answered separately from raw speed; also 128 tokens once to confirm the known ~0.8 us setup penalty and keep c2's S path. If any variant cuts dirty-minus-clean by >= 3% at 1024 or 2048 under the real harness flush, build the dispatch candidate (c2 everywhere else), compile_b200, run_tests 16/16. Success: Dirty-flush cost reduced by >= 3% at 1024 or 2048 tokens relative to c2's R=3 / R=1 paths, with total time no worse than c2, 16/16 pass, predicted portal >= 0.617. Refuted if: Bulk loads with any hint pay the same dirty cost as LDG.256 (within 1%) at 1024-2048 tokens, or are slower by > 2% in the clean case; then close H23's load half and leave the async proxy for good. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (problem card section 7). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -2797,6 +3035,118 @@
     "c2-cluster2-s-only",
     "r10-bulk1d-ring-stel"
    ]
+  },
+  "timings": {
+   "B200r": {
+    "1,1024": 14.37,
+    "1,128": 4.03,
+    "1,131": 4.0,
+    "1,256": 5.36,
+    "1,8192": 116.34,
+    "16,256": 58.29,
+    "2,128": 5.41,
+    "2,293": 8.69,
+    "32,128": 58.34,
+    "4,1024": 58.14,
+    "4,1657": 94.1,
+    "4,256": 14.34,
+    "4,512": 28.52,
+    "8,128": 14.18,
+    "8,256": 28.26,
+    "8,773": 87.33
+   }
+  }
+ },
+ "r14-a1-h21-audit-c2": {
+  "card": "id: r14-a1-h21-audit-c2\nparents:\n  - c2-cluster2-s-only\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\ntests:\n  - H21\n  - H4\nhypothesis: >-\n  H21 (the previous call's evict_last outputs survive the harness reset plus zero flush and are written back in the next\n  timed window) tested directly and refuted: with the harness reset, the previous call's store policy moves the measured\n  call by <= 0.15% at 128-8192 tokens, while the same test without the reset shows +2/+4/+6 us, so the test was\n  sensitive. No end-of-kernel demotion is needed; the candidate is c2's code with comments changed and needs no portal slot.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs:\n  S_threshold_tokens: 600\n  cluster2_max_tokens: 300\n  R_1024band: 3\npaths:\n  - {max_tokens: 300, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el, cluster: 2}\n  - {max_tokens: 600, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, x: ef, w: nc, st: el}\n  - {max_tokens: 1100, lang: cuda, width: 256, threads: 256, rows: 48, grid: oneshot, st: el}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, st: el}\nfindings:\n  - \"A1 settled-belief audit, weakest first (strength 1-5): (1) H24 'the leader halves the dirty cost' - arithmetic only, no measurement, strength 1; (2) H11 'L ceiling is DRAM-side, no SM change lifts L' - r10/r11 read-only probes, not interleaved, and r13 itself notes clean-flush copies run at 8+ TB/s apparent, so the ceiling is a dirty-L2 ceiling as stated, strength 2; (3) H2 at L 'evict_first x loads hurt' - one non-interleaved portal pair (r7 vs c1 +2.4%) against bench +0.3..+0.5%, strength 2; (4) H9 'portal penalises SM work ~5% per 20% lag' - emulator fit on 18-22 kernels plus one pair (r8/r9), with r10-rtok R=3 as a counterexample, strength 3; (5) H4 'fatter CTAs refuted' - r10 one-wave probe plus portal r8 (confounded with L2 mode), yet R=3 at 1024 won on the portal (-2.4%), so the label was too broad; retested here, strength now 4; (6) H15 'about 25-30 MB evict_last cap, store end-state final' - r10/r12 probes at 900-8192 tokens, interleaved in r12, strength 3; (7) 'no legitimate mechanism for the dirty-flush cost' (H7/H22) - r13 E1 sweep with 5 interleaved reps per cell, and H23 bulk paths closed, but the mechanism is inferred, strength 4; (8) H6 'persistent/stealing loses' - r10 probes plus 3 portal results (Triton persistent, no evict_last) and bench r10-ws-l-steal, strength 4; (9) H10 'S at the copy floor' - medians of 105 (r11 E3) plus timelines, though r11-consol reports a 3-5% copy lag at S, strength 4; (10) H17/H19/H20 (S launch, L2 prefetch, tile order) - 5-15 interleaved reps each, strength 5 [ledger review]\"\n  - \"H21 direct test (step 2) [probe_b200]: harness-like sequence per call (shifted input copy, output zero, cudaCtxResetPersistingL2Cache, 265 MB zero flush), CUDA events around the measured c2 path (evict_last stores), previous call alternating evict_last vs plain store policy, 40 interleaved reps, 4 arms rotated. With reset, previous EL minus previous plain (paired median): 128 tok +0.03 us (+0.35%, 22/40 slower); 1024 -0.03 us (-0.15%, 9/40); 2048 0.00 (14/40); 8192 +0.03 us (+0.03%, 23/40). All under 1%, so H21 is refuted by its own criterion\"\n  - \"H21 positive control [probe_b200]: if the measured call's setup skips the reset, the previous call's evict_last outputs cost +2.05 us (+9.5%, 35/40) at 1024, +4.10 us (+12.1%, 39/40) at 2048, +6.10 us (+5.0%, 38/40) at 8192, and 0 at 128 (6 MB fits the clean room). With a plain previous call, skipping the reset costs 0. The harness reset demotes them and the flush then evicts them outside our window, which agrees with the r13-e2 latency probe. So the full evict_last gain (H1) is genuinely free and nothing is paid back across calls\"\n  - \"first H21 probe design flaw (fixed in the rerun): without a reset before the previous call, older measured calls' evict_last lines piled up and masked the previous call's policy; also, events must be preceded by torch.cuda._sleep so the CPU queues ahead [probe_b200]\"\n  - \"event timing caveat: CUDA-event spans include a constant ~5-7 us over the harness CUPTI times (128 tok 9.2 vs 4.0 us), fine for paired differences but not absolute; at 128 tok it may hide sub-0.1 us effects [probe_b200]\"\n  - \"step 3 skipped: H21 does not hold, so no demotion candidate; r13-e2 already measured applypriority demotion as +2..+30% [ledger]\"\n  - \"step 4, H4 retest with harness_time CUPTI, 7 interleaved reps, R tokens of the same head per thread, all with evict_last stores [probe_b200]: 586 tok R1-EF 8.64 us (base), R2-EF +13.7%, R3-EF +7.2%, R1-plain +9.3%. 1024: R3 14.19 (base), R1 +2.7%, R2 +6.2%, R4 +0.5%, R3-EF +0.1%. 2048: R1 28.55, R2 +3.8%, R3 +0.4%, R4 +0.4%. 4096: R1 58.02, R2 +1.7%, R3 +0.4%. 8192: R1 115.96, R2 +1.4%, R3 +0.8%. c2's dispatch is the best R at every size; R=2 is consistently the worst (cause unknown; 6 CTAs/SM by launch bounds). Fatter CTAs help only at 1024 tokens; H4 stands everywhere else\"\n  - \"dead end: nothing related to evict_last remains to be recovered across calls (H21 closed by two independent methods, latency in r13-e2 and timing here) [probe_b200]\"\n  - \"run_tests (c2 code, comments only): 16/16 pass; vs c2 S +0.6%, M +0.1%, L -0.1% (noise); predicted portal 0.6123 +- 0.0059 [run_tests]\"\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: \"falls back to 128-bit accesses; no cluster/evict_last behaviour equivalent to B200's L2\"\n  A100:\n    runs: false\n    representative: false\n    note: \"cluster launch needs sm_90+\"\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"None new: code identical to c2 (portal 0.6125). Do not spend a portal slot on it\"\nmeasure_first: []\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r14-a1-h21-audit-c2",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "c2-cluster2-s-only"
+  ],
+  "round": "r14",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r14/candidates/r14-a1-h21-audit-c2.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment A1 (assumption audit, tests H21). 1) In at most 3 turns, list the 8-10 beliefs in the ledger that most limit the score and are treated as settled (e.g. H4, H6, H10, H15, H17, H18, H19, and 'no legitimate mechanism for the dirty-flush cost'), each with what it rests on (number of probes, portal confirmation, interleaved or not) and a strength rating; put the list under findings, weakest first. 2) Test H21 directly: does the previous call's evict_last output survive the harness's cudaCtxResetPersistingL2Cache plus the zero flush, and get written back inside the next call's timed window? Keep the measured call identical and alternate only the previous call's store policy (evict_last vs plain); at least 5 interleaved repeats at 128, 1024 and 8192 tokens. 3) If H21 holds, measure an end-of-kernel demotion of the call's own outputs (applypriority / evict_normal on its own output range only); any such candidate goes to the operator for a legitimacy check before a portal slot. 4) With remaining budget, retest the weakest settled belief from step 1 with interleaved repeats. Success: H21 confirmed or refuted with >= 5 interleaved repeats. Refuted if: the previous call's store policy moves the measured call by < 1%. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:A1:H21",
+   "operation": "structural_mutation",
+   "parents": [
+    "c2-cluster2-s-only"
+   ]
+  },
+  "timings": {}
+ },
+ "r14-f2-ldg256-ef-el-ilv": {
+  "card": "id: r14-f2-ldg256-ef-el-ilv\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: halfwarp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Built from harness measurements. A call costs a fixed 1.5 us (empty kernel). After that, time is set by\n  cold DRAM reads competing with write-backs of the flush's dirty L2 lines, plus CTA dispatch. So: one launch of\n  small low-register CTAs (16 per SM, LDG.256, one row per half-warp), evict_first loads, and evict_last\n  stores on this call's own outputs, so the L2 keeps our outputs rather than the flush's lines (M -20%, L -3%).\n  Q/K-interleaved CTA order for B*S <= 256. Ties the current best at M/L; about 4% slower at S.\nexpected_effect:\n  S: {pct: +4, confidence: medium}\n  M: {pct: +0.5, confidence: medium}\n  L: {pct: 0, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 29\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs: {THREADS: 128, ROWS_PER_CTA: 8, INTERLEAVE_MAX_ROWS: 12288}\ndispatch:\n  - {max_tokens: 256, kernel: qk_rmsnorm_kernel<true>, meta: {THREADS: 128, interleave: true}}\n  - {max_tokens: null, kernel: qk_rmsnorm_kernel<false>, meta: {THREADS: 128, interleave: false}}\ntests: []\nfindings:\n  - \"harness: empty kernel = 1.50 us in the CUPTI window for 1 or 592 CTAs; 1536x128 empty = 1.74, 3072x64 = 2.66, 3072x128 = 2.55, 7032x128 = 4.5 us (CTA dispatch is costly past about 2 waves) [probe_b200]\"\n  - \"harness order: setup copies inputs and zero-fills outputs BEFORE the 2xL2 zero flush, so inputs/outputs are cold and the L2 is full of dirty flush lines [probe_b200: timing.py source]\"\n  - \"raw LDG.256 streams at 805 MB: read-only 402 MB 72.7 us (5.5 TB/s), write-only 402 MB 54.6 us (7.4 TB/s), copy 805 MB 120 us; at 12.6 MB: read 3.78, write 2.23, copy 4.4 us. Reads pay for dirty-line write-backs [probe_b200]\"\n  - \"L2::evict_last on output stores (own buffers): 57.7 MB 11.0 -> 8.9 us, 100 MB 17.8 -> 14.4 us, 402 MB 61.6 -> 58.5, 805 MB 120 -> 116.5; small +-0 to -0.35 us [probe_b200]\"\n  - \"evict_first on input loads: neutral alone; with evict_last stores helps at 57.7 MB (9.4 -> 8.6 us) [probe_b200]\"\n  - \"dead end: partial evict_last (only the last 48-126 MB of output) = same as all-evict_last at 402/805 MB; evict_first for the earlier stores is +2-3% worse [probe_b200, 3 repeats]\"\n  - \"dead end: persistent grid (H%48==0 so weights stay in registers, double-buffered loads) uses 56-58 regs -> +5-8% at every size; 768-thread version +20% at L [probe_b200]\"\n  - \"dead end: 128-bit loads (32 threads/row) +6% S, +15% L; U=2/U=4 rows per thread at 48/90 regs worse; 64-thread CTAs worse; 1024-thread CTAs +5% at 1x128 [probe_b200, run_tests]\"\n  - \"dead end: 1-D bulk-copy (cp.async.bulk + mbarrier) tile path, 256 threads/16 rows: +6% to +13% at S/M, +1.4% at L [run_tests A/B]\"\n  - \"dead end: single-wave U=2 kernel with launch_bounds(128,12) for 24.6k-row sizes: 2x128 5.5 vs 5.6 control (noise), 2x293 +7% [run_tests A/B]\"\n  - \"dead end: cp.async.bulk.prefetch.L2 by early CTAs of late CTAs' 4 KB chunks at 1x128: no change (4.2 us) [run_tests A/B]\"\n  - \"timeline (globaltimer, 256 ns resolution) at 1x128: 1536 CTAs all start within 0.77 us; first-load latency 0.5-2.5 us (median 1.5 us); last CTA ends about 3.3 us after first start; kernel window 4.28 us [probe_b200]\"\n  - \"SASS: first LDG.256 at about instruction 20; 27-31 regs; LDG.E.ENL2.256/STG.256 emitted from ld/st .v8.f32 inline PTX [probe_b200]\"\n  - \"same-size workloads differ up to 3% run-to-run (e.g. 1x1024 vs 8x128), so cross-workload A/B only resolves effects of 5% or more; run_tests also hit one CUPTI 'No timing results' glitch on a control path [run_tests]\"\n  - \"unresolved: current best does 1x128 in 3.9 us vs this 4.1-4.2 us on the same rented B200; mechanism not found [run_tests]\"\npaths:\n  - {max_tokens: 256, lang: cuda, width: 256, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: ef, w: nc, st: el, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: ef, w: nc, st: el, cluster: 1}\nruns_on:\n  H200: {runs: false, representative: false, note: \"ld/st .v8.f32 (256-bit) is sm_100-only PTX; would need a 128-bit fallback\"}\n  A100: {runs: false, representative: false}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"evict_last stores leave this call's outputs dirty in L2 at the end of the window; the hint is on our own buffers inside the kernel (store qualifier, no applypriority), but the operator should confirm legitimacy (r13 H21)\"\n  - \"S band about 4% slower than the current best on the rented B200; overall projection 0.6099 +- 0.006 vs 0.6125\"\n  - \"rented B200 runs unlocked clocks; at 1500 MHz SM-side dispatch costs may weigh more\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r14-f2-ldg256-ef-el-ilv",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r14",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r14/candidates/r14-f2-ldg256-ef-el-ilv.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "fresh": true,
+   "instructions": "Experiment F2 (fresh eyes, harness first). Start from how the call is timed, not from a kernel. 1) Read harness_scoring.md closely and measure what a minimal call costs inside the timed window on this harness (empty kernel, read-only, write-only and copy kernels at the smallest and largest workload sizes), and what the harness's flush, input copy and output zero-fill leave behind for your kernel. 2) Design the kernel around what dominates, within the rules (nothing that hides work from the timed window or touches memory you do not own). 3) Then make it as fast as you can on every workload. One fact from the public scores: first place (0.6275) is equivalent to the time to beat minus about 0.55 us on every workload (or 3.7% off every workload); second place (0.6160) to about 0.15 us less per workload. The largest workloads already move data at ~6.95 TB/s, close to what the B200 sustains.  Budget: use probe_b200 for quick measurements (seconds each) and run_tests for complete solutions. Record every measurement under findings, dead ends included. Your candidate must pass every workload; submit the fastest version you tested.",
+   "model": "opus",
+   "niche": "fresh:F2:harness-first",
+   "operation": "new_design",
+   "parents": []
+  },
+  "timings": {}
+ },
+ "r14-plain256-ef-el": {
+  "card": "id: r14-plain256-ef-el\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: halfwarp\n  cache: stream\n  spec: all\nhypothesis: >-\n  The simplest one-shot kernel (16 threads per 512-B row, one LDG.256 and one STG.256 per thread, 4 shuffles)\n  already streams at the B200's practical rate; the only measurable lever is L2 policy, because the harness's\n  write-flush leaves L2 full of dirty lines and every line we allocate forces a write-back. L2::evict_first on\n  input loads and L2::evict_last on output stores cut 3-24% per size on the rented B200. The current best\n  evidently uses equivalent hints: this candidate is level with it, not ahead.\nexpected_effect:\n  S: {pct: +3, confidence: medium}\n  M: {pct: +1, confidence: medium}\n  L: {pct: 0, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 30\n  smem_per_cta_bytes: 0\n  threads_per_cta: 256\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 1\nknobs: {THREADS: 256, THREADS_PER_ROW: 16, ROWS_PER_CTA: 16, LOAD_HINT: L2_evict_first, STORE_HINT: L2_evict_last}\ntests: []\nfindings:\n  - \"plain textbook kernel (16 thr/row, LDG.256/STG.256, 256 thr/CTA, 30 regs): 4.22/6.30/10.87/17.25/32.3/61.0/90.9/118.7 us at 12.6/25/58/101/201/403/608/805 MB on the rented B200; eager reference 59-882 us [probe_b200]\"\n  - \"fit over sizes for the plain kernel: t = 2.4 us + bytes / 6.93 TB/s; 805 MB runs at 6.8 TB/s [probe_b200]\"\n  - \"dead end: 2 or 4 rows per thread (46/78 regs), 128/512/1024 threads, L1::no_allocate loads, ld.cs, st.cs, st L2::evict_first, L1::no_allocate stores, L2::256B prefetch: all within +-1% of plain (noise) [probe_b200]\"\n  - \"empty-kernel CUPTI span 1.45 us for 1-768 CTAs, 4.3 us for 6144 CTAs, 26.5 us for 49152 CTAs: empty CTAs dispatch at about 2000 per us [probe_b200]\"\n  - \"one dependent read+write per CTA on 148 CTAs: 2.12 us, so a DRAM round trip adds about 0.67 us over the empty floor [probe_b200]\"\n  - \"at 12.6 MB: read-only 3.75 us, write-only 2.27 us, full 4.25 us; at 805 MB: read-only 72.9 us (5.5 TB/s), write-only 54.4 us (7.4 TB/s), full 118.6 (sum of the two) [probe_b200]\"\n  - \"harness order read from timing.py: inputs copied and outputs zeroed first, then the 2xL2 zero flush; so inputs are cold and L2 is full of dirty flush lines when run() starts [probe_b200]\"\n  - \"event-timed clean flush (read 252 MB) vs dirty flush (zero 252 MB): read-only 805 MB 67.8 vs 85.7 us, full 124.9 vs 132.0 us, full 101 MB 25.7 vs 30.5 us: the dirty L2 costs 5-20% [probe_b200]\"\n  - \"ld.global.L2::evict_first on reads: read-only 72.9 -> 62.0 us at 805 MB, 11.9 -> 10.5 us at 101 MB, no change at 12.6 MB; evict_last, ld.cs, L2::256B prefetch: no effect [probe_b200]\"\n  - \"full kernel hint matrix: loads evict_first alone no change; stores L2::evict_last: 101 MB 17.6 -> 14.0 us (-20%), 403 MB 60.9 -> 57.8, 805 MB 118.5 -> 115.5, 12.6 MB 4.26 -> 4.04; stores L2::evict_first +2% at L; weight loads evict_last no change [probe_b200]\"\n  - \"all 16 workloads, evict_first loads + evict_last stores vs plain: 4.16/4.11/5.47/5.47/8.66/14.26/14.26/14.21/28.73/28.95/57.83/56.22/57.88/86.12/93.44/115.21 vs 4.29/4.35/6.14/6.05/11.35/17.54/17.57/17.60/32.77/32.59/61.00/61.05/61.05/90.46/96.30/118.84 us [probe_b200]\"\n  - \"dead end: looping 2/4/8 row-blocks per CTA is worse at every size (IT=2: +13% at S, +2% at L; IT=8: +100% at S); 64-thread CTAs +6% at S; 1024-thread CTAs +6% at S, +-1% at L; 128 = 256 threads [probe_b200]\"\n  - \"plain Triton (ROWS=8, 4 warps, LDG.128, same hints via eviction_policy): 4.06/8.51/14.18/57.89/115.54 us, equal to the CUDA 256-bit kernel; ROWS=16 nw=4 is +10% at S; 256-bit loads buy nothing over 128-bit here [probe_b200]\"\n  - \"dead end: torch.compile(dynamic=True) of the reference: 21.4 us at 12.6 MB (5x slower, several kernels) and an Inductor subprocess error on the second shape [probe_b200]\"\n  - \"run_tests vs current best (same GPU): this kernel S +3.3%, M +0.4%, L -0.0%, predicted 0.6110 +- 0.006; 128-thread variant S +3.8%, M +1.2%, L +0.2% (0.6098); per-shape CTA size chosen to even out rows per SM (224 thr at 1x128, 352 at 1x131) S +2.8%, M +1.2%, L +0.1% (0.6104): all level with the current best, which keeps a consistent 0.1-0.2 us edge at S and about 0.3 us at 200 MB [run_tests]\"\n  - \"first run_tests reported 'Timing failed: No timing results for methodology: cupti' on one workload with correct outputs; a rerun of the identical files passed 16/16, so it was transient [run_tests]\"\n  - \"probe-tooling note: b200probe's launcher passes Python ints as 4-byte values; kernel parameters declared long/long long that are not last read garbage upper halves (illegal address); declare probe kernel scalars as int [probe_b200]\"\npaths:\n  - {max_tokens: null, lang: cuda, width: 256, threads: 256, rows: 16, grid: oneshot, mem: ldg, launches: 1, x: ef, w: none, st: el}\nruns_on:\n  H200: {runs: false, representative: false, note: \"ld/st .L2::evict_first/.L2::evict_last qualifiers and v8.f32 need sm_100; would need a 128-bit fallback to build for sm_90\"}\n  A100: {runs: false, representative: false, note: \"sm_100-only PTX\"}\n  L40S: {runs: false, representative: false, note: \"sm_100-only PTX\"}\nrisks:\n  - \"Uses eviction-priority qualifiers (L2::evict_first on our input loads, L2::evict_last on our output stores) inside the kernel on the current call's own buffers only; no applypriority or createpolicy. Flag for the legitimacy review if the operator wants it, since the gain comes from deferring write-back of our own output lines past the kernel end.\"\n  - \"Level with the current best, not ahead: P(beats it) about 36% from the emulator; the remaining 0.1-0.2 us gap at S was not found within this session's budget.\"\n  - \"Requires 32-byte aligned pointers (checked; the harness guarantees 256-byte alignment).\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r14-plain256-ef-el",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "halfwarp",
+   "spec": "all",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r14",
+  "solution": "problems/038_flux_multi_head_rmsnorm_qk/rounds/r14/candidates/r14-plain256-ef-el.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "fresh": true,
+   "instructions": "Experiment F1 (fresh eyes, simplest first). Build up from the simplest designs and let measurements decide. 1) Measure the obvious implementations against the reference on every workload: a plain Triton kernel, a textbook CUDA C++ kernel (vectorised loads, one row of head_dim per warp or per few threads), and torch.compile of the reference if the harness accepts it. 2) Find where the time goes at the smallest and the largest workloads (fixed per-call cost vs streaming rate) with probes. 3) Improve the best simple design only where a measurement says it pays; prefer the simplest code that reaches a given speed. One fact from the public scores: first place (0.6275) is equivalent to the time to beat minus about 0.55 us on every workload (or 3.7% off every workload); second place (0.6160) to about 0.15 us less per workload. The largest workloads already move data at ~6.95 TB/s, close to what the B200 sustains.  Budget: use probe_b200 for quick measurements (seconds each) and run_tests for complete solutions. Record every measurement under findings, dead ends included. Your candidate must pass every workload; submit the fastest version you tested.",
+   "model": "fable",
+   "niche": "fresh:F1:simplest-first",
+   "operation": "new_design",
+   "parents": []
   },
   "timings": {}
  },

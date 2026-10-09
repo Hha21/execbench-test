@@ -1,0 +1,13 @@
+using the saved plan: 3 task(s)
+20261009-183844_00-new_design-all: 1373891 in (1236625 cached), 97363 out (None reasoning), $7.9172, 1485.0 s, finish=success, 23 turns, - GPU calls
+  r14-plain256-ef-el: proposed
+20261009-183844_01-new_design-all: 1732244 in (1587660 cached), 103797 out (None reasoning), $3.55, 1282.0 s, finish=success, 23 turns, - GPU calls
+  r14-f2-ldg256-ef-el-ilv: proposed
+20261009-183844_02-structural_mutation-all: 750923 in (625356 cached), 38861 out (None reasoning), $1.9068, 411.6 s, finish=success, 7 turns, - GPU calls
+  r14-a1-h21-audit-c2: proposed
+round r14: 3 calls, $13.37
+B200r r14-a1-h21-audit-c2: reused the session's B200 timing (same code)
+B200r r14-f2-ldg256-ef-el-ilv: reused the session's B200 timing (same code)
+B200r r14-plain256-ef-el: reused the session's B200 timing (same code)
+rented B200: 0 candidate(s) tested in 0.5 min, 3 timing(s) reused from the sessions
+next: python3 loop/round.py collect --round r14 (after any CSF3 jobs finish); then shortlist

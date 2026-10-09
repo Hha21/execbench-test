@@ -41,6 +41,7 @@ hypotheses:
   statement: CTA launch/retire overhead is a bottleneck, so fewer, fatter CTAs or one resident wave help.
   status: refuted
   evidence:
+  - 'r14 A1 (CUPTI, 7 interleaved reps): c2 dispatch has the best R at every size; R=3 wins only at 1024 tokens; R=2 is worst everywhere'
   - 'probe r10: one-wave grids tie at 12.6-101 MB and lose 11-15% above 200 MB'
   - 'portal: r8 512-thread CTAs at L +3.2%'
   - 'probe r10: all 768 CTAs of the 12.6 MB grid start within 0.06 us; the empty-grid span overlaps fully with memory work
@@ -233,8 +234,9 @@ hypotheses:
     its own window. Demoting our outputs to evict_normal at the end of our kernel (applypriority.global.L2::evict_normal on
     our own output range, or an equivalent last-CTA step) moves that write-back into the harness''s setup and gains up to
     ~3-4 us at 1024-8192 tokens.'
-  status: open
+  status: refuted
   evidence:
+  - 'r14 A1: harness-like loop (copy, zero, cudaCtxResetPersistingL2Cache, 265 MB zero flush), 40 interleaved reps: previous call EL vs plain moves the measured call by <= 0.35% at 128-8192 tokens; positive control without the reset +2/+4/+6 us at 1024/2048/8192. The reset demotes our EL lines and the flush evicts them outside the window: the evict_last gain is genuinely free.'
   - 'r12 E1: EL''s gain is entirely a dirty-flush effect and not parking past the window; after a clean flush all store policies
     tie. That is consistent with parked EL lines being paid for in the next window (untested)'
   - 'CUDA docs: cudaCtxResetPersistingL2Cache resets persisting (access-policy-window) lines to normal; whether it also demotes
@@ -272,6 +274,7 @@ hypotheses:
     ties or passes it.'
   status: open
   evidence:
+  - 'r14: two fresh-eyes sessions (no project history; Fable and Opus) converged on our design family (one-shot LDG.256, evict_first loads, evict_last stores) and our speed: a textbook kernel predicts 0.611, our S edge 0.1-0.3 us remains. No overlooked simple kernel; the 0.55 us/call gap to #1 is not a kernel-design gap we can see'
   - 'arithmetic r13: the gap is 0.24 summed score; from S alone it needs 0.9 us on each of five S workloads (implausible: H10);
     from L alone 8% (7.5 TB/s effective, above the dirty-L2 copy ceiling, H11); uniform 3.5% gives 0.6274'
   - 'predict_score: S -5 / M -7.5 / L -3 -> 0.634; M -10 alone -> 0.627; the dirty pool (H7) is the only identified cost of that size'

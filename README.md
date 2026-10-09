@@ -165,3 +165,15 @@ SOLX_PROBLEM=$P .venv/bin/python loop/emulator.py                            # r
 - CSF3 (optional): everything lives in `/scratch/t95317ha/solx`; account `gpu-cdt-dmcs` for H200, `gpu-sk01` for
   A100/L40S.
 - The portal has no official upload API, so submission stays manual.
+
+## Dashboard
+
+A local live view of the optimisation loop (standard library only, bound to 127.0.0.1):
+
+    .venv/bin/python loop/dashboard/server.py [--port 8765]    # then open http://127.0.0.1:8765/
+
+Home shows the pipeline graph (active nodes light up from running `loop/round.py` processes and each running
+session's latest tool call), a card per problem, and a live agent feed. Click through to a problem (card, ledger,
+kernels, per-workload chart, rounds), a round (plan, lead reply, sessions, candidates) and a session (live feed over
+Server-Sent Events). Drag a saved portal page (`.html`) onto any screen to save it into `html_results/` and run
+`poc/ingest_portal.py` on it; the script output appears in a panel. Code lives in `loop/dashboard/`.

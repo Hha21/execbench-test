@@ -458,3 +458,35 @@ x1-shape-ab,63840,"batch_size=1, seq_len=131",0.0047,0.0094,1.99,0.7,0.00117
 x1-shape-ab,63840,"batch_size=8, seq_len=256",0.0295,0.0374,1.27,0.59879,0.01346
 x1-shape-ab,63840,"batch_size=1, seq_len=8192",0.1166,0.1234,1.06,0.525288,
 x1-shape-ab,63840,"batch_size=1, seq_len=256",0.0064,0.0105,1.64,0.65964,0.00203
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=40960,0.0028,0.0025,0.90,0.469751,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=16384,0.0027,0.0025,0.92,0.47625,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=16777216,0.04,0.0431,1.08,0.524257,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=131,0.0029,0.0024,0.82,0.440923,0.00053
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=655360,0.0047,0.0048,1.02,0.504984,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=786432,0.005,0.005,0.99,0.498069,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=163840,0.0031,0.003,0.98,0.493828,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=8388608,0.0209,0.0241,1.15,0.544796,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=4194304,0.0124,0.0137,1.10,0.529794,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=4096,0.0028,0.0024,0.87,0.460145,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=3089,0.0029,0.0022,0.76,0.417516,0.00043
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=2097152,0.0079,0.0085,1.07,0.520274,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=262144,0.0036,0.0034,0.94,0.481198,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=5242880,0.0144,0.0169,1.18,0.550782,0.00334
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=2053,0.0029,0.0025,0.86,0.45614,
+r0-silu-bw-cuda-ldg128-os-efel,63899,num_elements=10485760,0.0257,0.029,1.13,0.53768,
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=16, seq_len=512",0.1062,0.086,0.81,0.361086,0.05975
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=4, seq_len=128",0.0128,0.012,0.94,0.476823,
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=8, seq_len=1024",0.1061,0.086,0.81,0.361118,0.05987
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=1571",0.0247,0.022,0.89,0.441085,0.01189
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=4, seq_len=1024",0.0534,0.0442,0.83,0.377447,0.03003
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=2, seq_len=2053",0.0541,0.0441,0.81,0.368238,0.03013
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=8, seq_len=997",0.1058,0.0857,0.81,0.366726,0.05805
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=16, seq_len=256",0.0537,0.0442,0.82,0.374253,0.03006
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=64, seq_len=128",0.106,0.086,0.81,0.36278,0.05956
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=32, seq_len=256",0.1062,0.086,0.81,0.361161,0.05973
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=8, seq_len=512",0.0535,0.0442,0.83,0.377334,0.02990
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=1024",0.0176,0.0158,0.90,0.450269,
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=16, seq_len=128",0.0308,0.0259,0.84,0.406553,0.01524
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=2, seq_len=293",0.0153,0.014,0.91,0.467371,
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=2048",0.0309,0.026,0.84,0.406772,0.01531
+r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=256",0.0106,0.0099,0.94,0.478799,

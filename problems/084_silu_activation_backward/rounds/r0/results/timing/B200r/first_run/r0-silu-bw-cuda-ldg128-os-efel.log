@@ -1,0 +1,91 @@
+40960: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+16384: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+131: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+655360: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+4194304: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+4096: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+3089: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+262144: RUNTIME_ERROR
+Timing failed: No timing results for methodology: cupti
+
+---
+Problem:  084_silu_activation_backward
+Solution: r0-silu-bw-cuda-ldg128-os-efel
+Workloads: 16
+⠧ Compiling C++/CUDA solution...
+Compilation succeeded
+⠧ Evaluating 16 workload(s)...
+Saved 16 traces to 
+/tmp/tmpc5c8k3r4/work/r0-silu-bw-cuda-ldg128-os-efel/trace.jsonl
+                               Evaluation Results                               
+┏━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━┳━━━━━━━━━━━┓
+┃ ┃                   ┃   Latency ┃           ┃       ┃    Max Abs ┃   Max Rel ┃
+┃ ┃ Status            ┃      (ms) ┃  Ref (ms) ┃ Spee… ┃        Err ┃       Err ┃
+┡━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━╇━━━━━━━━━━━┩
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.039 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.005 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.003 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.020 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.007 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ RUNTIME_ERROR     │           │           │       │            │           │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.014 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.002 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+├─┼───────────────────┼───────────┼───────────┼───────┼────────────┼───────────┤
+│ │ PASSED            │     0.025 │     0.000 │ 0.00x │   0.00e+00 │  0.00e+00 │
+└─┴───────────────────┴───────────┴───────────┴───────┴────────────┴───────────┘
+
+8/16 workloads passed
+
+Runtime logs (8):
+
+Workload 0 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 1 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 3 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 4 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 8 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 9 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 10 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti
+
+Workload 12 (RUNTIME_ERROR):
+Timing failed: No timing results for methodology: cupti

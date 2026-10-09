@@ -1,0 +1,71 @@
+id: x1-shape-ab
+parents:
+- c2-cluster2-s-only
+- r7-ldg256-l2pf-mdisp
+- r14-plain256-ef-el
+operation: crossover
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: halfwarp
+  cache: stream
+  spec: dispatch:size
+hypothesis: 'Portal measurement, not a contender. Workloads with equal B*S do identical work and agree within ~0.2-0.5% inside
+  one submission, so each group runs c2 on one shape and a variant on the others: 256 tok 2x128 c2 / 1x256 r7; 1024 tok 1x1024
+  c2 / 8x128 r7 / 4x256 F1; 2048 tok 4x512 c2 / 8x256 c2 R=3; 4096 tok 16x256 c2 / 32x128 c2 EF x + nc w / 4x1024 F1. Other
+  shapes run c2.'
+dispatch:
+- shape: 1x256, 8x128
+  kernel: r7 qk_rms_kernel<true> (EF x, nc w, EL st, L2 prefetch 1 wave ahead)
+- shape: 4x256, 4x1024
+  kernel: F1 rmsnorm_qk_kernel (qualifier-form L2::evict_first ld, L2::evict_last st)
+- shape: 32x128
+  kernel: c2 qk_rms_rtok<1, true, 8> (EF x + nc w)
+- shape: 8x256
+  kernel: c2 qk_rms_rtok<3, false, 5> (R=3)
+- shape: other
+  kernel: c2 unchanged
+tests:
+- H2
+- H4
+- H19
+findings: []
+paths:
+- max_tokens: 300
+  lang: cuda
+  width: 256
+  threads: 256
+  rows: 16
+  grid: oneshot
+  x: ef
+  w: nc
+  st: el
+  cluster: 2
+- max_tokens: 600
+  lang: cuda
+  width: 256
+  threads: 256
+  rows: 16
+  grid: oneshot
+  x: ef
+  w: nc
+  st: el
+- max_tokens: 1100
+  lang: cuda
+  width: 256
+  threads: 256
+  rows: 48
+  grid: oneshot
+  st: el
+- max_tokens: null
+  lang: cuda
+  width: 256
+  threads: 256
+  rows: 16
+  grid: oneshot
+  st: el
+compliance: {}

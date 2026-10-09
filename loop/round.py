@@ -26,6 +26,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -95,18 +96,39 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
     if chk.returncode:
         raise RuntimeError(f"the MCP tool server does not start:\n{chk.stderr[-2500:]}")
     cmd = ["claude", "-p", "--model", model, "--effort", effort, "--mcp-config", str(cfg), "--strict-mcp-config",
-           "--tools", "", "--allowedTools", "mcp__solx", "--output-format", "json"]
+           "--tools", "", "--allowedTools", "mcp__solx", "--output-format", "stream-json", "--verbose"]
     if system_file:
         cmd += ["--append-system-prompt-file", str(system_file)]
     if resume:
         cmd += ["--resume", resume]
+    # stream-json: every event (model text, tool calls, tool results) is appended to <name>.stream.jsonl as it
+    # arrives, so a session can be watched live (loop/dashboard); the final "result" event carries the same fields
+    # as --output-format json.
     t0 = time.time()
-    try:
-        p = subprocess.run(cmd, input=prompt, capture_output=True, text=True, timeout=timeout_s, cwd=sdir)
-        out = json.loads(p.stdout) if p.stdout.strip().startswith("{") else dict(is_error=True, result=p.stdout[-3000:],
-                                                                                   stderr=p.stderr[-3000:])
-    except subprocess.TimeoutExpired:
-        out = dict(is_error=True, result="", subtype="timeout")
+    out, timed_out = None, threading.Event()
+    with open(sdir / f"{name}.stream.jsonl", "a") as log, open(sdir / f"{name}.stderr.txt", "a") as err:
+        p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, cwd=sdir)
+        timer = threading.Timer(timeout_s, lambda: (timed_out.set(), p.kill()))
+        timer.start()
+        try:
+            p.stdin.write(prompt)
+            p.stdin.close()
+            for line in p.stdout:
+                log.write(line)
+                log.flush()
+                if line.startswith("{"):
+                    try:
+                        ev = json.loads(line)
+                    except ValueError:
+                        continue
+                    if ev.get("type") == "result":
+                        out = ev
+            p.wait()
+        finally:
+            timer.cancel()
+    if out is None:
+        tail = (sdir / f"{name}.stderr.txt").read_text()[-3000:]
+        out = dict(is_error=True, result="", subtype="timeout" if timed_out.is_set() else "error", stderr=tail)
     out["seconds"] = round(time.time() - t0, 1)
     return out
 
@@ -348,7 +370,7 @@ def cmd_research(a):
 
 
 def finish_research(p, d, text, out):
-    blocks = {m.group(1).strip(): m.group(2) for m in reply.FENCE.finditer(text)}
+    blocks = reply.named_blocks(text)          # cards often contain ```python examples: FENCE would cut them short
     card = next((v for k, v in blocks.items() if k.startswith("markdown") and "card" in k), None)
     ledger = next((v for k, v in blocks.items() if k.startswith("yaml") and "ledger" in k), None)
     if card:
@@ -360,14 +382,16 @@ def finish_research(p, d, text, out):
             (p.dir / "ledger.raw.yaml").write_text(ledger)
             print(f"ledger is not valid YAML ({str(e)[:200]}); saved as {p.dir / 'ledger.raw.yaml'}")
     arc = get_archive()
-    register(arc, "r0", text, dict(operation="new_design", parents=[], band="all", niche="research:first-kernel"))
-    archive.save(arc)
+    if not any((rdir("r0") / "candidates").glob("*.json")):    # --from-reply after a run: keep the registered kernel
+        register(arc, "r0", text, dict(operation="new_design", parents=[], band="all", niche="research:first-kernel"))
+        archive.save(arc)
     print(f"research: {out.get('num_turns')} turns, {out.get('seconds')} s, API-equivalent "
           f"${out.get('total_cost_usd') or 0:.2f}; card {'written' if card else 'MISSING'}, ledger "
           f"{'written' if ledger else 'MISSING'}; see {d.relative_to(ROOT)}/reply.md")
     if any((rdir("r0") / "candidates").glob("*.json")):
         b200_test("r0")
-        print(f"next: submit {rdir('r0').relative_to(ROOT)}/candidates/<first kernel>.json to the portal (its result gives "
+        first = ", ".join(str(c.relative_to(ROOT)) for c in sorted((rdir("r0") / "candidates").glob("*.json")))
+        print(f"next: submit {first} to the portal (its result gives "
               f"the per-workload anchors), ingest the page, then: round.py lead --problem {p.level}/{p.name} --round r1")
 
 

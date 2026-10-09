@@ -1,0 +1,61 @@
+id: oproj-cublaslt-fused-v0
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: all
+hypothesis: >-
+  One cublasLt matmul with the residual passed as the C operand and the output as D fuses the
+  residual add into the GEMM epilogue, so a single kernel replaces the reference's GEMM plus add;
+  cuBLAS's per-shape heuristics (small 2-CTA tiles at small M) are the best S/M kernel available today.
+expected_effect:
+  S: {pct: -28, confidence: medium}
+  M: {pct: -18, confidence: medium}
+  L: {pct: -14, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 0
+  smem_per_cta_bytes: 0
+  threads_per_cta: 0
+  ctas_per_sm: 0
+  bytes_in_flight_per_sm: 0
+  launches_per_call: 1
+knobs: {workspace_mb: 32, algo: heuristic-0, alpha: 1, beta: 1}
+tests: [H1, H7, H9]
+findings:
+  - "cuBLAS matmul alone (rented B200, 1965 MHz): 8.2 us at 256 tokens (0.41 PFLOP/s) to 65-72 us at 8192 (1.5-1.64 PFLOP/s) [probe_b200]"
+  - "reference = cuBLAS nvjet GEMM + separate add; the add costs 4 us at S and 12-18 us at L [probe_b200]"
+  - "torch.addmm(out=) launches a DtoD memcpy of the residual then the badd nvjet kernel; same time as the reference [probe_b200]"
+  - "cublasLt with C=residual, D=output: one kernel, 16/16 pass, 8.7 (256 tok) .. 77.8 us (8192); 1.4x the copy floor at S, 2.5x at L [run_tests]"
+  - "CUTLASS 4.4 sm100 1SM 128x256x64 persistent + TMA C/D epilogue: compiles in 25 s, 198 regs, correct; 25 us at S (20 CTAs), 95 us at L [run_tests]"
+  - "CUTLASS 2SM 256x256x64 cluster 2x1: 18.9 us at S, 73.7 us at L, 5% faster than cublasLt at L and 2.2x slower at S [run_tests]"
+  - "tensor peak: cuBLAS reaches 1.93 PFLOP/s at M=18944 (full waves) but 1.64 at M=8192 (4.32 waves): L loses ~13% to wave quantisation [probe_b200]"
+  - "K=2560 vs 5120 vs 10240 at M=8192 gives the same TFLOP/s: per-tile prologue/epilogue is not the L-band limit [probe_b200]"
+  - "M=256: cuBLAS 4.9/6.2/8.1 us at K=640/1280/2560: serial K-steps dominate S; split-K over 148 SMs is the S lever [probe_b200]"
+  - "a 17 MB bf16 copy in one kernel takes 8.2 us under harness-style cold-L2 timing (2.1 us at 8 TB/s): ~6 us fixed cost at S [probe_b200]"
+  - "no throttling: 1965 MHz and 300 W of 1000 W during sustained GEMM [probe_b200]"
+  - "dead end for the compile tool: the lint regex rejects the literal bf16 type name in CUTLASS sources although the dtype is bf16 by definition; cublasLt source uses CUDA_R_16BF [compile_b200]"
+  - "a .cpp-only solution does not get the CUDA include path; keep a kernel.cu in the sources [run_tests]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none}
+runs_on:
+  H200: {runs: true, representative: true, note: "cublasLt picks Hopper kernels; same fused structure"}
+  A100: {runs: true, representative: false, note: "correctness only; cuBLAS Ampere kernels"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "cuBLAS heuristic may choose a split-K algorithm with a reduce kernel or workspace memset on some shapes (consistent per shape, so CUPTI matching still holds)"
+  - "link against -lcublasLt relies on the toolkit's libcublasLt in /usr/local/cuda/lib64 on the portal image"
+  - "per-call cublasLt descriptor creation and heuristic query are host-only; not timed by CUPTI"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

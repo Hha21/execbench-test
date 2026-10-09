@@ -6,6 +6,23 @@ import re
 from archive import parse_card
 
 FENCE = re.compile(r"^```([^\n`]*)\n(.*?)^```\s*$", re.S | re.M)
+NAMED = re.compile(r"^```((?:markdown|yaml|json)\s+[\w-]+|\w+\s+file=\S+)\s*$")
+
+
+def named_blocks(text):
+    """{info: body} for our named fenced blocks (```markdown card, ```yaml ledger, ```cuda file=kernel.cu, ...).
+
+    Unlike FENCE, a named block may contain other fenced blocks (a problem card with ```python examples): it runs from
+    its opening line to the last bare ``` line before the next named opening line (or the end of the text)."""
+    lines = text.splitlines()
+    opens = [i for i, l in enumerate(lines) if NAMED.match(l)]
+    out = {}
+    for n, i in enumerate(opens):
+        end = opens[n + 1] if n + 1 < len(opens) else len(lines)
+        close = next((j for j in range(end - 1, i, -1) if lines[j].strip() == "```"), None)
+        if close is not None:
+            out[NAMED.match(lines[i]).group(1).strip()] = "\n".join(lines[i + 1:close]) + "\n"
+    return out
 
 # generation_protocol.md §5: anything matching goes to human review instead of the GPU.
 LINT = [

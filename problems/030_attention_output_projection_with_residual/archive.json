@@ -1,0 +1,71 @@
+{
+ "r0-oproj-cublaslt-fused-v0": {
+  "b200": {
+   "geomean_us": 42.053,
+   "score": 0.402363,
+   "submission": "63900",
+   "timings": {
+    "1,1024": 17.6,
+    "1,1571": 24.7,
+    "1,2048": 30.900000000000002,
+    "1,256": 10.6,
+    "16,128": 30.8,
+    "16,256": 53.699999999999996,
+    "16,512": 106.2,
+    "2,2053": 54.1,
+    "2,293": 15.299999999999999,
+    "32,256": 106.2,
+    "4,1024": 53.400000000000006,
+    "4,128": 12.8,
+    "64,128": 106.0,
+    "8,1024": 106.1,
+    "8,512": 53.5,
+    "8,997": 105.80000000000001
+   }
+  },
+  "card": "id: oproj-cublaslt-fused-v0\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows128\n  red: cta\n  cache: default\n  spec: all\nhypothesis: >-\n  One cublasLt matmul with the residual passed as the C operand and the output as D fuses the\n  residual add into the GEMM epilogue, so a single kernel replaces the reference's GEMM plus add;\n  cuBLAS's per-shape heuristics (small 2-CTA tiles at small M) are the best S/M kernel available today.\nexpected_effect:\n  S: {pct: -28, confidence: medium}\n  M: {pct: -18, confidence: medium}\n  L: {pct: -14, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 0\n  smem_per_cta_bytes: 0\n  threads_per_cta: 0\n  ctas_per_sm: 0\n  bytes_in_flight_per_sm: 0\n  launches_per_call: 1\nknobs: {workspace_mb: 32, algo: heuristic-0, alpha: 1, beta: 1}\ntests: [H1, H7, H9]\nfindings:\n  - \"cuBLAS matmul alone (rented B200, 1965 MHz): 8.2 us at 256 tokens (0.41 PFLOP/s) to 65-72 us at 8192 (1.5-1.64 PFLOP/s) [probe_b200]\"\n  - \"reference = cuBLAS nvjet GEMM + separate add; the add costs 4 us at S and 12-18 us at L [probe_b200]\"\n  - \"torch.addmm(out=) launches a DtoD memcpy of the residual then the badd nvjet kernel; same time as the reference [probe_b200]\"\n  - \"cublasLt with C=residual, D=output: one kernel, 16/16 pass, 8.7 (256 tok) .. 77.8 us (8192); 1.4x the copy floor at S, 2.5x at L [run_tests]\"\n  - \"CUTLASS 4.4 sm100 1SM 128x256x64 persistent + TMA C/D epilogue: compiles in 25 s, 198 regs, correct; 25 us at S (20 CTAs), 95 us at L [run_tests]\"\n  - \"CUTLASS 2SM 256x256x64 cluster 2x1: 18.9 us at S, 73.7 us at L, 5% faster than cublasLt at L and 2.2x slower at S [run_tests]\"\n  - \"tensor peak: cuBLAS reaches 1.93 PFLOP/s at M=18944 (full waves) but 1.64 at M=8192 (4.32 waves): L loses ~13% to wave quantisation [probe_b200]\"\n  - \"K=2560 vs 5120 vs 10240 at M=8192 gives the same TFLOP/s: per-tile prologue/epilogue is not the L-band limit [probe_b200]\"\n  - \"M=256: cuBLAS 4.9/6.2/8.1 us at K=640/1280/2560: serial K-steps dominate S; split-K over 148 SMs is the S lever [probe_b200]\"\n  - \"a 17 MB bf16 copy in one kernel takes 8.2 us under harness-style cold-L2 timing (2.1 us at 8 TB/s): ~6 us fixed cost at S [probe_b200]\"\n  - \"no throttling: 1965 MHz and 300 W of 1000 W during sustained GEMM [probe_b200]\"\n  - \"dead end for the compile tool: the lint regex rejects the literal bf16 type name in CUTLASS sources although the dtype is bf16 by definition; cublasLt source uses CUDA_R_16BF [compile_b200]\"\n  - \"a .cpp-only solution does not get the CUDA include path; keep a kernel.cu in the sources [run_tests]\"\npaths:\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none}\nruns_on:\n  H200: {runs: true, representative: true, note: \"cublasLt picks Hopper kernels; same fused structure\"}\n  A100: {runs: true, representative: false, note: \"correctness only; cuBLAS Ampere kernels\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"cuBLAS heuristic may choose a split-K algorithm with a reduce kernel or workspace memset on some shapes (consistent per shape, so CUPTI matching still holds)\"\n  - \"link against -lcublasLt relies on the toolkit's libcublasLt in /usr/local/cuda/lib64 on the portal image\"\n  - \"per-call cublasLt descriptor creation and heuristic query are host-only; not timed by CUPTI\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r0-oproj-cublaslt-fused-v0",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "all",
+   "st": "direct",
+   "tile": "rows128"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r0",
+  "solution": "problems/030_attention_output_projection_with_residual/rounds/r0/candidates/r0-oproj-cublaslt-fused-v0.json",
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "niche": "research:first-kernel",
+   "operation": "new_design",
+   "parents": []
+  },
+  "timings": {
+   "B200r": {
+    "1,1024": 13.35,
+    "1,1571": 19.63,
+    "1,2048": 23.09,
+    "1,256": 8.71,
+    "16,128": 23.07,
+    "16,256": 38.58,
+    "16,512": 76.03,
+    "2,2053": 37.92,
+    "2,293": 12.4,
+    "32,256": 76.18,
+    "4,1024": 39.04,
+    "4,128": 10.53,
+    "64,128": 76.06,
+    "8,1024": 76.07,
+    "8,512": 38.7,
+    "8,997": 75.77
+   }
+  }
+ }
+}

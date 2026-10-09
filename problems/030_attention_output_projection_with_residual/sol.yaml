@@ -1,0 +1,1 @@
+flops: "2 * batch_size * seq_len * hidden_size * hidden_size"     # bf16 GEMM attn_output @ o_proj_weight.T (+ residual add, negligible)

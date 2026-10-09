@@ -457,7 +457,10 @@ def cmd_auto(a):
     if not a.dry_run and any((rdir(a.round) / "candidates").glob("*.json")):
         a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" or a.backend == "claude" else "A100,H200")
         cmd_test(a)
-        print(f"next: python3 loop/round.py collect --round {a.round} (after any CSF3 jobs finish); then shortlist")
+        csf = [g for g in a.gpus.split(",") if g != "B200"]
+        print(f"next: python3 loop/round.py collect --round {a.round} (after the CSF3 jobs finish); then shortlist"
+              if csf else f"next: python3 loop/round.py shortlist --problem {problem.current().level}/"
+                         f"{problem.current().name} --round {a.round}")
 
 
 def sync_remote():
@@ -647,7 +650,8 @@ def main():
         q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)
         if name == "test":
-            q.add_argument("--gpus", default="A100,H200", help="B200 (rented, Modal) and/or CSF3 GPU types")
+            q.add_argument("--gpus", default="B200", help="B200 (rented, Modal; default) and/or CSF3 GPU types "
+                           "(A100, H200, L40S: needs the CSF3 VPN/SSH)")
     sub.add_parser("table", parents=[common])
     a = ap.parse_args()
     if a.problem:                                   # every module and subprocess reads the problem from here

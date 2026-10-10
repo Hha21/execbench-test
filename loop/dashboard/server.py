@@ -209,11 +209,29 @@ def processes():
     return out
 
 
+_resolved = {}
+
+
+def resolve_problem(arg):
+    """A process's --problem value ('L1/030', 'FlashInfer-Bench/009_gemm_n5120_k2048', a folder name, or none) -> the
+    problem folder name, resolved like the loop does (loop/problem.find); no --problem means the loop's default."""
+    if arg in _resolved:
+        return _resolved[arg]
+    name = None
+    try:
+        if str(ROOT / "loop") not in sys.path:
+            sys.path.insert(0, str(ROOT / "loop"))
+        import problem as loop_problem
+        name = loop_problem.find(arg).name if arg else loop_problem.DEFAULT
+    except BaseException:  # noqa: BLE001  (find() raises SystemExit when a name is unknown or ambiguous)
+        name = None
+    _resolved[arg] = name
+    return name
+
+
 def proc_matches(procs, problem):
-    """Processes for this problem; a process that names no problem matches any (the loop's default)."""
-    full = {pn for pn in problem_names()}
-    return [x for x in procs if x["problem"] == problem or
-            (not x["problem"] or x["problem"] not in full) and problem != "_extra"]
+    """Processes running for this problem folder (unknown or ambiguous --problem values match nothing)."""
+    return [x for x in procs if resolve_problem(x["problem"]) == problem]
 
 
 # ------------------------------------------------------------------------------------------------- sessions

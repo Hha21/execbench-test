@@ -1,6 +1,7 @@
 """Record SOL-ExecBench portal results from saved submission pages.
 
-Save the submission's detail page from the browser (File > Save Page As, "HTML only" is enough), then:
+Save the submission's detail page from the browser (File > Save Page As, "HTML only" is enough), or paste the page's
+text (select all, copy; works from a phone) into a .txt file, then:
 
   python3 poc/ingest_portal.py "path/to/#61441_results.html" [more pages ...]
   python3 poc/ingest_portal.py page.html --vid v039      # override the variant ID (one page only)
@@ -115,6 +116,36 @@ def parse_page(path):
     return info, workloads
 
 
+LABEL = r"[a-z_]+=\d+(?:,\s*[a-z_]+=\d+)*"
+NUM = r"(\d+(?:\.\d+)?)"
+
+
+def parse_text(path):
+    """Like parse_page, from the page's text (select all + copy, e.g. on a phone) instead of the saved HTML.
+    Cells may arrive separated by tabs, spaces or newlines."""
+    s = Path(path).read_text(encoding="utf-8", errors="replace")
+    after = lambda label: (m[1] if (m := re.search(label + r"\s*(\S+)", s)) else None)
+    sub = after(r"Submission\s*#")
+    rows = re.findall(rf"({LABEL})\s+{NUM}\s+{NUM}\s+{NUM}\s*x\s+{NUM}", s)
+    if sub is None or not rows:
+        sys.exit(f"{path}: no 'Submission #' or no workload rows (label, latency, baseline, speedup x, score) in the text")
+    workloads = []
+    for label, t, tb, speed, score in rows:
+        t, tb, sc = float(t), float(tb), float(score)
+        ts = (tb - sc * t - sc * tb) / (1 - 2 * sc) if abs(1 - 2 * sc) > 0.1 else ""
+        workloads.append(dict(workload=" ".join(label.split()), latency_ms=t, baseline_ms=tb, speedup=speed,
+                              sol_score=sc, t_sol_ms_derived=f"{ts:.5f}" if ts != "" else ""))
+    kernel = re.search(r"\bKernel\s+(\d+_\w+)", s)                # not the title's "GPU Kernel Performance"
+    info = dict(submission_id=sub, kernel=kernel and kernel[1], device=after(r"\bDevice"), mode=after(r"\bMode"),
+                result=after(r"Result:"), eval_stack=(after(r"Evaluation Stack") or ""),
+                page_score=after(r"SOL Score:"), submitted_file=after(r"Submitted File:"))
+    return info, workloads
+
+
+def is_text(path):
+    return "<table" not in Path(path).read_text(encoding="utf-8", errors="replace")[:2_000_000]
+
+
 def read_csv(path):
     if not path.exists():
         return []
@@ -146,7 +177,8 @@ def main():
     summary, per_wl = read_csv(SUMMARY), read_csv(WORKLOADS)
     (RESULTS / "portal_html").mkdir(parents=True, exist_ok=True)
     for page in args.pages:
-        info, wls = parse_page(page)
+        text = is_text(page)
+        info, wls = parse_text(page) if text else parse_page(page)
         vid = args.vid or Path(info["submitted_file"] or "").stem
         if not vid:
             sys.exit(f"{page}: no uploaded file name on the page; pass --vid")
@@ -164,11 +196,11 @@ def main():
         summary = [r for r in summary if r.get("submission_id") != sid]
         summary.append(dict(vid=vid, latency_ms=f"{geo:.6f}", sol_score=f"{mean_s:.6f}",
                             fast_1=sum(x > 1 for x in speed), avg_speedup=f"{statistics.geometric_mean(speed):.3f}",
-                            source_html=f"portal_html/{sid}_{vid}.html",
+                            source_html=f"portal_html/{sid}_{vid}.{'txt' if text else 'html'}",
                             **{k: info[k] for k in ("submission_id", "kernel", "device", "eval_stack", "mode", "result")}))
         per_wl = [r for r in per_wl if r.get("submission_id") != sid]
         per_wl += [dict(vid=vid, submission_id=sid, **w) for w in wls]
-        shutil.copy(page, RESULTS / "portal_html" / f"{sid}_{vid}.html")
+        shutil.copy(page, RESULTS / "portal_html" / f"{sid}_{vid}.{'txt' if text else 'html'}")
 
         print(f"#{sid} {vid}: score {mean_s:.4f}, geomean latency {geo * 1e3:.2f} us, "
               f"faster than baseline on {sum(x > 1 for x in speed)}/{len(wls)} workloads ({info['kernel']}, {info['device']})")

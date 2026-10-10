@@ -1,0 +1,40 @@
+{
+ "best": "r0-geglu-ldg256-2d-stel",
+ "best_score": 0.674219,
+ "tasks": [
+  {
+   "operation": "knob_mutation",
+   "parents": [
+    "r0-geglu-ldg256-2d-stel"
+   ],
+   "band": "all",
+   "niche": "exp:E1:H11",
+   "model": "opus",
+   "instructions": "Experiment E1 (tests H11): Dirty-L2 traffic accounting and the load/store policy matrix. 1) Write a bench probe that reproduces timing.py's pre-call sequence (cudaCtxResetPersistingL2Cache, zero_() of a 252 MB buffer, shifted input copy, output zero) and times only our kernel. Add two alternative pre-conditions: CLEAN flush (the same zero_() followed by a read-only reduction over a different 252 MB buffer, so L2 holds clean lines) and NONE (no flush, warm L2 with unrelated data). 2) Build r0 variants as compile-time switches: loads in {ld.global.nc (current), EF via createpolicy.fractional.L2::evict_first + ld.global.L2::cache_hint.v8.f32, EF + L1::no_allocate}; stores in {EL (current), plain, EF}; plus read-only and write-only kernels. 3) Time every variant at 7.9, 31, 63, 126, 252 and 503 MB under DIRTY and CLEAN, interleaved, at least 5 repeats, report medians. 4) If ncu is installed and counters are permitted, collect dram__bytes_read.sum and dram__bytes_write.sum for r0 and for the EF-load variant under the DIRTY flush (--cache-control none --clock-control none --replay-mode application); report ERR_NVGPUCTRPERM if blocked. 5) Fit in-window DRAM bytes = reads + output write-back + flush write-back per size and state the flush write-back D in MB per size with its uncertainty. 6) For any policy that beats r0 by >=3% at M or L (and >=0 at S) run run_tests (16/16) and archive it as a candidate with its findings. Success: A load/store policy beating r0 by >=3% at 126-503 MB on the bench with 16/16 pass, or a traffic model giving D per size to within 10 MB together with the DIRTY-vs-CLEAN time delta. Refuted if: DIRTY and CLEAN times differ by <2% at every size and every load policy ties r0 within 1%: then H11 is refuted, H8 is supported, and the read cap is not the flush's write-backs. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s)."
+  },
+  {
+   "operation": "structural_mutation",
+   "parents": [
+    "r0-geglu-ldg256-2d-stel"
+   ],
+   "band": "L",
+   "niche": "exp:E2:H12",
+   "model": "opus",
+   "instructions": "Experiment E2 (tests H12): Read-side throughput at L: persistent 1-D bulk ring vs plain 256-bit one-shot. 1) First measure read-only ladders under the harness flush at 252 and 503 MB: r0's loads (1 chunk per thread, one-shot), 2 and 4 chunks per thread with every load issued before the first use and __launch_bounds__(128, 8) to keep <=64 regs, and a persistent grid of 148 x k CTAs looping over (row, x) tiles with the next tile's loads issued before the current compute. 2) Build the bulk-ring kernel (mem:bulk1d, st:direct): persistent 148 x k CTAs (k 4-8 by smem), each stage one 4 KB gate segment plus the matching 4 KB linear segment copied with cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes (optionally .L2::cache_hint EF), STAGES 4-8 so >=128 KB per SM is in flight, consumers read smem, compute GEGLU, and store 8 floats per thread with the existing st.global.L2::cache_hint EL 256-bit store; dynamic smem above 48 KB. Keep the 2-D one-shot r0 kernel for rows <= 2164 via dispatch on rows only (the ring is for L). 3) Compare full kernels at 126, 252 and 503 MB, interleaved, >=5 repeats; also check that the dispatch keeps S/M at r0's times. 4) run_tests on the best variant; record regs, smem, CTAs/SM and bytes in flight per SM in the card. Success: >=3% faster than r0 at 252-503 MB on the bench with 16/16 pass and no S/M regression. Refuted if: Every read-side variant (fat threads with loads issued first, pipelined persistent, bulk ring with >=128 KB/SM in flight) ties r0 within 1% at L: then in-flight bytes do not limit reads and H12 is refuted; L headroom rests on H11. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s)."
+  },
+  {
+   "operation": "specialisation",
+   "parents": [
+    "r0-geglu-ldg256-2d-stel"
+   ],
+   "band": "S",
+   "niche": "exp:E3:H6",
+   "model": "sonnet",
+   "instructions": "Experiment E3 (tests H6): S-band cost ladder and a lean one-wave small-size path. 1) Under the harness flush at 7.9 MB (and 31 MB), measure CUPTI spans for: an empty kernel with 1, 640 and 1280 CTAs; one CTA issuing a single 32 B load then a store (DRAM round trip as seen in the span); 148 CTAs each loading 4 KB; r0 read-only; r0 full. Write the ladder (launch/exit, CTA dispatch, first DRAM round trip, streaming, store drain) in the findings. 2) Build S-path variants selected by rows <= 512 only: (a) 64-thread CTAs (1280 CTAs); (b) 512-thread CTAs with 1 chunk per thread; (c) a one-wave grid of 148 x 4 CTAs (256 threads) where each thread issues ALL its loads (2 chunks, <=48 regs) before any compute; (d) the first-wave CTAs issue cp.async.bulk.prefetch.L2 for the whole input in 16-64 KB pieces (our own input only) before their normal loads, to test whether DRAM request issue is limited by CTA ramp; (e) a minimal-prologue variant: 32-bit address math, no createpolicy (plain stores) at S since EL gains 0 there. 3) Interleave >=7 repeats per variant, report medians; keep r0 for rows > 512; run_tests for 16/16. 4) State, for each variant, the predicted portal effect given H10 (the portal adds ~0.5 us of SM-clock-bound cost). Success: An S path >=5% (>=0.2 us) faster than r0 at 7.9-31 MB on the bench with 16/16 pass and no M/L change. Refuted if: No variant beats r0 by >2% at any S size: then the S time is the empty-kernel span plus one DRAM round trip plus streaming, H6 is parked, and S-band effort stops. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s)."
+  }
+ ],
+ "lead": {
+  "model": "fable",
+  "cost_usd": 3.053292
+ }
+}

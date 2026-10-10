@@ -1,0 +1,113 @@
+id: r1-geglu-bulkring-s3k8-l
+parents: [r0-geglu-ldg256-2d-stel]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H12: the L-band read cap (about 5.3 TB/s read-only after the dirty flush) comes from a bytes-in-flight limit
+  on the read side. A persistent 1-D bulk ring (148x8 CTAs, 3 stages of 4 KB gate + 4 KB linear, 192 KB in
+  flight per SM, one instruction per 4 KB) should lift L by at least 3%. Measured: refuted. On the rented B200
+  the ring is 7-10% slower than r0 at L (full kernel) and 3-5% slower read-only, at every depth tried. Fat threads
+  with all loads issued first tie r0. In-flight bytes do not limit the stream.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 8
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 24704
+  threads_per_cta: 128
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  STAGES: 3
+  CTAS_PER_SM: 8
+  SEG_FLOATS: 1024
+  THREADS: 128
+  RING_MIN_ROWS: 2165
+  STORE_HINT: evict_last
+dispatch:
+  - max_tokens: 2164
+    kernel: geglu_5120_kernel
+    meta:
+      grid: "(5, rows)"
+      threads: 128
+  - max_tokens: null
+    kernel: geglu_ring_kernel
+    meta:
+      grid: "148*8"
+      threads: 128
+      STAGES: 3
+tests: [H12]
+findings:
+  - "bulk ring, full kernel, strided tiles, 252/503 MB (r0 35.1/70.3-71.5 us): S4k6 38.3/77.6, S6k4 37.9-38.6/75.6-77.2, S8k3 38.5/77.8, S3k8 38.2/77.1, S2k12 38.2/77.4 us: 7-10% slower at every depth from 64 to 192 KB per SM [probe_b200]"
+  - "contiguous (blocked) tile assignment per CTA is worse than strided: S6k4 39.0/78.2, S3k8 38.9/78.6, S12k2 40.1/80.8 us at 252/503 MB [probe_b200]"
+  - "read-only ladder at 503 MB: r0 one-shot 63.5-63.7 us (5.27 TB/s of reads), ring S6k4 65.6-66.0, ring S3k8 66.1, 2 chunks/thread 63.9, 4 chunks/thread 63.9 us; no variant lifts the read cap [probe_b200]"
+  - "read-only at 252 MB: r0 33.4-33.5, ring 35.2-35.7, 2 chunks/thread 33.8, 4 chunks/thread 34.2 us [probe_b200]"
+  - "fat one-shot threads with all loads issued first and __launch_bounds__(128,8) (64 regs at 4 chunks), full kernel: 2 chunks 35.1/71.3 us, 4 chunks 35.6-36.2/71.1-72.2 vs r0 35.2/71.4 at 252/503 MB: tie within 1% [probe_b200]"
+  - "persistent register-prefetch kernel (148x8 CTAs, next tile's 256-bit loads issued before the current compute): 36.5/75.9 us vs r0 35.1/70.3, 4-8% slower [probe_b200]"
+  - "EF policy on the bulk copies (.L2::cache_hint evict_first) with EL stores: 38.5/76.1 vs 37.9/77.1 us without; no gain [probe_b200]"
+  - "at 126 MB (2048 rows) the ring is 8% slower too (20.2-20.5 vs 18.8 us); read-only ring 19.0-19.5 vs r0 read-only 18.1 [probe_b200]"
+  - "the ring costs about 2 us over r0 read-only but about 6 us on the full kernel at 503 MB: persistence hurts the interplay of evict_last stores and reads more than the reads themselves [probe_b200]"
+  - "run_tests: 16/16 pass; S +0.1%, M -0.5% (unchanged r0 path), L +7.6..+8.5% (ring); emulator 0.661 vs 0.674 [run_tests]"
+  - "H12 refuted on the rented B200: the read cap is not an in-flight-bytes limit; L headroom rests on H11 (dirty-flush write-backs) [probe_b200]"
+paths:
+  - max_tokens: 2164
+    lang: cuda
+    width: 256
+    threads: 128
+    rows: 1
+    grid: oneshot
+    mem: ldg
+    x: none
+    st: el
+    launches: 1
+  - max_tokens: null
+    lang: cuda
+    width: 256
+    threads: 128
+    rows: 1
+    grid: persistent
+    mem: tma
+    prefetch: true
+    x: none
+    st: el
+    launches: 1
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "256-bit ld/st and st.L2::cache_hint .v8 need sm_100"
+  A100:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX; no bulk copies"
+  L40S:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX"
+risks:
+  - "Measured 8% slower than r0 at L on the rented B200; not worth a portal slot except as a deliberate negative control"
+  - "Persistent grid sized from cudaDevAttrMultiProcessorCount (148 on B200); 8 CTAs/SM fits by smem (8 x 25.7 KB) and regs (32)"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

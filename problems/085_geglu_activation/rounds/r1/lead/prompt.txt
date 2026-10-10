@@ -1,0 +1,121 @@
+=== TASK ===
+Round r1: update the hypothesis ledger and design 3 experiments.
+
+=== PROBLEM ===
+L1/085_geglu_activation: 16 workloads, variable axes ['batch_size', 'seq_len']; bands by size: S <= 31.5 MB < M <= 133.0 MB < L
+             1,128       7.86 MB  band S
+             1,131       8.05 MB  band S
+             2,211      25.93 MB  band S
+             1,512      31.46 MB  band S
+             4,128      31.46 MB  band S
+            1,1024      62.91 MB  band M
+             2,512      62.91 MB  band M
+            1,2048     125.83 MB  band M
+             8,256     125.83 MB  band M
+             4,541     132.96 MB  band M
+            16,256     251.66 MB  band L
+            4,1024     251.66 MB  band L
+            32,128     251.66 MB  band L
+             8,613     301.30 MB  band L
+            16,449     441.38 MB  band L
+            8,1024     503.32 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/085_geglu_activation/ledger.yaml) ===
+# Hypothesis ledger for #85 geglu_activation. Seeded 10 October 2026 by the research phase.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+hypotheses:
+- id: H1
+  statement: evict_last on output stores cuts in-window write-backs of the flush's dirty L2 lines, so M and L sizes gain 6-13%.
+  status: supported
+  evidence:
+  - 'probe r0 (rented B200): EL vs plain stores: 63 MB 10.98 vs 11.97 us, 126 MB 18.74 vs 21.64, 252 MB 35.35 vs 40.00, 503 MB 71.55 vs 76.07; S unchanged'
+  - 'same mechanism as #38 H1; portal confirmation pending'
+- id: H2
+  statement: One 8-float chunk per thread in small one-shot CTAs is faster than fatter threads; the one-shot grid needs no persistence.
+  status: supported
+  evidence:
+  - 'probe r0: 2 chunks/thread +1..5%, 4 chunks/thread +3..10% (82 regs); block 128/256/512 within 1%'
+- id: H3
+  statement: The sigmoid form (a*b/(1+exp(-2u)), __expf + __fdividef) is both within tolerance and faster than tanhf.
+  status: supported
+  evidence:
+  - 'probe r0: max abs err 1.9e-6, zero elements out of tolerance at 128/2048 rows; tanhf variant 3-10% slower'
+- id: H4
+  statement: The 2-D grid (5 CTAs x rows, no integer division, no bounds checks) beats the 1-D grid at S by about 2% and ties at L.
+  status: supported
+  evidence:
+  - 'probe r0: 7.9 MB 3.73 vs 3.81 us, 31 MB 6.79 vs 6.94, 126 MB 18.66 vs 18.69, 503 MB 71.56 vs 71.60'
+- id: H5
+  statement: At the portal's locked 1500 MHz the GELU maths (2 MUFU per element, ~37% of MUFU capacity) becomes visible; a 1-MUFU formulation would gain 1-3% at M/L.
+  status: open
+  evidence:
+  - 'probe r0 (1965 MHz): copy-only kernel (no GELU) times equal to the full kernel at every size, so compute is hidden at the rented clock'
+  - 'needs a portal pair: r0 vs a 1-MUFU variant'
+- id: H6
+  statement: The S-band fixed cost (~2.7 us above the byte floor at 7.9 MB) can be reduced below the current level by a dedicated small-size path.
+  status: open
+  evidence:
+  - 'probe r0: empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB'
+  - '#38 experience: launch params moved the empty span < 0.03 us; most of the remainder is DRAM latency + dirty flush cost'
+- id: H7
+  statement: 'The harness''s dirty L2 (zero-fill flush) costs reads: a read-only kernel reaches only 5.3 TB/s at 503 MB while read+write reaches 7.0 TB/s.'
+  status: supported
+  evidence:
+  - 'probe r0: read-only 62.95 us vs full 71.6 us at 503 MB (335 MB read)'
+  - 'no legitimate kernel-side mitigation known (#38 H7/H8)'
+- id: H8
+  statement: Load hints (.nc, evict_first, L1::no_allocate) do not matter for this once-read stream.
+  status: open
+  evidence:
+  - 'probe r0: ld.global.nc vs plain ld.global: identical at every size'
+  - 'evict_first on loads untested here; #38 H2: hurt L by ~2%'
+- id: H9
+  statement: Tsol for this problem sits below the bytes/8 TB/s floor at M/L, as on #38, so score 1.0 is unreachable and relative speed-ups are worth the same in every band.
+  status: open
+  evidence:
+  - 'awaiting first portal result'
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-geglu-ldg256-2d-stel] evict_last stores vs plain: -8% at 63 MB, -13% at 126 MB, -12% at 252 MB, -6% at 503 MB, 0 at S [probe_b200]
+- [r0-geglu-ldg256-2d-stel] 1 chunk (8 floats) per thread best; 2 chunks +1..5%, 4 chunks +3..10% with 82 regs [probe_b200]
+- [r0-geglu-ldg256-2d-stel] CTA size 128/256/512 within 1%; 2-D grid without division -2% at S vs 1-D grid, equal at L [probe_b200]
+- [r0-geglu-ldg256-2d-stel] sigmoid form (__expf + __fdividef) max abs err 1.9e-6, zero elements out of 1e-5 tolerance; tanhf form 3-10% slower [probe_b200]
+- [r0-geglu-ldg256-2d-stel] copy-only kernel (no GELU) equals the full kernel at every size at 1965 MHz: compute hidden on the rented clock [probe_b200]
+- [r0-geglu-ldg256-2d-stel] ld.global.nc vs plain loads: identical [probe_b200]
+- [r0-geglu-ldg256-2d-stel] empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB; read-only reaches only 5.3 TB/s at 503 MB vs 7.0 read+write [probe_b200]
+- [r0-geglu-ldg256-2d-stel] run_tests: 16/16 pass, 0.69-0.95x plain copy time; 7.0-7.2 TB/s at L, 5.8-6.8 at M, 2.2-4.6 at S [run_tests]
+
+=== PORTAL RESULTS (best first) ===
+- r0-geglu-ldg256-2d-stel: portal 0.6742, S/M/L 5.9/16.1/45.8 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (1,128) | middle (8,256) | largest (8,1024) |
+|---|---|---|---|
+| x: ef | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| w: nc | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| w: el | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| st: ef | -0.0% ± 4.3 | -0.0% ± 4.4 | -0.0% ± 4.4 |
+| st: none (vs el) | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| width 128 | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| threads 512, rows 32 | -0.0% ± 4.3 | -0.0% ± 4.4 | -0.0% ± 4.4 |
+| threads 128, rows 8 | -0.0% ± 4.3 | -0.0% ± 4.4 | -0.0% ± 4.4 |
+| grid persistent | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| prefetch L2 | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| mem tma | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| lang triton | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+| lang cute | -0.0% ± 4.3 | -0.0% ± 4.3 | -0.0% ± 4.4 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-geglu-ldg256-2d-stel | ldg256/oneshot/all | cuda_cpp | 5.2/15.2/44.8 | -/-/- | -/-/- | -/-/- | 5.9/16.1/45.8 | 0.674219 | 30/0/None; 32/0/None | passed |

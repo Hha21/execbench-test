@@ -1,0 +1,61 @@
+id: r1-geglu-s-lean32
+parents: [r0-geglu-ldg256-2d-stel]
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  A lean S-band path (rows <= 512) could cut the roughly 2.7 us fixed cost above the byte floor. The bench showed no
+  variant helps: the S time is the empty-kernel span plus one DRAM round trip plus streaming plus the harness's
+  dirty-L2 write-backs. The returned S path only drops 64-bit address math and is a tie with r0. H6 is refuted on
+  the bench; the portal could still differ by the H10 clock-bound cost, but a 32-bit offset saves only a few
+  instructions.
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS: 128, CTAS_PER_ROW: 5, S_MAX_ROWS: 512, STORE_HINT: evict_last}
+tests: [H6]
+findings:
+  - "ladder, 7.9 MB (128 rows), empty kernel span: 1 CTA 1.46, 640 CTAs 1.46, 1280 x 64-thread CTAs 1.57 us. CTA count barely matters [probe_b200]"
+  - "ladder: one thread, one 32 B load, conditional store: 2.05 us (round trip +0.5 over empty); store alone 1.63 (+0.15); load then store 2.08 [probe_b200]"
+  - "ladder: 148 CTAs x 4 KB read-only 2.34 us; r0 read-only (5.2 MB read) 3.4 us; r0 full 3.7-3.8 us [probe_b200]"
+  - "ladder, 7.9 MB: launch/exit ~1.5, first DRAM round trip ~0.5, CTA ramp for 640 CTAs ~0.3, streaming 5.2 MB read ~1.1-1.4 (byte floor 0.65, so reads cost about 2x floor, consistent with write-back of the flush's dirty lines evicted by our read allocations), compute+store drain ~0.35 [probe_b200]"
+  - "ladder at 512 rows: empty 1.46, r0 6.91, read-only 6.46, copy+EL 6.85, copy+plain store 7.23, math+plain store 7.33; at 1024 rows: r0 10.95, read-only 10.24, copy+plain 11.86 [probe_b200]"
+  - "variants, medians of 9 interleaved repeats, us at 128/422/512 rows: r0 3.71/6.30/6.80; (a) 64-thread CTAs 3.74/6.27/6.77; (b) 512-thread 1-D 3.78/6.30/6.82; (c) 148x4 CTAs of 256 threads, 2 chunks per thread, all loads first 3.94/6.63/7.07; (d) cp.async.bulk.prefetch.L2 in 20 KB pieces 3.71/6.34/6.98, in 64 KB pieces 3.78/6.32/7.01, in 16 KB pieces 3.73/6.34/6.85; (e) 32-bit math plus plain stores 3.79/6.63/7.13; 32-bit math plus evict_last 3.68/6.32/6.77 [probe_b200]"
+  - "evict_last stores are not free at S either: plain stores cost +0.3 us at 422 and 512 rows (about 5%); the earlier 'EL gains 0 at S' held only at 128 rows [probe_b200]"
+  - "dead end: L2 prefetch of the whole input by the first-wave CTAs does not help, so DRAM request issue is not limited by CTA ramp [probe_b200]"
+  - "dead end: fatter threads (2 chunks, 256-thread CTAs, one wave) are 3-5% slower at S [probe_b200]"
+  - "run_tests: 16/16 pass; vs r0 on the same GPU S +0.1%, M +0.0%, L +0.1% (noise); predicted portal 0.6749 vs 0.6742 [run_tests]"
+  - "portal prediction under H10 (+0.5 us clock-bound cost): every variant has the same launch/exit and address chain length to within a few instructions, so none is expected to move the portal S times by more than noise; S-band effort should stop [INFERRED]"
+paths:
+  - {max_tokens: 512, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st and L2::cache_hint on st need sm_100"}
+  A100: {runs: false, representative: false, note: "sm_100-only PTX"}
+  L40S: {runs: false, representative: false, note: "sm_100-only PTX"}
+risks:
+  - "No expected gain: it is r0 within noise, so no portal slot is worth spending on it"
+  - "Prefetch variant (d) uses cp.async.bulk.prefetch.L2 on our own input only; it is not in the returned kernel"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

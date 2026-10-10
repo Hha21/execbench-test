@@ -1,0 +1,308 @@
+=== TASK ===
+Round: r1   Operation: structural_mutation
+Problem: L1/085_geglu_activation   Target niche: exp:E2:H12   Target band: L
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r1-'.
+Experiment E2 (tests H12): Read-side throughput at L: persistent 1-D bulk ring vs plain 256-bit one-shot. 1) First measure read-only ladders under the harness flush at 252 and 503 MB: r0's loads (1 chunk per thread, one-shot), 2 and 4 chunks per thread with every load issued before the first use and __launch_bounds__(128, 8) to keep <=64 regs, and a persistent grid of 148 x k CTAs looping over (row, x) tiles with the next tile's loads issued before the current compute. 2) Build the bulk-ring kernel (mem:bulk1d, st:direct): persistent 148 x k CTAs (k 4-8 by smem), each stage one 4 KB gate segment plus the matching 4 KB linear segment copied with cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes (optionally .L2::cache_hint EF), STAGES 4-8 so >=128 KB per SM is in flight, consumers read smem, compute GEGLU, and store 8 floats per thread with the existing st.global.L2::cache_hint EL 256-bit store; dynamic smem above 48 KB. Keep the 2-D one-shot r0 kernel for rows <= 2164 via dispatch on rows only (the ring is for L). 3) Compare full kernels at 126, 252 and 503 MB, interleaved, >=5 repeats; also check that the dispatch keeps S/M at r0's times. 4) run_tests on the best variant; record regs, smem, CTAs/SM and bytes in flight per SM in the card. Success: >=3% faster than r0 at 252-503 MB on the bench with 16/16 pass and no S/M regression. Refuted if: Every read-side variant (fat threads with loads issued first, pipelined persistent, bulk ring with >=128 KB/SM in flight) ties r0 within 1% at L: then in-flight bytes do not limit reads and H12 is refuted; L headroom rests on H11. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-geglu-ldg256-2d-stel | ldg256/oneshot/all | cuda_cpp | 5.2/15.2/44.8 | -/-/- | -/-/- | -/-/- | 5.9/16.1/45.8 | 0.674219 | 30/0/None; 32/0/None | passed |
+B200 results so far:
+- r0-geglu-ldg256-2d-stel: B200 score 0.674, geomean 17.4 µs, B200 S/M/L 5.9/16.1/45.8 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #85 geglu_activation. Seeded 10 October 2026 by the research phase; r1 update 10 October 2026.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+- 'L2 prefetch (cp.async.bulk.prefetch.L2) only on the current call''s own inputs, inside our kernel.'
+hypotheses:
+- id: H1
+  statement: evict_last on output stores cuts in-window write-backs of the flush's dirty L2 lines, so M and L sizes gain 6-13%.
+  status: supported
+  evidence:
+  - 'probe r0 (rented B200): EL vs plain stores: 63 MB 10.98 vs 11.97 us, 126 MB 18.74 vs 21.64, 252 MB 35.35 vs 40.00, 503 MB 71.55 vs 76.07; S unchanged'
+  - 'same mechanism as #38 H1'
+  - 'portal r0 (0.6742): M/L times equal rented times + 0.5-0.9 us, so the EL gain carries to the portal; no portal pair yet'
+- id: H2
+  statement: One 8-float chunk per thread in small one-shot CTAs is faster than fatter threads; the one-shot grid needs no persistence.
+  status: supported
+  evidence:
+  - 'probe r0: 2 chunks/thread +1..5%, 4 chunks/thread +3..10% (82 regs); block 128/256/512 within 1%'
+  - 'caveat: the fat-thread variants were one-shot with high register counts; a pipelined persistent variant with all loads issued first is untested (H12)'
+- id: H3
+  statement: The sigmoid form (a*b/(1+exp(-2u)), __expf + __fdividef) is both within tolerance and faster than tanhf.
+  status: supported
+  evidence:
+  - 'probe r0: max abs err 1.9e-6, zero elements out of tolerance at 128/2048 rows; tanhf variant 3-10% slower'
+  - 'portal r0: 16/16 pass'
+- id: H4
+  statement: The 2-D grid (5 CTAs x rows, no integer division, no bounds checks) beats the 1-D grid at S by about 2% and ties at L.
+  status: supported
+  evidence:
+  - 'probe r0: 7.9 MB 3.73 vs 3.81 us, 31 MB 6.79 vs 6.94, 126 MB 18.66 vs 18.69, 503 MB 71.56 vs 71.60'
+- id: H5
+  statement: At the portal's locked 1500 MHz the GELU maths (2 MUFU per element, ~37% of MUFU capacity) becomes visible; a 1-MUFU formulation would gain 1-3% at M/L.
+  status: refuted
+  evidence:
+  - 'probe r0 (1965 MHz): copy-only kernel (no GELU) times equal to the full kernel at every size'
+  - 'portal r0 vs rented: 503 MB 72.2 vs 71.7 us (+0.7%), 252 MB 36.0 vs 35.1, 126 MB 19.5 vs 18.6, 7.9 MB 4.1 vs 3.6: the portal adds a constant 0.5-0.9 us, not a per-byte cost, so compute is hidden at 1500 MHz. A 1-MUFU variant is not worth a slot.'
+- id: H6
+  statement: The S-band fixed cost (~2.7 us above the byte floor at 7.9 MB on the rented B200, ~3.1 us on the portal) can be reduced by a dedicated small-size path.
+  status: open
+  evidence:
+  - 'probe r0: empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB'
+  - 'portal r0: 4.1 us at 7.9 MB, 4.2 at 8.05 MB, 6.8 at 26 MB, 7.7 at 31 MB; Tsol ~0.9 us; S scores 0.79-0.82'
+  - 'score model: 0.5 us off every size = +0.011; 10% at S alone = +0.007'
+  - '#38 experience: launch params moved the empty span < 0.03 us; most of the remainder is DRAM latency + dirty flush cost'
+  - 'r1 E3 builds the cost ladder (dispatch, first DRAM round trip, streaming, exit) and tries lean one-wave S paths'
+- id: H7
+  statement: 'The harness''s dirty L2 (zero-fill flush) costs reads: a read-only kernel reaches only 5.3 TB/s at 503 MB while read+write reaches 7.0 TB/s.'
+  status: supported
+  evidence:
+  - 'probe r0: read-only 62.95 us vs full 71.6 us at 503 MB (335 MB read)'
+  - 'rented r0 marginal bandwidth: 63->126 MB adds 42 MB of reads (outputs retained in L2 by EL) in 7.8 us = 5.4 TB/s, the same cap; 252->503 MB adds 168 MB reads + 84 MB write-back in 36.6 us = 6.9 TB/s'
+  - 'mechanism unproven: could be flush write-backs triggered by our read allocations (H11) or a bytes-in-flight limit on reads (H12); r1 E1 separates them with clean-flush vs dirty-flush timing and DRAM byte counters'
+- id: H8
+  statement: Load hints (.nc, evict_first, L1::no_allocate) do not matter for this once-read stream.
+  status: open
+  evidence:
+  - 'probe r0: ld.global.nc vs plain ld.global: identical at every size'
+  - 'evict_first on loads untested on B200 for this problem; #38 H2 (A100): hurt L by ~2%; CAKE kept EF on streamed loads in paired B200 tests'
+  - 'r1 E1 tests EF loads via L2::cache_hint together with EL stores'
+- id: H9
+  statement: Tsol for this problem sits below the bytes/8 TB/s floor, so score 1.0 is unreachable and only relative speed-ups matter.
+  status: supported
+  evidence:
+  - 'portal r0 derived Tsol (from S, t, Tb): 0.9 us at 7.9 MB (floor8 0.98), 2.1 at 26 MB (3.24), 2.5 at 31 MB (3.93), 4.5 at 63 MB (7.86), 29 at 441 MB (55.2), 33 at 503 MB (62.9): 0.52-0.92x the byte floor'
+  - 'score derivative: ~0.05 per us at 7.9 MB, ~0.0064 per us at 503 MB (per workload)'
+- id: H10
+  statement: The portal (1500 MHz) adds a constant ~0.5-0.9 us to every workload relative to the rented B200 (1965 MHz); this is SM-clock-bound fixed cost (launch, dispatch, address chain, exit), not bandwidth.
+  status: supported
+  evidence:
+  - 'portal vs rented r0: +0.5 us at 7.9 MB, +0.7 at 31 MB, +1.0 at 63 MB, +0.9 at 126 MB, +0.9 at 252 MB, +0.5 at 503 MB'
+  - 'implies ~1.6 us of the rented 1.73 us empty-kernel span scales with SM clock; a leaner S path (fewer instructions before the first load, after the last store) is the only kernel-side lever (E3)'
+- id: H11
+  statement: evict_first on the input loads (createpolicy + ld.global.L2::cache_hint) makes later reads evict our own clean read lines instead of the flush's dirty lines, removing in-window write-backs and lifting the 5.4 TB/s read cap at M/L.
+  status: open
+  evidence:
+  - 'no measurement yet; derived from the H1 mechanism and the M-band marginal bandwidth'
+  - 'r1 E1: dirty vs clean flush, load/store policy matrix, DRAM byte counters if ncu is permitted'
+- id: H12
+  statement: The read cap is a bytes-in-flight limit at the read side (one-shot CTAs ramping/draining), and a persistent 1-D bulk ring with >=128 KB in flight per SM and few instructions lifts L by >=3%.
+  status: open
+  evidence:
+  - 'r0 holds ~131 KB/SM in flight at full occupancy in theory, but each CTA lives one round trip; public 1:1 streams cap at 7.05-7.1 TB/s'
+  - 'CAKE: pipelined persistent grids 0.96-1.00x one-shot at large sizes (#38 context), so expect at most a few %'
+  - 'r1 E2 tests it'
+- id: H13
+  statement: 'Tb is erratic per workload (same 126 MB: 31.2 vs 22.6 us; 63 MB Tb 45.3 > 126 MB Tb 22.6) and only 5-10% above us at L, so L scores stay near 0.52-0.55 unless L gains >=10%; S workloads already score ~0.80.'
+  status: supported
+  evidence:
+  - 'portal r0 page: Tb 13.4/13.4/22.5/25.9/26.0 (S), 45.3/45.3/31.2/22.6/23.6 (M), 40.6/40.8/40.8/47.5/67.5/75.8 (L)'
+  - 'score model: 10% at L = +0.020, M = +0.011, S = +0.007'
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-geglu-ldg256-2d-stel] evict_last stores vs plain: -8% at 63 MB, -13% at 126 MB, -12% at 252 MB, -6% at 503 MB, 0 at S [probe_b200]
+- [r0-geglu-ldg256-2d-stel] 1 chunk (8 floats) per thread best; 2 chunks +1..5%, 4 chunks +3..10% with 82 regs [probe_b200]
+- [r0-geglu-ldg256-2d-stel] CTA size 128/256/512 within 1%; 2-D grid without division -2% at S vs 1-D grid, equal at L [probe_b200]
+- [r0-geglu-ldg256-2d-stel] sigmoid form (__expf + __fdividef) max abs err 1.9e-6, zero elements out of 1e-5 tolerance; tanhf form 3-10% slower [probe_b200]
+- [r0-geglu-ldg256-2d-stel] copy-only kernel (no GELU) equals the full kernel at every size at 1965 MHz: compute hidden on the rented clock [probe_b200]
+- [r0-geglu-ldg256-2d-stel] ld.global.nc vs plain loads: identical [probe_b200]
+- [r0-geglu-ldg256-2d-stel] empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB; read-only reaches only 5.3 TB/s at 503 MB vs 7.0 read+write [probe_b200]
+- [r0-geglu-ldg256-2d-stel] run_tests: 16/16 pass, 0.69-0.95x plain copy time; 7.0-7.2 TB/s at L, 5.8-6.8 at M, 2.2-4.6 at S [run_tests]
+
+=== PARENTS ===
+--- parent r0-geglu-ldg256-2d-stel ---
+design card:
+id: r0-geglu-ldg256-2d-stel
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: default
+  spec: all
+hypothesis: >-
+  A pure one-pass elementwise stream: one launch, a 2-D grid of 5 CTAs per row with 128 threads, each thread two
+  256-bit loads (gate, linear) and one 256-bit store under L2 evict_last, GELU computed as a*sigmoid(2u) with one
+  exp and one reciprocal. Evict_last stores cut the in-window write-back of the harness's dirty L2 lines, which is
+  what separates this from a plain copy at M/L.
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS: 128, CTAS_PER_ROW: 5, FLOATS_PER_THREAD: 8, STORE_HINT: evict_last}
+tests: [H1, H2, H3, H4]
+findings:
+  - "evict_last stores vs plain: -8% at 63 MB, -13% at 126 MB, -12% at 252 MB, -6% at 503 MB, 0 at S [probe_b200]"
+  - "1 chunk (8 floats) per thread best; 2 chunks +1..5%, 4 chunks +3..10% with 82 regs [probe_b200]"
+  - "CTA size 128/256/512 within 1%; 2-D grid without division -2% at S vs 1-D grid, equal at L [probe_b200]"
+  - "sigmoid form (__expf + __fdividef) max abs err 1.9e-6, zero elements out of 1e-5 tolerance; tanhf form 3-10% slower [probe_b200]"
+  - "copy-only kernel (no GELU) equals the full kernel at every size at 1965 MHz: compute hidden on the rented clock [probe_b200]"
+  - "ld.global.nc vs plain loads: identical [probe_b200]"
+  - "empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB; read-only reaches only 5.3 TB/s at 503 MB vs 7.0 read+write [probe_b200]"
+  - "run_tests: 16/16 pass, 0.69-0.95x plain copy time; 7.0-7.2 TB/s at L, 5.8-6.8 at M, 2.2-4.6 at S [run_tests]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st and L2::cache_hint on st need sm_100; would need a 128-bit fallback"}
+  A100: {runs: false, representative: false, note: "sm_100-only PTX"}
+  L40S: {runs: false, representative: false, note: "sm_100-only PTX"}
+risks:
+  - "At the portal's 1500 MHz the 2 MUFU per element (37% of MUFU capacity) may become visible at M/L (H5)"
+  - "gridDim.y limit 65535 rows: larger inputs fall back to the scalar generic kernel (never hit by the 16 workloads)"
+  - "Tb and Tsol unknown until the first portal result"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 5.2/15.2/44.8
+B200 portal: score 0.674219, geomean 17.381 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=1, seq_len=128 | 4.1 | 13.4 | 0.796 |
+| batch_size=1, seq_len=131 | 4.2 | 13.4 | 0.792 |
+| batch_size=2, seq_len=211 | 6.8 | 22.5 | 0.813 |
+| batch_size=1, seq_len=512 | 7.7 | 25.9 | 0.818 |
+| batch_size=4, seq_len=128 | 7.7 | 26.0 | 0.818 |
+| batch_size=1, seq_len=1024 | 11.8 | 45.3 | 0.849 |
+| batch_size=2, seq_len=512 | 11.8 | 45.3 | 0.848 |
+| batch_size=1, seq_len=2048 | 19.5 | 31.2 | 0.674 |
+| batch_size=8, seq_len=256 | 19.5 | 22.6 | 0.561 |
+| batch_size=4, seq_len=541 | 20.5 | 23.6 | 0.559 |
+| batch_size=16, seq_len=256 | 36.0 | 40.6 | 0.553 |
+| batch_size=4, seq_len=1024 | 36.0 | 40.8 | 0.556 |
+| batch_size=32, seq_len=128 | 36.1 | 40.8 | 0.555 |
+| batch_size=8, seq_len=613 | 43.0 | 47.5 | 0.544 |
+| batch_size=16, seq_len=449 | 63.4 | 67.5 | 0.528 |
+| batch_size=8, seq_len=1024 | 72.2 | 75.8 | 0.522 |
+sm_100a static features: [{"kernel": "_Z20geglu_generic_kernelPKfPfxi", "num_warps": null, "regs": 30, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 10, "STG": 5, "LDG.CONSTANT.256": 2, "STG.256": 1}}, {"kernel": "_Z17geglu_5120_kernelPKfPf", "num_warps": null, "regs": 32, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 10, "STG": 5, "LDG.CONSTANT.256": 2, "STG.256": 1}}]
+source:
+--- file kernel.cu ---
+// GEGLU: out[r, j] = gelu_tanh(x[r, j]) * x[r, INNER + j], fp32, rows of 2*INNER.
+// One fused one-shot launch. Each thread handles 8 consecutive outputs: two 256-bit loads
+// (gate half, linear half) and one 256-bit store with an L2 evict_last policy.
+// gelu_tanh(a) = 0.5*a*(1+tanh(u)) = a * sigmoid(2u), u = sqrt(2/pi)*(a + 0.044715 a^3).
+#include <cuda_runtime.h>
+#include <stdint.h>
+
+#define INNER 5120
+#define THREADS 128
+#define CTAS_PER_ROW (INNER / (THREADS * 8))  // 5
+
+__device__ __forceinline__ void ld8(const float* p, float* v) {
+  asm volatile("ld.global.nc.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];"
+               : "=f"(v[0]), "=f"(v[1]), "=f"(v[2]), "=f"(v[3]), "=f"(v[4]), "=f"(v[5]), "=f"(v[6]), "=f"(v[7])
+               : "l"(p));
+}
+
+__device__ __forceinline__ void st8_el(float* q, const float* v, unsigned long long pol) {
+  asm volatile("st.global.L2::cache_hint.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8}, %9;" ::"l"(q), "f"(v[0]), "f"(v[1]),
+               "f"(v[2]), "f"(v[3]), "f"(v[4]), "f"(v[5]), "f"(v[6]), "f"(v[7]), "l"(pol)
+               : "memory");
+}
+
+__device__ __forceinline__ float geglu(float a, float b) {
+  // 2*sqrt(2/pi) = 1.5957691216057308
+  float u2 = 1.5957691216057308f * (a + 0.044715f * a * a * a);
+  float e = __expf(-u2);                     // ex2.approx based, ~2 ulp
+  return a * b * __fdividef(1.f, 1.f + e);   // a * b * sigmoid(2u)
+}
+
+// Fast path: inner == 5120. grid = (5, rows), 128 threads, 8 floats per thread.
+__global__ void __launch_bounds__(THREADS) geglu_5120_kernel(const float* __restrict__ x, float* __restrict__ y) {
+  const long long row = blockIdx.y;
+  const int col = (blockIdx.x * THREADS + threadIdx.x) * 8;
+  const float* g = x + row * (2 * INNER) + col;
+  float gv[8], lv[8], ov[8];
+  ld8(g, gv);
+  ld8(g + INNER, lv);
+  unsigned long long pol;
+  asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(pol));
+#pragma unroll
+  for (int i = 0; i < 8; ++i) ov[i] = geglu(gv[i], lv[i]);
+  st8_el(y + row * INNER + col, ov, pol);
+}
+
+// Generic fallback (any inner, any alignment, rows > 65535): one output element per thread.
+__global__ void geglu_generic_kernel(const float* __restrict__ x, float* __restrict__ y, long long rows, int inner) {
+  long long n = rows * inner;
+  for (long long i = (long long)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (long long)gridDim.x * blockDim.x) {
+    long long r = i / inner;
+    int c = (int)(i - r * inner);
+    float a = x[r * (2LL * inner) + c];
+    float b = x[r * (2LL * inner) + inner + c];
+    float u = 0.7978845608028654f * (a + 0.044715f * a * a * a);
+    y[i] = 0.5f * a * (1.f + tanhf(u)) * b;
+  }
+}
+
+extern "C" void geglu_launch(const float* x, float* y, long long rows, int inner, cudaStream_t stream) {
+  bool fast = (inner == INNER) && rows <= 65535 && ((((uintptr_t)x) & 31) == 0) && ((((uintptr_t)y) & 31) == 0);
+  if (fast) {
+    dim3 grid(CTAS_PER_ROW, (unsigned)rows);
+    geglu_5120_kernel<<<grid, THREADS, 0, stream>>>(x, y);
+  } else {
+    long long n = rows * inner;
+    long long blocks = (n + 255) / 256;
+    if (blocks > 1048576) blocks = 1048576;
+    geglu_generic_kernel<<<(unsigned)blocks, 256, 0, stream>>>(x, y, rows, inner);
+  }
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" void geglu_launch(const float* x, float* y, long long rows, int inner, cudaStream_t stream);
+
+void run(torch::Tensor x, torch::Tensor output) {
+  TORCH_CHECK(x.is_cuda() && output.is_cuda(), "tensors must be CUDA");
+  TORCH_CHECK(x.scalar_type() == torch::kFloat32 && output.scalar_type() == torch::kFloat32, "fp32 only");
+  TORCH_CHECK(x.is_contiguous() && output.is_contiguous(), "contiguous tensors required");
+  TORCH_CHECK(x.dim() >= 1, "x must have at least one dim");
+  const int64_t in_dim = x.size(-1);
+  TORCH_CHECK(in_dim % 2 == 0, "last dim must be even");
+  const int64_t inner = in_dim / 2;
+  TORCH_CHECK(output.size(-1) == inner, "output last dim mismatch");
+  const int64_t rows = x.numel() / in_dim;
+  TORCH_CHECK(output.numel() == rows * inner, "output numel mismatch");
+  const c10::cuda::OptionalCUDAGuard guard(x.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  geglu_launch(x.data_ptr<float>(), output.data_ptr<float>(), (long long)rows, (int)inner, stream);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "GEGLU fused (DPS)"); }
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

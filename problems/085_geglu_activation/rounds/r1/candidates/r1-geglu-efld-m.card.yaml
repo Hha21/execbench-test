@@ -1,0 +1,90 @@
+id: r1-geglu-efld-m
+parents: [r0-geglu-ldg256-2d-stel]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The harness's zero-fill flush leaves about 64 MB of dirty lines in L2. With default-priority loads,
+  read misses evict those dirty lines and force write-backs inside the timed window. L2::evict_first on
+  the input loads makes read misses evict our own clean input lines instead. ncu at 63 MB: write-back
+  20 -> 11 MB; at 126 MB: 35 -> 24 MB. That saves 3-7% at M. At >= 252 MB the outputs exceed L2's
+  dirty capacity (about 80 MB) whatever the policy, so L keeps r0's loads. Shape-only dispatch at
+  3072 rows; one kernel per call.
+expected_effect:
+  S:
+    pct: -1
+    confidence: low
+  M:
+    pct: -5
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  THREADS: 128
+  CTAS_PER_ROW: 5
+  FLOATS_PER_THREAD: 8
+  EF_MAX_ROWS: 3072
+  LOAD_HINT_SMALL: "ld.global.nc.L1::no_allocate.L2::evict_first.v8.f32"
+  LOAD_HINT_LARGE: "ld.global.nc.v8.f32"
+  STORE_HINT: evict_last
+dispatch:
+  - {max_tokens: 3072, kernel: geglu_5120_kernel<true>, meta: {x: ef, st: el}}
+  - {max_tokens: null, kernel: geglu_5120_kernel<false>, meta: {x: none, st: el}}
+tests: [H11, H8, H7]
+findings:
+  - "run_tests 16/16 vs r0 on the same B200: M -5.6% (1,1024 -7.5%, 2,512 -7.2%, 8,256 -6.8%, 1,2048 -3.5%, 4,541 -3.1%), S -1.2%, L -0.1% [run_tests]"
+  - "bench reproducing timing.py exactly (input copy, output zero, cudaCtxResetPersistingL2Cache, 252 MB zero_), 21 interleaved reps, CUPTI kernel span: EF loads vs r0 at 7.9/8.0/26/31/63/126/133/252/301/441/503 MB = +0.9/-1.8/-1.0/-3.6/-6.9/-5.2/-3.6/+1.3/+1.0/-0.4/-0.3%; EF+L1::no_allocate and the direct .L2::evict_first qualifier (no createpolicy) are within 1% of each other [probe_b200]"
+  - "DIRTY (harness flush) vs CLEAN (same flush + a read-only sum over another 252 MB, so L2 holds clean lines) for r0: 3.87/3.04, 6.62/5.82, 10.91/8.99, 18.72/15.87, 35.17/31.26, 71.52/62.37 us at 7.9/31/63/126/252/503 MB: the dirty flush costs 0.8-9.2 us (13-27%) at every size, including S [probe_b200]"
+  - "ncu is permitted on the rented B200 (no ERR_NVGPUCTRPERM; --cache-control none --clock-control none). In-window DRAM reads always equal the input bytes exactly; the whole dirty-flush penalty is writes [probe_b200 ncu]"
+  - "ncu in-window DRAM writes (MB) at 7.9/31/63/126/252/503 MB: r0 DIRTY 1.9/9.5/20.2/34.9/69.1/155.5, r0 CLEAN 0.1/0.2/0.2/7.3/39.4/100.9; EF-load DIRTY 4.6/7.2/10.8/24.4/65.4/149.1, EF-load CLEAN 0.1/0.2/0.2/0.3/6.7/86.6 [probe_b200 ncu, single sample each]"
+  - "flush write-back D per size (read-only kernel, DIRTY, all writes are flush lines): 3.3/7.1/14.4/30.3/58.4/63.7 MB; for r0 (DIRTY minus CLEAN writes) 1.8/9.3/20.0/27.6/29.7/54.6 MB; single ncu samples, uncertainty unmeasured (estimate +-3 MB) [probe_b200 ncu]"
+  - "traffic model that fits: in-window writes ~= max(0, our outputs + ~64 MB flush-dirty - ~80 MB L2 dirty retention); CLEAN retention plateaus at 77-81 MB of our outputs, so L has no policy headroom left (r0 at 503 MB already 491 MB in 71.5 us = 6.9 TB/s) [probe_b200 ncu; INFERRED]"
+  - "read-only kernel: EF loads cut flush write-back 63.7 -> 12.1 MB at 503 MB and time 63.8 -> 56.0 us (-11%); -11% at 252 MB, -11% at 126 MB, -4% at 63 MB: H11 mechanism confirmed for reads [probe_b200]"
+  - "dead end: without the harness's cudaCtxResetPersistingL2Cache, evict_last store lines survive the 252 MB zero_ flush across calls and evict_last becomes slower than plain stores (503 MB 74.4 vs 71.4 us); with the reset, H1 reproduces (71.5 vs 75.9). Benches must call the reset [probe_b200]"
+  - "dead end: stores createpolicy.fractional evict_last/evict_unchanged 0.5 with EF loads: +0..+3.6% vs r0 [probe_b200]"
+  - "dead end: EF or plain stores lose to EL at every M/L size under the harness sequence (+5..+15%); EF loads do not rescue them [probe_b200]"
+  - "write-only kernel (168 MB EL stores) 23.4 us DIRTY vs 22.8 CLEAN: stores barely feel the dirty flush; reads do [probe_b200]"
+  - "S band: DIRTY-CLEAN gap 0.8 us at 7.9 MB with only 2-5 MB of flush write-back; EF loads do not shrink it (<=1.8%); any remaining S lever must avoid the flush lines, which no legitimate in-kernel policy does [probe_b200; INFERRED]"
+paths:
+  - {max_tokens: 3072, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100"
+  A100:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX"
+  L40S:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX"
+risks:
+  - "The M gain depends on the portal's L2 dirty state after the flush matching the rented B200's; the mechanism is clock-independent, but there is no portal pair yet"
+  - "EF_MAX_ROWS=3072 sits between 2164 (gain 3%) and 4096 (loss 1%); the crossover was not mapped finely"
+  - "S-band change (-1%) is within noise"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

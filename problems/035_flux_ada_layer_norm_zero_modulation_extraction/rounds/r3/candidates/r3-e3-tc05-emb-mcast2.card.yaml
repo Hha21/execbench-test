@@ -1,0 +1,165 @@
+id: r3-e3-tc05-emb-mcast2
+parents:
+  - r2-e1-tc05-ef-small
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  H20 (refuted): for 131 < B <= 256, multicasting each emb k-block across a 2-CTA cluster (each CTA loads half the
+  rows and sends them to both) would halve emb L2 traffic and cut cycles by >= 10%. Measured: multicast changes
+  cycles by -1..+4% at 132-256. The kernel is bound by per-SM operand ingest (W + full emb landing in each SM's
+  shared memory, about 64-75 B/clk/SM), which multicast does not reduce. Only a cta_group::2 pair, where each SM
+  receives Bpad/2 emb rows, lowers it.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 1
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 204800
+  launches_per_call: 1
+knobs:
+  ROWS_PER_CTA: 128
+  BK: 32
+  KBS_RULE: "unchanged from parent (192/211: 1x5, 256: 1x4)"
+  MC_RANGE: "131 < B <= 256, cluster 2x1x1, ctaMask 0b11"
+  BPAD: "B rounded to 16 (Bpad/2 is a multiple of 8 rows = whole 1024 B SW128 atoms; rounding to 32 is not needed)"
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel<false> (unchanged)
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_small_kernel<true> (emb multicast, 72 clusters of 2)
+    meta:
+      launches: 1
+      cluster: 2
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H20
+findings:
+  - "H20 refuted (probe, interleaved, harness flush, 3 rounds, rented SM clock 1.66-1.78 GHz from clock64/globaltimer): cycles base vs emb-multicast B=132 74.3-76.2k vs 74.9-75.3k; 192 80.1-80.8k vs 82.0-83.2k (+2-4%); 211 80.9-81.4k vs 82.8-83.5k (+2-3%); 256 85.8-87.6k vs 86.6-87.7k. Per-clock efficiency 2*128*Bpad*3072/(cyc*4096): 132 0.37/0.37, 192 0.46/0.45, 211 0.53/0.52, 256 0.57/0.56 [probe_b200]"
+  - "harness_time (same probe) us base vs mc: 132 44.1-44.4 vs 44.6-44.9; 192 48.9-49.0 vs 49.6-49.9; 211 49.7-50.0 vs 50.5-50.6; 256 53.1-53.8 vs 53.5-53.6 [probe_b200]"
+  - "kbs=2 at B=192 does not fit 3 stages (2 x 2 stages only): base 2x2 98-105k cycles (57-60 us), mc 2x2 87.5-90.6k (53.6-54.0 us). Multicast cuts cycles 10-15% with a 2-deep ring (emb L2 latency exposed), but both lose to the 1x5 ring [probe_b200]"
+  - "limiter isolated (probe, W tile index blockIdx%8 so W is L2-hot, and/or MMAs skipped): B=192/211/256 hot-W 80.7-82.3k cycles vs 85.5-87.5k cold: DRAM is not the M-band limit. Feed only (no MMA, hot W) 62-64k cycles = 3.9-4.6 MB per CTA at 63-74 B/clk/SM; B=16 hot feed-only 23.3k (75 B/clk). MMA ideal 37-49k. So TMA ingest per SM (L2 -> SM bytes per SM clock) bounds the kernel, and MMA + feed overlap only partly (81k vs max(63k, 43k)) [probe_b200]"
+  - "consequence: the 1.26 portal/rented ratio at 192/211 (H15) is the SM-clock-bound ingest. A cta_group::2 pair (H19/E1) reduces landing bytes per SM from 16 KB W + Bpad*128 B emb to 16 KB + Bpad*64 B per k-block (-30% at 192, -33% at 256); multicast of emb on top of the pair is not needed [INFERRED from the probes]"
+  - "B=132 cold 75k cycles = hot-W 53.5k + DRAM: at 132 the kernel is still DRAM-bound at the rented clock (span 42 us); feed-only cold 79-81k cycles at 1.96 GHz [probe_b200]"
+  - "max |err| vs fp64 (W/sqrt(3072), bias randn): B=132 1.45e-3, 192 1.64e-3, 211 1.54e-3, 256 1.49e-3, identical for base and multicast (same operands, same accumulation order) [probe_b200]"
+  - "cudaOccupancyMaxActiveClusters = 74 clusters of 2 at 225 KB smem for Bpad 144-256: the 72 clusters fit in one wave [probe_b200]"
+  - "run_tests 16/16 PASS. Rented us vs parent same GPU: 131 44.1 vs 44.1, 192 49.4 vs 48.9 (+0.9%), 211 50.7 vs 50.2 (+0.9%); S unchanged; L -1.4% is drift (identical CUTLASS code). Emulator 0.6117 +- 0.012 (P beat 53%), not a real gain [run_tests]"
+  - "predicted portal time = max(1.05 x 42 us DRAM part, cycles/1.55 GHz): base 192 86k -> 55.5 us, mc 87.7k -> 56.6 us; base 211 86k -> 55.5, mc 88.5k -> 57.1. The portal measured base 62.2/64.0, so this model underpredicts the parent by about 11% at 192/211 [analysis]"
+  - "Bpad rounding: multicast halves only need Bpad/2 to be a multiple of 8 rows (Bpad multiple of 16); 192/211/256 keep Bpad 192/224/256, so the N of the comparison is identical [design]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM are sm_100a only; the kernel body compiles empty for other targets"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "No expected gain: 192/211 are 1-3% slower in cycles than the parent; do not spend a portal slot on it"
+  - "Cluster launch for 132-256 adds the cross-CTA empty-barrier coupling (a stall in one CTA stalls its peer)"
+  - "Clustered launches slowed later plain launches on #38 (constraint list); another reason not to ship"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

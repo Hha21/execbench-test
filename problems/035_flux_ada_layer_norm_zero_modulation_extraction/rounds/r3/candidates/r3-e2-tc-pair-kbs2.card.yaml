@@ -1,0 +1,173 @@
+id: r3-e2-tc-pair-kbs2
+parents:
+  - r2-e1-tc05-ef-small
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E2 microbenchmarks show the one-SM tc_small at B=192-256 is not limited by the UMMA shape (resident 128x192 reaches
+  98.8% of 4096 FLOP/clk when a commit covers at least 8 UMMAs), by the TMA feed (a no-MMA ring costs the same as an
+  MMA-only ring), by ring depth beyond 3 stages, or by emb L2 hot-spotting (1 to 36 private copies: within 1%). It is
+  limited by a fixed per-stage MMA to commit to mbarrier chain of about 250-300 clk, paid once per 1-k-block stage and
+  amortised by larger stages. A cta_group::2 pair halves the emb bytes per CTA, so 2-k-block stages fit, and the same
+  work at B=131-256 runs at about the DRAM stream rate (749 vs 1108 clk per k-block, 42.5 vs 60 us wall, probe).
+  Clock-bound at the portal lock, so the portal gain should exceed the rented -4..-7%.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -8
+    confidence: low
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 172032
+  launches_per_call: 1
+knobs:
+  KBS: 2
+  STAGES_RULE: "(225 KB - 1 KB) / (2 * (16 KB + Bpad/2 * 128 B)): B=192 -> 4, B=211 (Bpad 224) -> 3, B=256 -> 3"
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+  PAIR_B_THRESHOLD: "131 < B <= 256"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel (unchanged r2 path)
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H21
+  - H20
+  - H19
+findings:
+  - "VERDICT B=192-256: the limiter of tc_small is the per-stage MMA -> commit -> mbarrier chain at kbs=1 (about 840 clk/stage warm, 1108 with DRAM W), not ring depth >= 3, not the UMMA shape, not the smem port and not emb L2. A 2SM pair with kbs=2 fits and runs at the DRAM stream rate. H20 refuted, H21 first clause true only with >= 8 UMMAs per commit, 2SM-fed beats 1SM-fed only because it allows kbs=2 [probe_b200]"
+  - "(a) resident operands, 1SM 128xN kind::tf32, 96 k-blocks x 4 UMMAs, commit per k-block, 144 CTAs, rented clock 1.62-1.70 GHz (globaltimer): N=128/192/256 = 551/551/553 clk per k-block = 46.5/69.7/92.6% of 4096 FLOP/clk/SM. Every N <= 256 is floored at about 551 clk per commit group [probe_b200]"
+  - "(a) same, 2SM cta_group::2 256xN (cluster 2, leader issues, multicast commit): 552/552/554 clk per k-block = 46.4/69.6/92.4% per SM: identical per SM to 1SM with resident operands, so 2SM has no UMMA-rate advantage [probe_b200]"
+  - "(a) commit every 8 or more UMMAs (kbs>=2): N=192 388 clk = 98.8% (1SM) and 390 = 98.6% (2SM), N=256 517 = 99.0%/99.1%, N=128 307 (kbs4) = 83.4%, 290 (kbs6) = 88.3%, N=64 kbs8 255 = 50%: the UMMA itself delivers 99% at N=192/256 and is issue-bound (about 64-77 clk per UMMA) below N=128, clk 1.62-1.83 GHz. Literal H21 refutation test (resident 1SM 128x192 <= 70%) trips only at the shipped one-commit-per-k-block cadence, so the cause is the commit cadence, not the shape [probe_b200]"
+  - "(a) another container (clk 1.70-1.82 GHz): resident N=192 kbs1 fixed stage 674 clk (57%), N=256 676 (75.7%); rotating the stage address per k-block (as a ring does) 839 / 844 clk (45.8 / 60.7%) at 2, 4 or 5 stages; kbs2 rotating 539 / 551. The commit floor drifts 551-674 between containers, so compare only inside one probe [probe_b200]"
+  - "(b) TMA ring fed from L2 (every CTA the same 128 W rows, or 16 distinct tiles: identical), clk 1.58-1.82 GHz, clk/k-block and eff: 1SM N=192 kbs1 st5 791 (48.5%); 1SM kbs2 st2 587 (65.4%); 2SM kbs1 st5/st8 792 (48.5%, no gain from depth or 2SM); 2SM kbs2 st4 512 (75.0%); 2SM kbs4 st2 446 (86.2%); N=256: 1SM kbs1 st4 794 (64.5%), 2SM kbs1 st4/st7 796, 2SM kbs2 st3 532 (96.3%); N=128 kbs2 1SM and 2SM 507 (50.5%, issue-bound). 2SM-fed kbs2 >= 75% and 1SM-fed kbs1 48.5% (<= 60%) as H21 predicted; the 2SM advantage is the larger stage, not operand traffic [probe_b200]"
+  - "(b) ablation, warm, N=192 kbs1 st4 (clk/k-block): base 852, no MMA (TMA + barriers only) 687, no W 851, no emb 850, no W and no emb (MMA + barriers only) 844, nothing (pure barrier ping-pong) 652; 2SM 853/712/852/852/846/656; N=256 856/689/856/854/848/652. TMA bytes cost nothing: the MMA + commit + mbarrier chain sets the pace. Removing tcgen05.fence from the loop: no change; committing every second stage (shared empty barrier): 906 -> 865 only [probe_b200]"
+  - "(c) ring-depth slope, real W from DRAM with the 252 MB harness flush, evict_first, clk 1.74-1.82 GHz, 1SM kbs1: B=192 stages 2/3/4/5 = 1300/1115/1108/1108 clk per k-block (71.7/61.7/59.8/60.6 us wall); B=256 stages 2/3/4 = 1420/1128/1115 (78.6/63.2/59.6 us). Steep only from 2 to 3 stages, flat from 3 to 5: ring depth is not the limiter at 4-5 stages [probe_b200]"
+  - "(c) real W, 2SM: B=192 kbs1 st3/4/6/8 = 1123/1119/1121/1123 (60.8-61.1 us); kbs2 st3 749 (42.5 us, 51.2%); kbs4 st2 780 (43.6 us); B=256 kbs1 st3/4/6 1129/1122/1123, kbs2 st3 748 (44.0 us, 68.4%). 1SM kbs2 st2 (the only fit): 928 (50.9 us) at 192, 1043 (57.0 us) at 256. No-MMA floors with W from DRAM: 1SM kbs1 st4 922 clk (46.6 us), 2SM kbs2 st3 788 (40.2 us at 1.955 GHz); hint vs no hint: 1108 vs 1136 (1SM kbs1), 749 vs 924 (2SM kbs2) [probe_b200]"
+  - "(d) emb hot-spotting: warm L2, N=192 kbs1 st4, copies 1/2/4/8/16/36: 1072/1072/1072/1072/1079/1086 clk per k-block; N=256 copies 1/2/4/8/16: 1079/1078/1079/1079/1088. Real W: B=192 copies 1/16 1106/1112, B=256 1116/1127; 144 private copies 1857 (B=192) and 2131 (B=256) clk, but that variant adds 340-453 MB of cold emb DRAM traffic, so it measures DRAM not contention. Private copies are not >= 10% faster: H20 refuted, E3 multicast of emb is not the fix [probe_b200]"
+  - "run_tests (rented B200, same GPU as r2-e1-tc05-ef-small, interleaved by the harness): 16/16 pass, one launch. B=192 45.7 vs 49.3 us (-7.3%), B=211 48.2 vs 50.0 (-3.6%), B=131 44.0 vs 44.3, all other B within +-1.6% (S +0.4%, M -2.4%, L -0.9%); emulator 0.6162 +- 0.012. The first try of the cta_group::2 pipeline (TMA .cta_group::2 with mapa leader barrier, multicast commit mask 3, leader-only MMA, both-CTA epilogue) was correct on all 16 workloads x 10 rounds [run_tests]"
+  - "portal prediction by the operator's rule: tc_small B=192 at 1108 clk x 96 = 106k clk = 68 us at 1.55 GHz (portal measured 62.2); the pair kernel at 749 clk x 96 = 72k clk = 46 us at 1.55 GHz plus ramp, so expect about 48-52 us at B=192/211, i.e. -15..-20% vs 62.2/64.0 (about +0.01 on the problem score); B=131 not changed (operator ruling) [analysis from probe cycles]"
+  - "precision: not re-measured; the maps use TFLOAT32 as in r2, same operands and fp32 accumulation, 16/16 x 10 rounds pass, expected max |err| 1.5-1.65e-3 at B=192/211 as r2 recorded [run_tests]"
+  - "dead end: pair-commit (one commit per two 1-k-block stages) 906 -> 865 clk only; 2SM at kbs1 gives no gain over 1SM (792 vs 791 warm, 1119 vs 1108 real); the 1SM kbs2 variant fits only 2 stages at B=192 (928 clk) [probe_b200]"
+  - "open: B=373/384 would need N=384 (two TMEM accumulators of 192, 2SM, kbs2 ring of 3 stages at 80 KB per CTA does not fit; kbs1 stages would pay the 840-clk chain) so the CUTLASS tiles stay; the per-stage fixed chain cost (about 250-300 clk, source unresolved) is the lever for every hand-written variant [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Rented gain at 192/211 is only -3.6..-7.3% because the rented kernel is already near the DRAM floor; the larger portal gain relies on the clock-bound ratio (1.26 portal/rented for tc_small at 192/211) and is unproven until a portal slot"
+  - "A broken pair pipeline would hang; mbar_wait traps after 2^27 try_waits so a failure shows up as an error, not a hang"
+  - "Cluster launch of 72 pairs on 148 SMs depends on GPC packing; the portal card could place fewer pairs per wave (not seen on the rented card)"
+  - "Probe containers differ by 10-20% in absolute cycles per commit (551 vs 674 clk); every cycle number is valid only inside its own probe"
+  - "TMA .cta_group::2 qualifier order and the mapa leader-barrier convention were verified only by 16/16 correctness, not against CUTLASS source"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

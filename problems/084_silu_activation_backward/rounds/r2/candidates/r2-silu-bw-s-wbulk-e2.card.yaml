@@ -1,0 +1,66 @@
+id: r2-silu-bw-s-wbulk-e2
+parents: [r1-silu-bw-cluster2-small]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  H16: the ~0.3-0.5 us that the S-band kernel spends above an empty launch is a DRAM round trip plus store
+  acknowledgement under the dirty post-memset L2, and a different access mechanism (one-shot 1-D bulk copy) shortens it.
+  Result: REFUTED. The S-band excess is ~0.7 us of load round trip (the same under a clean flush); stores add <= 0.08 us.
+  The warp-level bulk copy is 0.16-0.20 us slower, so this kernel is a negative control: do NOT submit to the portal.
+expected_effect:
+  S: {pct: +7, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 12352
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs: {THREADS: 256, FLOATS_PER_THREAD: 4, CLUSTER: 2, CLUSTER_MAX_GRID: 1184, BULK_MAX_N: 16384, BULK_GRANULE: warp_512B_per_stream, LOAD_HINT: evict_first_const, STORE_HINT: evict_last_const}
+dispatch:
+  - {max_n: 16384, kernel: silu_bw_wbulk_c2, meta: {cluster: 2, bulk: warp}}
+  - {max_n: 1212416, kernel: silu_bw_vec4_c2, meta: {cluster: 2}}
+  - {max_n: null, kernel: silu_bw_vec4, meta: {}}
+tests: [H16, H9, H4]
+findings:
+  - "DECOMPOSITION (rented B200, harness_time, cluster-2 everywhere, ABAB 7 reps, median us; sizes 131/2053/4096/16384/40960). DIRTY flush: empty 1.41/1.38/1.41/1.38/1.39; loads-only (3 EF loads, store predicated off) 2.14/2.16/2.15/2.13/2.19; parent 2.17/2.18/2.21/2.21/2.24; stores-only EL 1.55/1.63/1.63/1.63/1.63 [probe_b200]"
+  - "DECOMPOSITION CLEAN read-sweep flush (monkeypatched timing._clear_cache to a sum over the buffer): empty 1.36/1.36/1.38/1.35/1.35; loads-only 2.11/2.10/2.05/2.09/2.10; parent 2.14/2.13/2.07/2.09/2.10; stores-only 1.44/1.55/1.55/1.52/1.60 [probe_b200]"
+  - "=> the load leg holds ~0.73 us above the empty kernel at every S size, dirty or clean; the store leg adds only 0.03-0.08 us; the dirty flush costs 0.03-0.14 us in total. The S excess is the DRAM read latency itself, not dirty write-backs or store acks [probe_b200]"
+  - "cluster-2 empty kernel 1.41 us vs non-cluster empty 1.51 vs empty with 1 predicated store 1.54 (4096 grid, one run): the cluster gain is also visible on an empty kernel [probe_b200]"
+  - "dead end (store leg, 7 reps): st.global.wt, st.global.cs, default st, st.L1::no_allocate+EL policy all within +-0.05 us of the parent EL store at 131-40960 [probe_b200]"
+  - "dead end (load leg, 7 reps): ld.global.nc.L1::no_allocate+EF policy, ld.global.cv, plain ld.global, 64-thread and 32-thread CTAs (cluster 2) all within +-0.05 us of the parent [probe_b200]"
+  - "dead end: one-shot 1-D bulk copy, CTA level (thread 0: mbarrier.init + expect_tx + 3 cp.async.bulk EF into 12 KB smem, __syncthreads, try_wait): +0.10/+0.22/+0.21/+0.27/+0.27 us; with a bulk store (fence.proxy.async + bulk_group + wait_group.read 0) +0.18/+0.37/+0.30/+0.42/+0.34 us [probe_b200]"
+  - "dead end: warp-level one-shot bulk (lane 0 per warp, own mbarrier, __syncwarp only) +0.16/+0.20/+0.16/+0.18/+0.15 us (11 reps); bit-exact. TMA/bulk engine latency exceeds LDG latency for a single round trip: H9 closes for this problem [probe_b200]"
+  - "KEY diagnostic: loading 1 stream instead of 3 is 0.06-0.22 us faster (s1 1.99/1.99/2.02/2.02 vs s3 2.21/2.05/2.19/2.24 at 131/4096/16384/40960, 9 reps); 3 loads of the SAME address = 1 stream (2.00/2.02/2.02/2.05); 2 streams in between; reversing load order changes nothing [probe_b200]"
+  - "harness pool layout: the shifted g, x, s, o buffers are 21 KB apart (one contiguous pool region, same 2 MB page), so the multi-stream cost is not a TLB miss; most likely DRAM bank/row or channel conflicts between three distinct locations, fixed by the harness layout [probe_b200; cause INFERRED]"
+  - "run_tests: 16/16 passed; vs the parent on the same GPU S +6.8% (131 2.3 vs 2.1, 2053-4096 +7-8%), M +0.1%, L -0.3%; predicted portal 0.5110 vs 0.5166 [run_tests]"
+  - "conclusion: H16 refuted (every store type, load type, CTA size and bulk variant ties or loses). The remaining S excess is ~0.55 us of single-access DRAM latency plus ~0.15 us from three distinct input locations; nothing kernel-side reaches it. Stop S memory-path work; only launch-path ideas (E1/H15) remain [INFERRED]"
+paths:
+  - {max_tokens: 16384, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: tma, launches: 1, x: ef, st: el, cluster: 2}
+  - {max_tokens: 1212416, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 2}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "bulk copies and clusters exist on sm_90a, but the launch and latency mix differs; measured on B200 only"}
+  A100: {runs: false, representative: false, note: "no cp.async.bulk or clusters on sm_80"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Slower than the parent at S by ~0.15 us (+7%): a negative control, not a portal candidate"
+  - "Bulk sources need 16-B alignment: the host checks it, and the harness gives 256-B aligned pointers"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

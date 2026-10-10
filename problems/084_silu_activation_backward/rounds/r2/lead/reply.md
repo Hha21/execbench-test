@@ -1,3 +1,14 @@
+Evidence is in hand. Two things stand out before writing the round: the portal per-workload scores imply the hidden SOL time is roughly one tensor's bytes at 8 TB/s (so L scores are compressed and 4% at L is worth about +0.013 per L workload), and r1's E3 decomposition shows M-band time is already DRAM-bound once the forced dirty write-backs are counted. That leaves the launch path and the S-band memory round trip as the only levers below 1.2M elements.
+
+### Assessment
+
+Score is 0.5166; top 5 needs +0.021. Per-workload S sits at 0.49-0.52 for all ten workloads up to 786K, where we now tie Tb (portal 2.3-4.8 µs vs Tb 2.2-5.0). With Tsol ≈ 0 there, S = Tb/(t+Tb), so 0.2 µs off those ten is worth about +0.015; at L (Tsol ≈ 4n/8 TB/s, inferred from the portal page) a 4% cut is worth about +0.005.
+
+What we know: r1 E3 settled the memory physics. In-window DRAM traffic must include one flush-line write-back per output line, plus one per L2 set touched by reads (≈ read bytes at M, ≈ 8 MB at L). Counting that, M runs at ≈ 8 TB/s and L at ≈ 7.5 TB/s (92%). Fractional policies, persistent pipelines and CTA shaping are dead ends. So M/S can only move through the fixed cost: the 1.6 µs empty-kernel span, of which the cluster launch recovered 0.15-0.2 µs and clusters of 4/8 another 0.04 at S. The +0.4 µs post-memset queueing penalty is off limits to exploit, but we do not yet know whether it is a launch-path/timestamp effect or DRAM write drain; that decides whether any kernel-side S work can pay.
+
+This round: E1 (opus, exploratory) maps the launch path with an empty kernel, then sweeps legitimate launch attributes, SM carveout, cluster 4/8 and CTA shape at ≤ 786K. E2 (opus) decomposes the S-band memory round trip under the dirty flush and tries store types and one-shot bulk copies, the operator's "bulk at tiny sizes" item. E3 (sonnet) replicates 256-bit with the exact EF/EL policy forms and two-stream ordering at L; a tie closes L for good.
+
+```yaml ledger
 # Hypothesis ledger for #084 silu_activation_backward, seeded 9 October 2026; updated r2 (10 October 2026) by the research lead.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 constraints:
@@ -140,3 +151,45 @@ hypotheses:
   evidence:
   - 'r1 bench: 131 elements, CPU delay 0/20/60/150 us -> 2.11/1.89/1.73/1.73; CUPTI kernel duration 1.47 (compiled path) vs 1.79 (direct) with positive gaps after the memset, so it is not overlap'
   - 'to test: r2 E1 step 1 (empty kernel with and without delay, diagnostic only; delay never goes in a candidate)'
+```
+
+```json tasks
+[
+  {
+    "id": "E1",
+    "hypothesis": "H15",
+    "title": "Launch path below the cluster-of-2 launch: empty-kernel anatomy, launch/function attributes, cluster 4/8 and CTA shape at n <= 786432",
+    "operation": "knob_mutation",
+    "parents": ["r1-silu-bw-cluster2-small"],
+    "band": "S",
+    "instructions": "Rented B200, harness timing (dirty 2xL2 zero-fill flush, shifting pool), ABAB interleaving, >= 9 reps, report medians per size. Step 1 (diagnostic, H19): an empty kernel (1 CTA, 32 threads, no memory access) launched (a) plain, (b) __cluster_dims__(2), (c) cluster 8, (d) cudaLaunchKernelEx with cudaLaunchAttributeCooperative, and (a) again with a 150 us CPU busy-wait before launch. The delay variant is a diagnostic only and must never appear in a candidate. Report whether the +0.4 us penalty exists without memory traffic and whether the cluster gain exists on an empty kernel. Step 2: on the parent kernel body at n = 131, 2053, 4096, 16384, 40960, 163840, 262144, 786432, 2097152 compare against cluster-2: cluster 4 and 8 (grid padded to a multiple of the cluster size; pad CTAs exit on i < nvec); cooperative launch attribute (with and without cluster dims); cudaLaunchAttributeClusterSchedulingPolicyPreference spread vs load-balancing; cudaFuncAttributePreferredSharedMemoryCarveout at 0, 50 and 100 and a variant declaring 1 KB of static __shared__ (does the SM reconfigure after the torch fill kernel?); 2-D grid (gridDim.y = 2) vs 1-D; launch through cudaLaunchKernelExC with the same attributes. Step 3: combine the best launch path with CTA shape: 64/128/512-thread CTAs at <= 16384 (more, smaller CTAs across SMs with cluster 8), 128 vs 256 at 40960-786432. Step 4: if a configuration beats cluster-2 by >= 0.05 us at every size <= 786432 (or >= 0.08 us at every size <= 16384 for an S-only dispatch step), build the dispatch candidate (dispatch on n only, L path unchanged: plain launch above 1184 CTAs), run_tests all 16 workloads, write the design card with every probe result as findings, including negative ones. Check the SASS for LDG.EF/STG.EL suffixes while you are there (r1 did not).",
+    "success": ">= 0.05 us faster than cluster-2 at every size <= 786432 in interleaved medians (predicted +0.005 or better), 16/16 run_tests, candidate ready for a portal slot",
+    "refuted_if": "No launch or function attribute, cluster size or CTA shape beats cluster-2 by more than 0.03 us at any size; then H15 is refuted and (with E2) H4 becomes supported",
+    "model": "opus"
+  },
+  {
+    "id": "E2",
+    "hypothesis": "H16",
+    "title": "S-band memory round trip under the dirty flush: decomposition, store types, and a one-shot 1-D bulk copy at n <= 16384",
+    "operation": "structural_mutation",
+    "parents": ["r1-silu-bw-cluster2-small"],
+    "band": "S",
+    "instructions": "Rented B200, harness timing, ABAB, >= 9 reps, sizes 131, 2053, 4096, 16384, 40960. Keep the cluster-2 launch in every variant; compare against the parent. Step 1 (decomposition): empty kernel; loads-only (three EF loads, results consumed by a store predicated on an impossible condition so they are not dead); parent (loads + EL stores); stores-only (EL). Repeat the four under a clean read-sweep flush (monkeypatch sol_execbench timing._clear_cache as r1 E3 did) and tabulate dirty vs clean per leg. Step 2 (store leg, if it costs >= 0.08 us over loads-only): st.global.wt, st.global.cs, default policy, st.global.L1::no_allocate with the EL policy, and a bulk store (registers -> static smem -> fence.proxy.async.shared::cta -> cp.async.bulk.global.shared::cta.bulk_group + commit_group + wait_group 0 by one thread) for n <= 16384. Step 3 (load leg, if it is >= 0.1 us above empty): ld.global.cv, ld.global.nc.L1::no_allocate with the EF policy, 32/64-thread CTAs, and a one-shot 1-D bulk copy: one elected thread does mbarrier.init(1), arrive.expect_tx(3 * 16 * (n >> 2)... bytes rounded to a multiple of 16 B), three cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes.L2::cache_hint copies with the EF policy into static smem (<= 48 KB, so n <= 3072 per CTA; use several CTAs of 1024 floats each for 4096-16384), all threads wait on try_wait.parity, compute from smem, store EL; the <= 3 tail elements use plain loads. Inputs are 256-B aligned so the bulk source alignment holds. Step 4: adopt any variant >= 0.05 us faster at 131-40960; build the dispatch candidate (bulk/alternate path only below the size where it wins; parent path elsewhere), run_tests, design card with all findings (the decomposition table is the key deliverable even if nothing wins).",
+    "success": "A variant >= 0.05 us faster than the parent at every size <= 16384 (and not slower at 40960), 16/16 run_tests; or, failing that, a complete dirty/clean decomposition table showing which leg holds the 0.3-0.5 us",
+    "refuted_if": "Every store type, load type and the one-shot bulk copy are within 0.03 us of the parent, or slower; then H16 is refuted, H9 closes for this problem, and S work stops unless E1 found a launch-path gain",
+    "model": "opus"
+  },
+  {
+    "id": "E3",
+    "hypothesis": "H3",
+    "title": "L band: 256-bit accesses with the exact EF/EL policy forms and two-stream chunk ordering at n > 1.2M",
+    "operation": "knob_mutation",
+    "parents": ["r1-silu-bw-cluster2-small"],
+    "band": "L",
+    "instructions": "Rented B200, harness timing, ABAB, 7 reps, sizes 2097152, 4194304, 8388608, 16777216; the plain (non-cluster) launch path only. Variants against the parent (a: 128-bit, 4 floats per thread, 256 threads): (b) 8 floats per thread with ld.global.L2::cache_hint.v8.f32 and st.global.L2::cache_hint.v8.f32 (policy constants 0x12F0000000000000 for loads, 0x14F0000000000000 for stores; thread i covers floats [8i, 8i+8), 32-B aligned); (c) the same 8-float mapping with 2 x 128-bit per stream (isolates width from mapping); (d) 256-bit with the qualifier form ld.global.nc.L2::evict_first.v8.f32 and st.global.L2::evict_last.v8.f32; (e) two-stream ordering: thread handles float4 i and float4 i + nvec/2 with 128-bit (two sequential DRAM streams per wave); (f) variant b with 512 threads and __launch_bounds__(512). Confirm in the SASS that b/d/f emit 256-bit LDG/STG (look for .256 and the EF/EL or ENL2 suffixes) and report regs per variant. Tail handling for 8-float threads: the thread with i == n >> 3 covers the <= 7 remaining floats with scalar loads. Adopt only a variant that is >= 2% faster at >= 3 of the 4 sizes; dispatch it at n > 1.2M only (the <= 1.2M cluster-2 path is unchanged, so the 131-element 256-bit penalty does not apply); run_tests 16/16; design card with findings. If everything ties within +-1%, write that down as the closing result for width and ordering at L.",
+    "success": ">= 2% faster than the parent at >= 3 of 4 L sizes in interleaved medians (~+0.003-0.004 predicted), 16/16 run_tests, candidate ready",
+    "refuted_if": "All variants within +-1% of the parent at every L size; H3 is then closed for the policy form too, and L is parked at the 92% DRAM-efficiency ceiling (H7)",
+    "model": "sonnet"
+  }
+]
+```

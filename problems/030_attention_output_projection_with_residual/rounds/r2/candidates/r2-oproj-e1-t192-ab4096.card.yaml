@@ -1,0 +1,138 @@
+id: r2-oproj-e1-t192-ab4096
+parents:
+  - r1-oproj-cutlass-t224-dispatch
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: persistent
+  launch: fused
+  tile: rows256
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H13 test, refuted on the rented B200. Whole-wave transposed 2SM tiles (256x192 at 4096, 256x96 at 2048, both
+  2.97 waves) were expected to beat fused cublasLt by 5% or more. They lose by 7% at 4096 and 11-15% at 2048, and
+  the epilogue settings do not change this. The candidate packages the requested 4096-group portal A/B: 256x192
+  (default epilogue) on (4,1024) and (2,2053), 256x192 with no C smem reuse on (16,256), and cublasLt as the control
+  on (8,512). The A/B measures whether the portal clock lock changes the CUTLASS-fused vs cublasLt-fused gap at M
+  (H17). Every other shape is identical to the parent.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 5
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 0
+  smem_per_cta_bytes: 219136
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 140000
+  launches_per_call: 1
+knobs:
+  cutlass_min_m: 6144
+  ab_min_m: 3000
+  tile_large: 256x224x64 transposed, 6 stages
+  tile_4096: 256x192x64 transposed, 6 stages, epi 128x32, StagesC 4 / StagesD 2, ReuseSmemC on (16,256 off)
+  cluster: 2x1x1
+  raster_order: AlongM
+  max_swizzle_size: 1
+dispatch:
+  - max_tokens: 2999
+    kernel: cublasLt heuristic-0 (C = residual)
+    meta:
+      workspace_mb: 32
+  - max_tokens: 6143
+    kernel: "shape map: (4,1024)->Tn<192>; (2,2053)->Tn<192>; (16,256)->Tn<192,NoReuseC>; (8,512)->cublasLt; any other shape->Tn<192>"
+    meta:
+      tile: 256x192x64
+      cluster: 2x1
+  - max_tokens: null
+    kernel: CUTLASS 2SM transposed Tn<224> (parent)
+    meta:
+      tile: 256x224x64
+tests:
+  - H13
+findings:
+  - "H13 REFUTED (rented B200, harness_time, 3 interleaved rounds, medians, us; sizes 256/512/586/1024/1571/2048/4096/4106/7976/8192): t192 16.4/16.8/16.9/17.8/27.6/28.8/41.6/41.6/72.3/72.5; t192nr (ReuseSmemC off) 16.5/17.0/17.1/18.0/27.6/29.0/41.8/41.7/72.4/72.8; t160 14.6/15.1/15.1/16.4/24.9/25.6/44.2/44.2/71.1/77.3; t224 17.8/18.2/18.4/19.3/29.5/31.3/44.7/44.7/69.3/69.9; t96 11.6/12.5/12.5/19.1/25.3/26.6/46.3/46.3/82.9/83.7; cublasLt-fused 8.7/10.6/12.1/13.4/19.7/23.1/38.9/38.7/77.0/77.4; torch.mm (no residual) 8.3/9.8/11.5/12.6/18.6/20.6/36.0/35.9/70.9/71.3 [probe_b200]"
+  - "C=void diagnostic (never submitted): t192v 14.2/14.6/14.9/15.6/24.9/26.2/37.2/37.3/67.1/67.6; t224v 15.8/16.2/16.3/17.2/27.6/28.5/41.8/41.8/66.0/66.5. Even with the residual free, 256x192 is 3% slower than plain mm at 4096 and 27% slower at 2048 (t160v 23.3 vs 20.6) [probe_b200]"
+  - "residual C cost in the CUTLASS 2SM epilogue: 4.4 us (12%) at 4096 with t192, 2.6 us at 2048, 3.4-5.4 us at L for t224/t192; per wave about 1.4 us at 4096, so it is larger relative to M-band time than to L (supports H14/H15 as the M lever) [probe_b200]"
+  - "first probe at 2048/4096/4106 (us): t192 28.9/41.4/41.4, t224 31.2/44.5/44.5, t160 25.7/44.2/44.1, t96 26.6/46.3/46.2, t128 28.9/45.6/45.5, t64 33.3/56.9/56.3, t256 33.2/47.8/48.4, 1SM 128x96 (440 tiles = 2.97 waves of 148) 29.6/52.2/52.0, lt 23.1/38.9/38.9, mm 20.6/36.0/36.1. Whole-wave tile counts do not help: smaller token tiles lose per-tile efficiency (L2->SM operand traffic per FLOP rises as TN shrinks) [probe_b200]"
+  - "epilogue sweep on t192 (us at 2048/4096/4106): default (StagesC 4, StagesD 2, reuse C, 6 mainloop stages) 28.9/41.4/41.5; StagesC 6 28.9-29.1/41.9/41.7; ReuseSmemC off 29.1/41.7/41.5; epi tile 128x64 (StagesC 3, 6 stages) 28.9/42.0/41.9; raster AlongN 28.8/41.2/41.3. None beats the r1 defaults by >= 4%; all within +-1% [probe_b200]"
+  - "carveout stages (2SM, epi 128x32, bf16 C): TN 64:10, 96:9, 128:8, 160:7, 192:6, 224:6, 256:6; epilogue smem 26.6 KB (TN<=96, StagesC 3) or 34.8 KB (StagesC 4); C=void epilogue 18.4 KB gives +1 stage. The builder hard-codes StagesC 3 for 2SM CtaN 192 only in its non-default branch; here it gave 4 [probe_b200]"
+  - "technique: the epilogue dispatch policy (StagesC, StagesD, ReuseSmemC, DelayTmaStore) can be overridden after CollectiveBuilder by substituting the policy in CollectiveEpilogue<...> and FusionCallbacks<...> (Restage template in kernel.cu); compiles and runs correctly [probe_b200, run_tests]"
+  - "run_tests 16/16 (us, this vs parent): 4,1024 41.6 vs 39.0 (+6.7%); 2,2053 40.6 vs 39.0 (+4.3%); 16,256 41.7 vs 38.9 (+7.1%); 8,512 (lt control) 39.0 vs 38.2; others within +-2%; predicted portal 0.444 +- 0.006 vs parent 0.453 [run_tests]"
+  - "tooling: compile_b200 lacks CUTLASS tools/util/include (cutlass/util/packed_stride.hpp not found); run_tests builds it fine. Probe files under /root persist only sometimes between probes; rebuild in each probe [compile_b200, probe_b200]"
+  - "refutation criterion met: no whole-wave tile with any epilogue setting is within 4% of cublasLt-fused at both 2048 (best +11%) and 4096 (best +6%), and C=void is not faster than plain torch.mm. M waits for H14/H15 [probe_b200]"
+paths:
+  - max_tokens: 2999
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    wstat: false
+    launches: 1
+    prefetch: false
+    x: none
+    w: none
+    st: none
+  - max_tokens: 6143
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: persistent
+    mem: tma
+    wstat: false
+    launches: 1
+    prefetch: false
+    x: none
+    w: none
+    st: none
+    cluster: 2
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: persistent
+    mem: tma
+    wstat: false
+    launches: 1
+    prefetch: false
+    x: none
+    w: none
+    st: none
+    cluster: 2
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "CUTLASS sm100 2SM paths are sm_100a-only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Expected to score below the parent (emulator 0.444 vs 0.453): 3 of the 4 workloads at 4096 tokens run a kernel that is 4-7% slower on the rented box. Only worth a portal slot if the portal ratio of CUTLASS-fused to cublasLt-fused at M (H17) is wanted; otherwise keep the parent"
+  - "OPERATOR: the bf16 type name is token-pasted, as in the parent (lint whitelist needed). The A/B dispatch on (batch, seq) depends on shape only; every variant is correct (16/16) and launches one kernel"
+  - "three CUTLASS instantiations in one .cu file make the build longer (run_tests took 91 s in total, including the build)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

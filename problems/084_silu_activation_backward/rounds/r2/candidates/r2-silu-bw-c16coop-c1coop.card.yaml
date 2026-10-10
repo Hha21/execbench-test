@@ -1,0 +1,92 @@
+id: r2-silu-bw-c16coop-c1coop
+parents: [r1-silu-bw-cluster2-small]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The launch path on B200 can be tuned below the cluster-of-2 launch through launch attributes alone; the kernel body
+  is unchanged. Grids of 64 CTAs or fewer (n <= 65536) launch as non-portable clusters of 16 with the cooperative
+  attribute, which is 0.14-0.22 us faster than cluster-2. Grids of 65-1184 CTAs launch with cluster dimension 1 plus
+  cooperative, which is 0.18-0.23 us faster at 160K-786K. Grids above 1184 CTAs keep the plain launch. These are
+  launch-path effects specific to B200; they were measured only on the rented B200 with unlocked clocks.
+expected_effect:
+  S:
+    pct: -8
+    confidence: medium
+  M:
+    pct: -5
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  THREADS: 256
+  FLOATS_PER_THREAD: 4
+  C16_MAX_GRID: 64
+  CLUSTER_SMALL: 16
+  CLUSTER_MID: 1
+  COOPERATIVE: true
+  ONE_WAVE_MAX: 1184
+  LOAD_HINT: evict_first_const
+  STORE_HINT: evict_last_const
+dispatch:
+  - {max_elements: 65536, kernel: silu_bw_vec4, meta: {cluster: 16, cooperative: true, grid_pad: 16}}
+  - {max_elements: 1212416, kernel: silu_bw_vec4, meta: {cluster: 1, cooperative: true}}
+  - {max_elements: null, kernel: silu_bw_vec4, meta: {plain: true}}
+tests: [H15, H19]
+findings:
+  - "H19 step 1, empty kernel (1 CTA x 32 threads, no memory access), harness_time, 9 reps ABAB, medians: plain 1.69-1.71 us; cluster-2 static or attribute 1.44; cluster-8 1.42; cluster-16 (non-portable) 1.31; cooperative alone 1.71; plain with a 150 us CPU delay 1.28-1.30; cluster-2 with the delay 1.15. The +0.4 us queued-behind-memset penalty exists WITHOUT memory traffic, and the cluster gain also exists on an empty kernel. A cluster removes only part of the penalty (with the delay, cluster-2 is still 0.29 us faster than without it) [probe_b200]"
+  - "empty kernel: a cluster-dimension attribute of (1,1,1) gives the full cluster gain (1.44, the same as cluster-2), so the gain comes from the cluster launch path, not from pairing CTAs [probe_b200]"
+  - "empty kernel, no effect (within 0.03 us of the matching base): scheduling policy SPREAD/LOAD_BALANCING, 2-D grid (1x2 cluster), MEM_SYNC_DOMAIN remote, launch preferred carveout 0/100, a 1 KB static __shared__ kernel (1.73, +0.03), cluster-2 + preferred cluster dim 8 (1.41). Cooperative + cluster-2: 1.41 (-0.03). Plain 148x256 grid 1.51 vs 1x32 1.69: a bigger plain grid has a SHORTER empty span [probe_b200]"
+  - "body, S sizes 131/2053/4096/16384, 9 reps ABAB (cuLaunchKernelEx for every variant, so Python overhead is equal): C2 2.17-2.21; C1 2.16-2.21; C8 2.14-2.18; C16 1.94-2.03; C1coop 2.13-2.18; C16coop 1.89-2.05; C16 with 64-thread CTAs 1.97-2.08; C1 with 128-thread CTAs = C1. CTA shape does not matter; cluster 16 does [probe_b200]"
+  - "body, M sizes 40960/163840/262144/786432, 9 reps: C2 2.24/2.56/2.88/4.34; C1coop 2.19/2.40/2.71/4.13; C2coop 2.21/2.50/2.79/4.13; C16 2.10/2.50/2.85/4.38; C16coop 2.07/2.48/2.82/4.32; C16 with 128-thread CTAs 2.18/2.50/2.88/4.64 (worse at 786K) [probe_b200]"
+  - "confirmation, 11 reps, 8 sizes, delta vs C2 at 131..786432: C16coop -0.22/-0.19/-0.19/-0.14/-0.16/-0.11/-0.07/-0.03; C1coop -0.03/0/0/0/-0.05/-0.18/-0.19/-0.23; C4coop -0.06..-0.19 (between the two); C8coop about -0.03; cooperative WITHOUT a cluster attribute +0.11..+0.27 (worse than C2). Best envelope: C16coop up to 40960 and C1coop from 163840, at least 0.14 us better than C2 at every size <= 786432 [probe_b200]"
+  - "diagnostic at L (NOT used: the task and the #38 constraint keep plain launches above 1184 CTAs): at 2.1M, a 2048-CTA two-wave grid with cluster dim 1 and no cooperative attribute gives 7.07 vs plain 7.31 us; at 4.2M, 11.40 vs 11.65. U2 one-wave C1coop 7.14 at 2.1M; U4 C1coop (32 regs with launch_bounds 256,8 and 88 B stack) 15.65 vs plain U4 16.05 at 4.2M, but plain U1 is 11.65, so U4 is a dead end. Cluster-1 on L grids is a candidate for a later round if the operator allows it [probe_b200]"
+  - "U4 without launch bounds uses 52 regs, and a 1024-CTA cooperative launch fails with error 720 (cooperative launch too large). The solution computes the cooperative limit from cudaOccupancyMaxActiveBlocksPerMultiprocessor x SMs (caps at 1184) and falls back to a plain launch if cudaLaunchKernelEx rejects it [probe_b200]"
+  - "SASS check: ld/st.global.L2::cache_hint with constant policies compile to LDG.E.128 / STG.E.128, with the policy loaded into the descriptor register (UMOV UR5 0x12f00000 / 0x14f00000; desc[UR4]). There is no EF/EL suffix in this form; r0's probes confirmed the hints take effect [probe_b200 sass]"
+  - "run_tests: 16/16 passed; vs r1-silu-bw-cluster2-small on the same GPU S -7.9%, M -5.2%, L 0.0% (131 2.0 vs 2.2; 3089 1.9 vs 2.2; 262144 2.7 vs 2.9; 786432 4.1 vs 4.3; 16.8M 38.4 vs 38.5); predicted portal 0.5279 +- 0.0046 vs 0.5166 [run_tests]"
+  - "compile: silu_bw_vec4 30 regs, 0 smem, 0 spills (8 CTAs/SM, so coop_max = 1184) [compile_b200]"
+  - "H15 supported: launch attributes alone (cluster-16+coop at S, cluster-1+coop at M) beat cluster-2 by 0.14-0.23 us. H4 (S at the launch floor) is weakened: the floor depends on the launch path [probe_b200, run_tests]"
+paths:
+  - {max_tokens: 65536, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 16, cooperative: true}
+  - {max_tokens: 1212416, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 1, cooperative: true}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: "cluster-16 needs non-portable cluster support; the launch-path gains were measured only on B200"
+  A100:
+    runs: false
+    representative: false
+    note: "no clusters on sm_80; the launch would fail and fall back to plain"
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Launch-path gains are measured with unlocked clocks; under the portal's 1500 MHz SM lock they may scale (H10 predicts about 1.2x) or shrink"
+  - "Cooperative + cluster launches could be judged a timing-relevant launch mode; the constraint lists cooperative and cluster dims as legitimate dispatch attributes, but the operator should confirm before using a portal slot"
+  - "Cluster 16 is non-portable (needs a GPC with 16 free SMs); if B200 floor-swept GPCs cannot hold it, the launch is rejected and the code falls back to a plain launch for that shape (same shape -> same path each call)"
+  - "If the cooperative limit computed at run time were below the grid on the portal, M would fall back to the plain launch (slower than r1's cluster-2), not fail"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

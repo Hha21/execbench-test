@@ -1,0 +1,16 @@
+{"workload": {"axes": {"num_elements": 40960}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00221}}}
+{"workload": {"axes": {"num_elements": 16384}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00229}}}
+{"workload": {"axes": {"num_elements": 16777216}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.038829999999999996}}}
+{"workload": {"axes": {"num_elements": 131}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00229}}}
+{"workload": {"axes": {"num_elements": 655360}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.004059999999999999}}}
+{"workload": {"axes": {"num_elements": 786432}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00435}}}
+{"workload": {"axes": {"num_elements": 163840}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0025800000000000003}}}
+{"workload": {"axes": {"num_elements": 8388608}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.020059999999999998}}}
+{"workload": {"axes": {"num_elements": 4194304}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01177}}}
+{"workload": {"axes": {"num_elements": 4096}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0023799999999999997}}}
+{"workload": {"axes": {"num_elements": 3089}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00235}}}
+{"workload": {"axes": {"num_elements": 2097152}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0073}}}
+{"workload": {"axes": {"num_elements": 262144}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0029500000000000004}}}
+{"workload": {"axes": {"num_elements": 5242880}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.013730000000000001}}}
+{"workload": {"axes": {"num_elements": 2053}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00234}}}
+{"workload": {"axes": {"num_elements": 10485760}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.02469}}}

@@ -1,0 +1,425 @@
+=== TASK ===
+Round: r2   Operation: knob_mutation
+Problem: L1/084_silu_activation_backward   Target niche: exp:E1:H15   Target band: S
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r2-'.
+Experiment E1 (tests H15): Launch path below the cluster-of-2 launch: empty-kernel anatomy, launch/function attributes, cluster 4/8 and CTA shape at n <= 786432. Rented B200, harness timing (dirty 2xL2 zero-fill flush, shifting pool), ABAB interleaving, >= 9 reps, report medians per size. Step 1 (diagnostic, H19): an empty kernel (1 CTA, 32 threads, no memory access) launched (a) plain, (b) __cluster_dims__(2), (c) cluster 8, (d) cudaLaunchKernelEx with cudaLaunchAttributeCooperative, and (a) again with a 150 us CPU busy-wait before launch. The delay variant is a diagnostic only and must never appear in a candidate. Report whether the +0.4 us penalty exists without memory traffic and whether the cluster gain exists on an empty kernel. Step 2: on the parent kernel body at n = 131, 2053, 4096, 16384, 40960, 163840, 262144, 786432, 2097152 compare against cluster-2: cluster 4 and 8 (grid padded to a multiple of the cluster size; pad CTAs exit on i < nvec); cooperative launch attribute (with and without cluster dims); cudaLaunchAttributeClusterSchedulingPolicyPreference spread vs load-balancing; cudaFuncAttributePreferredSharedMemoryCarveout at 0, 50 and 100 and a variant declaring 1 KB of static __shared__ (does the SM reconfigure after the torch fill kernel?); 2-D grid (gridDim.y = 2) vs 1-D; launch through cudaLaunchKernelExC with the same attributes. Step 3: combine the best launch path with CTA shape: 64/128/512-thread CTAs at <= 16384 (more, smaller CTAs across SMs with cluster 8), 128 vs 256 at 40960-786432. Step 4: if a configuration beats cluster-2 by >= 0.05 us at every size <= 786432 (or >= 0.08 us at every size <= 16384 for an S-only dispatch step), build the dispatch candidate (dispatch on n only, L path unchanged: plain launch above 1184 CTAs), run_tests all 16 workloads, write the design card with every probe result as findings, including negative ones. Check the SASS for LDG.EF/STG.EL suffixes while you are there (r1 did not). Success: >= 0.05 us faster than cluster-2 at every size <= 786432 in interleaved medians (predicted +0.005 or better), 16/16 run_tests, candidate ready for a portal slot Refuted if: No launch or function attribute, cluster size or CTA shape beats cluster-2 by more than 0.03 us at any size; then H15 is refuted and (with E2) H4 becomes supported This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r1-silu-bw-cluster2-small | ldg128/oneshot/dispatch:size | cuda_cpp | 2.0/3.1/16.8 | -/-/- | -/-/- | -/-/- | 2.4/3.5/17.6 | 0.51664 | 14/0/None; 24/0/None | passed |
+| r0-silu-bw-cuda-ldg128-os-efel | ldg128/oneshot/all | cuda_cpp | 2.4/3.3/16.8 | -/-/- | -/-/- | -/-/- | 2.8/3.7/17.7 | 0.494149 | 14/0/None; 24/0/None | passed |
+| r1-silu-bw-cuda-ldg128-os-efel-e3 | ldg128/oneshot/all | cuda_cpp | 2.1/3.2/16.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 14/0/None; 24/0/None | passed |
+| r1-silu-bw-triton-b512w4-efel | ldg128/oneshot/all | triton | 2.1/3.2/16.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 24/0/16; 24/0/16 | passed |
+B200 results so far:
+- r0-silu-bw-cuda-ldg128-os-efel: B200 score 0.494, geomean 6.1 µs, B200 S/M/L 2.8/3.7/17.7 µs
+- r1-silu-bw-cluster2-small: B200 score 0.517, geomean 5.7 µs, B200 S/M/L 2.4/3.5/17.6 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #084 silu_activation_backward, seeded 9 October 2026; updated r2 (10 October 2026) by the research lead.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Launch attributes (cluster dims, cooperative, scheduling-policy preference, carveout) are legitimate only if they change how our own kernel is dispatched; none may alter ordering or overlap with harness work (no PDL, no priority games, same stream).'
+- 'Clusters only on one-wave grids (<= 1184 CTAs of 256 threads, i.e. n <= ~1.2M elements): clustered large grids lost 2-5% on the #38 portal and seemed to slow later plain launches (carried over from #38 H16).'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot.'
+- 'torch.compile-based or inductor-derived Triton solutions are legitimate PyTorch/Triton code, but set dynamic=False and raise torch._dynamo cache_size_limit above 16, or extract the generated Triton kernel and launch it directly; never let a recompile or eager fallback happen inside the timed loop (CUPTI sequence must repeat).'
+hypotheses:
+- id: H1
+  statement: L2 evict_last on the output stores cuts in-window dirty write-backs, gaining 5-7% at L and 3% at 12.6 MB.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: 268 MB plain 43.0 us vs EL stores 40.2; 134 MB 23.65 vs 21.5; 33.5 MB 7.83 vs 7.41; 12.6 MB 4.68 vs 4.51; S ties'
+  - 'r1 E3: store evict_unchanged 43.28 and evict_normal 43.19 at 268 MB (+11%): without EL the outputs are written back in-window on top of displacing flush lines'
+- id: H2
+  statement: L2 evict_first on the three input streams adds a further 3-4% at L on top of EL stores, because after each L2 set holds one of our EF lines our own clean lines become the victims instead of the flush's dirty lines.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: 268 MB EL 40.2 -> EF+EL 38.8; 134 MB 21.5 -> 20.1; 83.9 MB 14.8 -> 13.8; 33.5 MB 7.41 -> 7.10; S ties'
+  - 'probe_b200 r0: ld.global.cs, nc+EF and L1::no_allocate+EF all equal EF (within 0.1 us); L2::256B prefetch hint = no gain'
+  - 'portal r0: our L marginal 7.3 TB/s vs Tb 6.8 TB/s: the hints are our L lead'
+  - 'r1 E3: reads-only EF at 268 MB still pays ~0.85 us dirty cost (33.23 dirty vs 32.39 clean) = the first miss per set (~8 MB); EF cannot remove that'
+  - 'r1 V3 (no hints) ties at S, loses 10% at 2.1M and 16.8M: keep hints at every size'
+- id: H3
+  statement: 256-bit loads/stores do not beat 128-bit for this stream, and cost +0.8 us at 131 elements.
+  status: supported
+  evidence:
+  - 'probe_b200 r0: k8 vs k4 tie at 12.6-268 MB (within 1%); at 131 elements k8 3.06 us vs k4 2.29, repeatable across block sizes; cause unknown'
+  - 'caveat: the r0 probe did not use the exact L2::cache_hint EF/EL policy form on the 256-bit path; r2 E3 replicates at L only (dispatch keeps 128-bit at <= 1.2M, so the 131-element penalty is moot)'
+- id: H4
+  statement: The S band (<= 0.3 MB) is at the launch floor; no kernel-side change can gain more than ~0.2 us there.
+  status: open
+  evidence:
+  - 'probe_b200 r0 (unlocked): empty kernel 1.57-1.66 us; float4/scalar kernels 2.2-2.4 us at 131-16384 for every block size, unroll and hint'
+  - 'r1: cluster-2 launch 1.89 us at 131 on the bench, i.e. ~0.3 us above the (non-cluster) empty kernel; portal r1 2.3-2.5 us = Tb 2.2-2.5, scores 0.485-0.508'
+  - 'r1 V1: pre-load instruction count irrelevant (ties r0 within 0.04 us)'
+  - 'to test: r2 E1 (launch path below cluster-2) and r2 E2 (memory round trip at S); if both find <= 0.03 us, mark supported and stop S work'
+- id: H5
+  statement: The hidden baseline Tb is one fused torch.compile kernel plus the dynamo launch delay (which lands it after the flush memset); at L it is an inductor kernel without cache hints at 6.8 TB/s marginal.
+  status: supported
+  evidence:
+  - 'portal r0: Tb = 2.4/2.5/2.2/2.4/2.5/2.5/3.0/3.4/4.8/5.0/8.5/13.7/16.9/24.1/29.0/43.1 us; eager is ~6x slower'
+  - 'r1 bench: inductor-equivalent Triton under harness timing 4.82/7.87/23.23/42.52 us at 786K/2.1M/8.4M/16.8M vs Tb 5.0/8.5/24.1/43.1 (+4-8% portal inflation, same as ours)'
+  - 'r1 bench: torch.compile callable 1.58-1.95 us at 131-16384 (dynamo delay lets it arrive after the memset); the same kernel launched directly 2.03-2.08 = r0'
+- id: H6
+  statement: More bytes in flight per thread (unroll 2-4, 512-1024 threads) raises L-band bandwidth.
+  status: refuted
+  evidence:
+  - 'probe_b200 r0: block 128/256/512/1024 x unroll 1/2/4 all within +-1% at 67-268 MB over 3 repeats'
+  - 'r1 E3: U2/U4/128-thread/148xk grids tie at <= 12.6 MB and are 1-5% slower at 33.6 MB; persistent register double-buffer +7-10% at L'
+- id: H7
+  statement: In-window DRAM traffic cannot be less than reads + output bytes (each output line displaces a dirty flush line, or is written back itself) + ~8 MB (one dirty eviction per L2 set from reads). r0/r1 move that traffic at ~7.5 TB/s (92% of 8.18), so L headroom is <= 5-8% and lies in DRAM read/write mix efficiency, not in cache policy.
+  status: supported
+  evidence:
+  - 'r1 E3 Part A (r0, dirty / clean sweep): 268 MB 38.41/31.71; 134 MB 20.32/16.30; 33.6 MB 7.52/5.83 -> in-window dirty cost 5.9/2.6/1.05 us ~= output bytes / 8 TB/s'
+  - 'r1 E3: reads-only dirty/clean 33.23/32.39 at 268 MB (reads add <= 1 us); writes-only EL unaffected by flush type (10.19 vs 10.12)'
+  - 'arithmetic: 201 MB reads + 67 MB write-backs + 8 MB in 38.4 - 1.6 us = 7.5 TB/s; floor at 8.18 TB/s + 1.6 us fixed = 35.4 us vs 38.4 bench / 39.8 portal'
+  - 'r1 E3 dead ends: fractional EF/EL policies, evict_unchanged, persistent store-before-load pipelines all 0 to +11%'
+- id: H8
+  statement: Per-size dispatch is unnecessary; one config (256 threads, one float4 per thread, EF+EL) is within noise of the best at every size.
+  status: refuted
+  evidence:
+  - 'r1 portal: cluster-2 dispatch at <= 1184 CTAs gained S -19% / M -7% (0.4941 -> 0.5166); the kernel body is unchanged, so dispatch on n is required for the launch path'
+  - 'still true for the body: block size, unroll and hints tie at every size (r0, r1 E3)'
+- id: H9
+  statement: TMA/bulk rings, persistent grids, clusters or weight-style prefetch could help this problem.
+  status: parked
+  evidence:
+  - '#38 evidence: TMA +1-1.5 us fixed, persistent slower at every size, clusters on large grids lost 2-5%; r1 E3 confirmed persistent pipelines +7-10% here'
+  - 'exception: cluster launch on ONE-WAVE grids saves 0.12-0.20 us (H12, supported)'
+  - 'last check: a one-shot 1-D bulk copy at n <= 16384 (no ring, one mbarrier) is tested in r2 E2; if it loses, bulk/TMA is closed for this problem'
+- id: H10
+  statement: The portal-vs-bench inflation (+0.4 us at S, +5% at L) is the 1500 MHz SM lock scaling the clock-bound part of the fixed cost (launch, CTA dispatch, store drain), so every launch-path saving on the bench is worth ~1.2x on the portal.
+  status: open
+  evidence:
+  - 'portal r1 vs bench r1 band geomeans: S 2.4/2.0 (1.20x), M 3.5/3.1 (1.13x), L 17.6/16.8 (1.05x); r0 ratios the same'
+  - 'r1: cluster-2 gain transferred 1:1 in percent (S bench -19.4% / portal -19.3%; M -7.0% / -6.9%), consistent with a scaled fixed cost'
+  - 'untestable on the rented B200: nvidia-smi -lgc/-ac refused (no permission); only portal pairs can test it; keep for interpretation'
+- id: H11
+  statement: Tb's S-band advantage over r0 comes from kernel structure (inductor-style Triton kernel), so a Triton port would score ~2.4 us at S on the portal.
+  status: refuted
+  evidence:
+  - 'r1 bench: the inductor kernel launched directly (CachingAutotuner.run or plain Triton) = r0 (2.03-2.08 at 131); its advantage exists only through the compiled path''s launch delay (constraint 1)'
+  - 'r1 Triton b512w4 port ties r0 within noise at every band (run_tests)'
+  - 'portal r1: we now tie Tb at S without any launch-delay effect (2.3-2.5 vs 2.2-2.5)'
+- id: H12
+  statement: A cluster-of-2 launch on one-wave grids (n <= ~1.2M elements) cuts 0.12-0.20 us of per-launch overhead outside the CTAs; clusters of 4/8 give the same gain plus ~0.04 us at S and lose ~0.04 us at 786K-2.1M.
+  status: supported
+  evidence:
+  - 'r1 probe (ABAB, 7 reps): 131: 2.06 -> 1.89; 4096: 2.08 -> 1.92; 40960: 2.32 -> 2.18; 262144: 3.02 -> 2.88; 786432: 4.48 -> 4.30; 2.1M: 7.19 -> 6.98; 16.8M tie; same-padded grid without the attribute = r0'
+  - 'r1 probe (11 reps): C4/C8 ~0.04 us better than C2 at S, ~0.04 us worse at 786K-2.1M; at 4.2M the gain is 0.1-0.2 us (1.7%)'
+  - 'portal r1: 0.4941 -> 0.5166, S -19.3%, M -6.9%, L +0.5% (noise); no sign of cross-workload slowdown of the plain L launches'
+- id: H13
+  statement: At M sizes every read miss evicts a dirty flush line (reads touch <= ~1 line per L2 set), so the in-window dirty cost ~= read bytes / 8 TB/s (0.25 us at 2.6 MB, 0.9 us at 12.6 MB) and saturates near 8 MB; stores at M victimise our own EF read lines and are free. Counting this traffic, M already runs at ~8 TB/s, so only the fixed cost is reducible at M.
+  status: supported
+  evidence:
+  - 'r1 E3 dirty/clean: 2.6 MB 2.59/2.37; 12.6 MB 4.51/3.58; reads-only 12.6 MB 4.26/3.33 (the whole cost is on the reads); writes-only unaffected'
+  - 'arithmetic at 12.6 MB: 9.4 MB reads + ~9 MB write-backs + 3.1 MB stores = 22 MB in 4.3 - 1.6 us = 8.1 TB/s'
+  - 'clean case 3.58 us = 1.6 fixed + ~0.8 DRAM latency + 9.4 MB / 8 TB/s: fully accounted for'
+  - 'portal r0/r1: Tb shares the same M slope, as it must (its reads evict the same dirty lines)'
+- id: H14
+  statement: Fractional eviction policies or ordering output stores before the next tile's loads change which lines are victimised and recover part of the L-band write-back cost.
+  status: refuted
+  evidence:
+  - 'r1 E3 (5 reps): ld EF0.25/0.5/0.75 and st EL0.5/0.75 and EL0.5+EF secondary all 0 to +5% vs r0 at 12.6-268 MB; persistent 2-tile pipelines +7-10%'
+  - 'mechanism (H7): each output line must displace one dirty line whatever the policy'
+- id: H15
+  statement: Part of the 1.6 us empty-kernel span is front-end launch processing and SM setup that legitimate launch attributes or function attributes can shorten beyond the cluster-of-2 launch (cluster 4/8 at S, cooperative launch, cluster scheduling-policy preference, shared-memory carveout matching the memset kernel's configuration, grid shape, smaller CTAs). Expected 0.05-0.15 us at every size <= 786K (~+0.005-0.012).
+  status: open
+  evidence:
+  - 'r1: cluster-2 saved 0.12-0.20 us although the CTAs do identical work; C4/C8 add 0.04 us at S: the launch path is tunable'
+  - 'unknown: whether an SM L1/shared carveout reconfiguration happens between the torch fill kernel and ours; a mismatch costs an SM drain'
+  - 'to test: r2 E1'
+- id: H16
+  statement: The ~0.3-0.5 us that the S-band kernel spends above an empty launch is one DRAM round trip plus the store acknowledgement under a dirty, post-memset L2, and a different access mechanism (one-shot 1-D bulk copy by one thread, write-through or no-allocate stores, bulk store, 32/64-thread CTAs) shortens it by >= 0.05 us.
+  status: open
+  evidence:
+  - 'r1 bench: cluster-2 1.89 us at 131 vs empty kernel 1.57-1.66 (non-cluster); r0 probes show block size and hints do not move S'
+  - 'untested: reads-only vs stores-only decomposition at 131-40960 (r1 E3 started at 2.6 MB), and whether the S-band memory leg depends on the flush type'
+  - 'to test: r2 E2'
+- id: H17
+  statement: Portal Tsol is ~4n bytes / 8 TB/s (one tensor's worth), i.e. ~0 at S and 2.1-8.4 us at L. So S-band score = Tb/(t+Tb) (0.2 us off every size <= 786K ~ +0.015), and L scores are compressed (4% at L ~ +0.013 per L workload, ~+0.005 on the problem).
+  status: supported
+  evidence:
+  - 'portal r1 page, solving S = (Tb-Tsol)/((t-Tsol)+(Tb-Tsol)): 16.8M -> Tsol 8.4 us (4n/8 TB/s = 8.4); 8.4M -> 4.3 (4.2); 10.5M -> 5.4 (5.2); 4.2M/5.2M -> 2.9/3.0 (2.1/2.6, ill-conditioned near S=0.5)'
+  - 'predict_score: 10% off S/M/L alone is worth +0.0092/+0.0087/+0.0125'
+- id: H18
+  statement: Each L2 line has a home partition (die); a CTA that reads %smid and takes work whose lines are homed on its own die would cut cross-die traffic and latency. Requires discovering the address-to-partition hash with a latency probe; gain unknown (NV-HBI is not bandwidth-limited at 7.5 TB/s, so at most a latency/queueing effect).
+  status: parked
+  evidence:
+  - 'chipsandcheese-b200: L2 latency is "dramatically" higher when data sits in the other die''s partition; 16.8 TB/s cross-partition vs 21 TB/s local'
+  - 'not scheduled: revisit only if r2 E3 shows L is not DRAM-efficiency bound'
+- id: H19
+  statement: The +0.4 us penalty on a launch queued early behind the flush memset is a launch-path or timestamp effect (it appears for an empty kernel too), not DRAM write-drain contention. If so, launch-path changes (H15) can recover part of it legitimately; if the penalty needs memory traffic, nothing kernel-side at S can.
+  status: open
+  evidence:
+  - 'r1 bench: 131 elements, CPU delay 0/20/60/150 us -> 2.11/1.89/1.73/1.73; CUPTI kernel duration 1.47 (compiled path) vs 1.79 (direct) with positive gaps after the memset, so it is not overlap'
+  - 'to test: r2 E1 step 1 (empty kernel with and without delay, diagnostic only; delay never goes in a candidate)'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r0-silu-bw-cuda-ldg128-os-efel (portal 0.4941) vs r1-silu-bw-cluster2-small: S bench +19.4% / portal +19.3%; M bench +7.0% / portal +6.9%; L bench -0.0% / portal +0.5%
+Findings recorded by earlier design sessions (most recent first):
+- [r1-silu-bw-cluster2-small] probe: 5 variants ABAB, 7 reps, 12 sizes, harness_time. Cluster-of-2 (V2) is 0.12-0.20 us faster than r0 at every size <= 2.1M (131: 2.06->1.89, 4096: 2.08->1.92, 40960: 2.32->2.18, 262144: 3.02->2.88, 786432: 4.48->4.30, 2.1M: 7.19->6.98); 16.8M tie (38.66 vs 38.36) [probe_b200]
+- [r1-silu-bw-cluster2-small] probe: V1 (32-bit index, constant EF/EL policies, 3 predicated tail loads, no cluster) ties r0 within 0.04 us at all sizes: the pre-load instruction count is irrelevant; the cluster launch alone gives the gain [probe_b200]
+- [r1-silu-bw-cluster2-small] probe: control with the same even-padded grid but no cluster attribute (P) equals r0 at every size, so padding is not the cause [probe_b200]
+- [r1-silu-bw-cluster2-small] probe: cluster size 2/4/8 give the same gain (C4/C8 about 0.04 us better at S, 0.04 us worse at 786K-2.1M); 11 reps, sizes 131..4.2M. At 4.2M the gain shrinks to 0.1-0.2 us (1.7%) [probe_b200]
+- [r1-silu-bw-cluster2-small] probe: V3 (V2 without cache hints) is no faster at S (1.89-2.18 same as V2) but loses 10% at 2.1M and 16.8M (7.87, 42.4): hints cost nothing at S, keep them everywhere [probe_b200]
+- [r1-silu-bw-cluster2-small] probe: V4 (8 floats per thread, half the CTAs, cluster 2) ties V2 within 0.05 us at M and is slower at 2053-4096 (+0.1-0.2): not worth it [probe_b200]
+- [r1-silu-bw-cluster2-small] run_tests: 16/16 passed; vs r0 on the same GPU S -4.9%, M -4.3%, L 0.0% (131: 2.0 vs 2.1; 786432: 4.3 vs 4.5; 16.8M: 38.6 vs 38.3 noise); predicted portal score 0.5016 vs 0.4941 [run_tests]
+- [r1-silu-bw-cluster2-small] compile: 30 regs, 0 smem, 0 spills; the constant-policy loads still compile to the L2 cache-hint form (LDG.128 / STG.128 in the SASS count). I did not check the EF/EL suffixes in the SASS dump [compile_b200]
+- [r1-silu-bw-cluster2-small] caveat: the #38 ledger says clustered LARGE grids lost 2-5% on the portal and may have slowed later plain launches; here clusters are limited to grids <= 1184 CTAs and the bench shows no loss at 2.1M+, but the portal clock lock and cross-workload effects are untested [INFERRED]
+- [r1-silu-bw-cluster2-small] clock lock not tested (no E1 report); the gain may differ at SM 1500 MHz
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] probe Part A (r0, median of 3, rented B200) dirty / clean read-sweep / zero+read-sweep, us: 2.6 MB 2.59/2.37/2.34; 12.6 MB 4.51/3.58/3.75; 33.6 MB 7.52/5.83/6.47; 134 MB 20.32/16.30/17.70; 268 MB 38.41/31.71/32.51 -> in-window dirty cost 0.25/0.76/1.05/2.6/5.9 us [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] probe Part A reads-only (EF loads, no stores) dirty/clean/zero+sweep: 12.6 MB 4.26/3.33/3.62; 33.6 MB 7.27/5.51/6.15; 134 MB 19.17/16.38/17.48; 268 MB 33.23/32.39/32.80 -> at 268 MB almost all the dirty cost comes from the outputs taking L2 slots; reads add <=1 us [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] probe Part A writes-only (EL stores) is unaffected by flush type: 1.76/1.92/2.53/5.95/10.19 us dirty vs 1.73/1.89/2.50/5.83/10.12 clean [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] inference (H7 closed): with a fully dirty L2, each output line must cost one in-window DRAM write (a flush-line write-back for EL stores, or the output's own write otherwise), so the dirty cost cannot be avoided without discard (forbidden). r0 moves 268 MB at 268 MB size, about 7.3 TB/s marginal, about 90% of peak; L is at the practical ceiling [INFERRED]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] dead end: fractional policies at 12.6/33.6/134/268 MB (r0 4.38/7.30/20.22/39.08 us): ld EF0.5 4.35/7.26/21.05/39.94; EF0.25 4.35/7.39/21.34/40.29; EF0.75 4.32/7.20/20.66/39.34; st EL0.5 4.39/7.61/21.43/40.77; st EL0.75 4.38/7.45/20.77/39.68; st EL0.5+EF secondary 4.41/7.62/21.40/41.05 [probe_b200, 5 reps]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] dead end: store evict_unchanged 43.28 us and evict_normal 43.19 at 268 MB (+11%), because the outputs are then written back in-window on top of displacing flush lines [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] dead end: persistent grid 148x8x256 with register double buffer (next tile's loads issued before the current store) 42.93 us at 268 MB (+10%), 21.80 at 134 MB (+8%); contiguous per-CTA chunks with the same pipeline 41.94/21.76 (+7%), and 4.64 at 12.6 MB (+6%) [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] dead end M band (median of 7, 0.66/2.6/4.2/10.5/12.6/33.6 MB; r0 2.27/2.59/2.98/4.06/4.42/7.15 us): U2 per thread, U4, 128-thread CTAs, 128x U2 and balanced 148xk grids all tie within 0.1 us at <=12.6 MB and are 1-5% slower at 33.6 MB. Every M size is already one wave with r0, so CTA balance does not matter [probe_b200]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] run_tests: 16/16 passed; ties r0 on the same GPU (band geomeans S -0.6%, M 0.0%, L -0.2%: noise) [run_tests]
+- [r1-silu-bw-cuda-ldg128-os-efel-e3] tooling note: b200probe Kernel passes Python ints as int32; wrap 64-bit args in b200probe.i64 (otherwise an illegal address). Monkeypatching sol_execbench timing._clear_cache in a probe changes the flush type for experiments [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] harness (rented copy): per-trial statistic is the MEDIAN of the 50 calls; inputs are copied into the shifting pool BEFORE the 2xL2 zero-fill, so S-band inputs are cold [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] clock lock refused on the rented B200: nvidia-smi -lgc/-ac 'no permission', -lmc 'not supported'; all timings unlocked [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] KEY: same Triton kernel at 131 elements with a CPU busy-wait before launch: 0 us 2.11, 20 us 1.89, 60 us 1.73, 150 us 1.73; 16384: 2.59->2.40; 786432: 4.80->4.64; 16.8M: 42.70->42.53. Flush memset takes 73 us; a kernel queued behind it costs ~0.4 us more at S [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] torch.compile(reference) as a callable under harness timing: 1.58-1.76 us at 131, 1.92 at 4096, 1.95 at 16384, 2.46 at 163840 vs r0 2.06/2.08/2.21/2.64; the SAME inductor kernel launched directly (CachingAutotuner.run) or as a plain Triton kernel: 2.03-2.08 = r0. CUPTI kernel duration alone 1.47 (compiled path) vs 1.79 us (direct) with positive gaps after the memset, so no overlap and no output-buffer effect (r0 non-DPS with torch.empty output = r0 DPS) [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] a deliberate CPU delay in run() would capture ~0.4 us at S, but it exploits the timing methodology rather than speeding up the kernel: NOT used; needs operator/NVIDIA ruling [reasoning]
+- [r1-silu-bw-triton-b512w4-efel] inductor configs (torch 2.9, default and max-autotune-no-cudagraphs agree on structure): one kernel triton_poi_fused_add_mul_rsub_0, no hints, FMA on (max diff vs eager 1e-7..1.5e-5); XBLOCK = max(256, min(next_pow2(n)//128, 1024)) -> 256 for n<=16384, 512 for 40960, 1024 for >=163840; num_warps 4 (max-autotune picked 2048/8w at 786432, 512/4w at 2.1M) [probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] inductor-equivalent Triton (no hints, 1024/4w) under harness timing: 4.82 us at 786K, 7.87 at 2.1M, 23.23 at 8.4M, 42.52 at 16.8M; portal Tb 5.0/8.5/24.1/43.1 -> Tb consistent with a torch.compile kernel plus dynamo launch delay (H5 supported) [probe_b200 vs portal]
+- [r1-silu-bw-triton-b512w4-efel] dead end: Triton BLOCK 1024 / 4 warps (8 floats per thread) is 12-24% slower than r0 at 4096-262144 and +2-5% at 0.66-2.1M; BLOCK 2048/8w ties 1024/4w at L [run_tests, probe_b200]
+- [r1-silu-bw-triton-b512w4-efel] Triton BLOCK 512 / 4 warps (one float4 per thread per stream) with EF loads + EL store: 16/16 passed; S -3.5%, M -0.5%, L -0.4% vs r0 on the same GPU (ties within noise) [run_tests]
+- [r1-silu-bw-triton-b512w4-efel] sm_100a: 32 regs, 0 smem, 16 CTAs/SM; LDG.EF.128 + STG.EL.128 when n % 16 == 0, scalar LDG.EF/STG.EL specialisation for 131/2053/3089 [compile_b200 at BLOCK 1024; BLOCK 512 not compiled separately]
+- [r1-silu-bw-triton-b512w4-efel] triton hints vs CUDA hints at L: trh 38.94 vs r0 38.68 at 16.8M, 20.25 vs 20.11 at 8.4M; no-hint inductor-style kernel is +9% at L [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: empty-kernel CUPTI span 1.57-1.66 us; float4/scalar one-shot kernels 2.2-2.4 us at 131-16384 elements for every block size, unroll and hint: S band is at the floor [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: 256-bit loads tie 128-bit at 12.6-268 MB but cost +0.8 us at 131 elements (3.06 vs 2.29 us), repeatable across block sizes, cause unknown [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: at 268 MB plain 43.0 us -> EL stores 40.2 -> EF loads + EL stores 38.8; 134 MB 23.65 -> 21.5 -> 20.1; 33.5 MB 7.83 -> 7.41 -> 7.10; S unchanged [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: .cs loads, nc+EF, L1::no_allocate+EF all equal EF+EL within 0.1 us; L2::256B prefetch hint and nc alone give no gain over EL-only [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: block 128/256/512/1024 x unroll 1/2/4 with EF+EL all within +-1% at 67-268 MB over 3 repeats; a 512x2 outlier (37.4 us) did not reproduce [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] probe: torch.compile(reference) is a plausible hidden baseline: 2.11 us at 131 elements (equal to ours), 8.13 at 33.5 MB, 25.8 at 134 MB, 46.6 at 268 MB (ours 7.3/20.0/38.5); eager reference 17.9-131.8 us [probe_b200]
+- [r0-silu-bw-cuda-ldg128-os-efel] run_tests: 16/16 passed, bit-identical to eager; 2.1-2.5 us at S, 2.4-4.6 at M, 7.3-38.5 at L; 0.67-0.83x a plain copy at L, 1.05-1.2x at S/M [run_tests]
+- [r0-silu-bw-cuda-ldg128-os-efel] compile: 24 regs, 0 smem, 0 spills, 3x LDG.128 + 1x STG.128 per thread on sm_100a [compile_b200]
+
+=== PARENTS ===
+--- parent r1-silu-bw-cluster2-small ---
+design card:
+id: r1-silu-bw-cluster2-small
+parents: [r0-silu-bw-cuda-ldg128-os-efel]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Launching the one-shot kernel as clusters of 2 (compile-time __cluster_dims__, grid padded to an even count) lowers the
+  per-launch span by about 0.15-0.2 us on B200 at every size with a grid of 1184 CTAs or fewer. 32-bit index math, constant
+  L2 policies and a branch-free tail change nothing measurable. Dispatch is on n only.
+expected_effect:
+  S: {pct: -5, confidence: medium}
+  M: {pct: -4, confidence: medium}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs: {THREADS: 256, FLOATS_PER_THREAD: 4, CLUSTER: 2, CLUSTER_MAX_GRID: 1184, LOAD_HINT: evict_first_const, STORE_HINT: evict_last_const}
+tests: [H12]
+findings:
+  - "probe: 5 variants ABAB, 7 reps, 12 sizes, harness_time. Cluster-of-2 (V2) is 0.12-0.20 us faster than r0 at every size <= 2.1M (131: 2.06->1.89, 4096: 2.08->1.92, 40960: 2.32->2.18, 262144: 3.02->2.88, 786432: 4.48->4.30, 2.1M: 7.19->6.98); 16.8M tie (38.66 vs 38.36) [probe_b200]"
+  - "probe: V1 (32-bit index, constant EF/EL policies, 3 predicated tail loads, no cluster) ties r0 within 0.04 us at all sizes: the pre-load instruction count is irrelevant; the cluster launch alone gives the gain [probe_b200]"
+  - "probe: control with the same even-padded grid but no cluster attribute (P) equals r0 at every size, so padding is not the cause [probe_b200]"
+  - "probe: cluster size 2/4/8 give the same gain (C4/C8 about 0.04 us better at S, 0.04 us worse at 786K-2.1M); 11 reps, sizes 131..4.2M. At 4.2M the gain shrinks to 0.1-0.2 us (1.7%) [probe_b200]"
+  - "probe: V3 (V2 without cache hints) is no faster at S (1.89-2.18 same as V2) but loses 10% at 2.1M and 16.8M (7.87, 42.4): hints cost nothing at S, keep them everywhere [probe_b200]"
+  - "probe: V4 (8 floats per thread, half the CTAs, cluster 2) ties V2 within 0.05 us at M and is slower at 2053-4096 (+0.1-0.2): not worth it [probe_b200]"
+  - "run_tests: 16/16 passed; vs r0 on the same GPU S -4.9%, M -4.3%, L 0.0% (131: 2.0 vs 2.1; 786432: 4.3 vs 4.5; 16.8M: 38.6 vs 38.3 noise); predicted portal score 0.5016 vs 0.4941 [run_tests]"
+  - "compile: 30 regs, 0 smem, 0 spills; the constant-policy loads still compile to the L2 cache-hint form (LDG.128 / STG.128 in the SASS count). I did not check the EF/EL suffixes in the SASS dump [compile_b200]"
+  - "caveat: the #38 ledger says clustered LARGE grids lost 2-5% on the portal and may have slowed later plain launches; here clusters are limited to grids <= 1184 CTAs and the bench shows no loss at 2.1M+, but the portal clock lock and cross-workload effects are untested [INFERRED]"
+  - "clock lock not tested (no E1 report); the gain may differ at SM 1500 MHz"
+paths:
+  - {max_tokens: 1212416, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 2}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "cluster launch cost differs per chip; the gain was measured on B200 only"}
+  A100: {runs: false, representative: false, note: "no thread-block clusters on sm_80"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "The cluster gain is a launch-path effect measured on unlocked clocks; it could shrink or vanish on the portal's 1500 MHz lock"
+  - "#38 portal evidence says clustering larger grids lost 2-5% and may slow later plain launches; the L band here uses plain launches, but cross-workload carry-over is untested"
+  - "Clusters of 2 need an even grid; the pad CTA exits immediately on i < nvec"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 2.0/3.1/16.8
+B200 portal: score 0.51664, geomean 5.681 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| num_elements=131 | 2.3 | 2.4 | 0.504 |
+| num_elements=2053 | 2.5 | 2.5 | 0.502 |
+| num_elements=3089 | 2.3 | 2.2 | 0.485 |
+| num_elements=4096 | 2.4 | 2.4 | 0.508 |
+| num_elements=16384 | 2.4 | 2.5 | 0.508 |
+| num_elements=40960 | 2.6 | 2.5 | 0.493 |
+| num_elements=163840 | 2.9 | 3.0 | 0.510 |
+| num_elements=262144 | 3.3 | 3.4 | 0.503 |
+| num_elements=655360 | 4.4 | 4.8 | 0.520 |
+| num_elements=786432 | 4.8 | 5.0 | 0.514 |
+| num_elements=2097152 | 8.0 | 8.5 | 0.520 |
+| num_elements=4194304 | 12.4 | 13.7 | 0.532 |
+| num_elements=5242880 | 14.1 | 16.9 | 0.556 |
+| num_elements=8388608 | 20.7 | 24.1 | 0.547 |
+| num_elements=10485760 | 25.5 | 29.0 | 0.540 |
+| num_elements=16777216 | 39.8 | 43.1 | 0.525 |
+sm_100a static features: [{"kernel": "_Z14silu_bw_scalarPKfS0_S0_Pfx", "num_warps": null, "regs": 14, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 3, "STG": 10, "LDG.128": 9, "STG.128": 3, "LDG": 27}}, {"kernel": "_Z15silu_bw_vec4_64PKfS0_S0_Pfy", "num_warps": null, "regs": 24, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 3, "STG": 10, "LDG.128": 9, "STG.128": 3, "LDG": 27}}, {"kernel": "_Z15silu_bw_vec4_c2PKfS0_S0_Pfj", "num_warps": null, "regs": 30, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 3, "STG": 10, "LDG.128": 9, "STG.128": 3, "LDG": 27}}, {"kernel": "_Z12silu_bw_vec4PKfS0_S0_Pfj", "num_warps": null, "regs": 30, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.CONSTANT": 3, "STG": 10, "LDG.128": 9, "STG.128": 3, "LDG": 27}}]
+source:
+--- file kernel.cu ---
+// SiLU backward: grad_input = grad_output * sigmoid_x * (1 + x * (1 - sigmoid_x)), fp32 elementwise.
+// One fused launch. 128-bit loads/stores, one float4 per thread, one-shot grid.
+// Loads carry L2 evict_first, stores L2 evict_last (constant cache policies): the harness's zero-fill flush leaves L2
+// full of dirty lines, and this pairing minimises the write-backs that land inside the timed window.
+// Grids of <= 1184 CTAs (n <= ~1.2M) launch as clusters of 2: measured -0.15..-0.2 us per launch on B200.
+#include <cuda_runtime.h>
+#include <stdint.h>
+
+// Same operation order as the PyTorch reference, with IEEE-rounded ops (no FMA contraction), so results are bit-identical.
+__device__ __forceinline__ float silu_bw(float g, float x, float s) {
+    return __fmul_rn(g, __fmul_rn(s, __fadd_rn(1.0f, __fmul_rn(x, __fsub_rn(1.0f, s)))));
+}
+
+__device__ __forceinline__ float4 ld4_hint(const float* p, unsigned long long pol) {
+    float4 v;
+    asm volatile("ld.global.L2::cache_hint.v4.f32 {%0,%1,%2,%3}, [%4], %5;"
+                 : "=f"(v.x), "=f"(v.y), "=f"(v.z), "=f"(v.w) : "l"(p), "l"(pol));
+    return v;
+}
+
+__device__ __forceinline__ void st4_hint(float* p, float4 v, unsigned long long pol) {
+    asm volatile("st.global.L2::cache_hint.v4.f32 [%0], {%1,%2,%3,%4}, %5;"
+                 :: "l"(p), "f"(v.x), "f"(v.y), "f"(v.z), "f"(v.w), "l"(pol) : "memory");
+}
+
+static constexpr int THREADS = 256;
+static constexpr unsigned long long POL_EF = 0x12F0000000000000ull;
+static constexpr unsigned long long POL_EL = 0x14F0000000000000ull;
+
+// Thread i handles floats [4i, 4i+4). The thread with i == nvec handles the < 4 tail elements, all loads first.
+template <typename IT>
+__device__ __forceinline__ void silu_body(const float* __restrict__ g, const float* __restrict__ x,
+                                          const float* __restrict__ s, float* __restrict__ o, IT n) {
+    const IT nvec = n >> 2;
+    const IT i = (IT)blockIdx.x * THREADS + threadIdx.x;
+    if (i < nvec) {
+        const float4 a = ld4_hint(g + 4 * i, POL_EF);
+        const float4 b = ld4_hint(x + 4 * i, POL_EF);
+        const float4 c = ld4_hint(s + 4 * i, POL_EF);
+        float4 r;
+        r.x = silu_bw(a.x, b.x, c.x);
+        r.y = silu_bw(a.y, b.y, c.y);
+        r.z = silu_bw(a.z, b.z, c.z);
+        r.w = silu_bw(a.w, b.w, c.w);
+        st4_hint(o + 4 * i, r, POL_EL);
+    } else if (i == nvec) {
+        const IT e = nvec << 2;
+        float ta[3], tb[3], tc[3];
+#pragma unroll
+        for (int k = 0; k < 3; ++k) {
+            if (e + k < n) { ta[k] = g[e + k]; tb[k] = x[e + k]; tc[k] = s[e + k]; }
+        }
+#pragma unroll
+        for (int k = 0; k < 3; ++k) {
+            if (e + k < n) o[e + k] = silu_bw(ta[k], tb[k], tc[k]);
+        }
+    }
+}
+
+__global__ void __launch_bounds__(THREADS)
+silu_bw_vec4(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,
+             float* __restrict__ o, unsigned n) { silu_body<unsigned>(g, x, s, o, n); }
+
+// Same body, launched as clusters of 2 (grid padded to an even CTA count; the extra CTA exits on i < nvec).
+__global__ void __cluster_dims__(2, 1, 1) __launch_bounds__(THREADS)
+silu_bw_vec4_c2(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,
+                float* __restrict__ o, unsigned n) { silu_body<unsigned>(g, x, s, o, n); }
+
+// 64-bit index variant for n >= 2^31.
+__global__ void __launch_bounds__(THREADS)
+silu_bw_vec4_64(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,
+                float* __restrict__ o, unsigned long long n) { silu_body<unsigned long long>(g, x, s, o, n); }
+
+// Scalar fallback for pointers that are not 16-B aligned (never the case under the harness).
+__global__ void __launch_bounds__(THREADS)
+silu_bw_scalar(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,
+               float* __restrict__ o, long long n) {
+    const long long i = (long long)blockIdx.x * THREADS + threadIdx.x;
+    if (i < n) o[i] = silu_bw(g[i], x[i], s[i]);
+}
+
+extern "C" void silu_bw_launch(const float* g, const float* x, const float* s, float* o, long long n,
+                               cudaStream_t stream) {
+    if (n <= 0) return;
+    const bool aligned = ((reinterpret_cast<uintptr_t>(g) | reinterpret_cast<uintptr_t>(x) |
+                          reinterpret_cast<uintptr_t>(s) | reinterpret_cast<uintptr_t>(o)) & 15u) == 0;
+    if (aligned) {
+        const long long nthreads = (n >> 2) + ((n & 3) ? 1 : 0);
+        const unsigned long long grid = (nthreads + THREADS - 1) / THREADS;
+        if (n >= (1ll << 31)) {
+            silu_bw_vec4_64<<<(unsigned)grid, THREADS, 0, stream>>>(g, x, s, o, (unsigned long long)n);
+        } else if (grid <= 1184) {
+            silu_bw_vec4_c2<<<(unsigned)((grid + 1) & ~1ull), THREADS, 0, stream>>>(g, x, s, o, (unsigned)n);
+        } else {
+            silu_bw_vec4<<<(unsigned)grid, THREADS, 0, stream>>>(g, x, s, o, (unsigned)n);
+        }
+    } else {
+        const unsigned grid = (unsigned)((n + THREADS - 1) / THREADS);
+        silu_bw_scalar<<<grid, THREADS, 0, stream>>>(g, x, s, o, n);
+    }
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAStream.h>
+#include <cuda_runtime.h>
+
+extern "C" void silu_bw_launch(const float* g, const float* x, const float* s, float* o, long long n,
+                               cudaStream_t stream);
+
+// DPS: run(grad_output, x, sigmoid_x, grad_input) writes grad_input in place.
+void run(torch::Tensor grad_output, torch::Tensor x, torch::Tensor sigmoid_x, torch::Tensor grad_input) {
+    TORCH_CHECK(grad_output.is_cuda() && x.is_cuda() && sigmoid_x.is_cuda() && grad_input.is_cuda(), "CUDA tensors expected");
+    TORCH_CHECK(grad_output.scalar_type() == torch::kFloat32 && x.scalar_type() == torch::kFloat32 &&
+                sigmoid_x.scalar_type() == torch::kFloat32 && grad_input.scalar_type() == torch::kFloat32, "fp32 expected");
+    TORCH_CHECK(grad_output.is_contiguous() && x.is_contiguous() && sigmoid_x.is_contiguous() && grad_input.is_contiguous(),
+                "contiguous tensors expected");
+    const long long n = grad_output.numel();
+    TORCH_CHECK(x.numel() == n && sigmoid_x.numel() == n && grad_input.numel() == n, "numel mismatch");
+    const c10::cuda::CUDAGuard guard(grad_output.device());
+    cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();
+    silu_bw_launch(grad_output.data_ptr<float>(), x.data_ptr<float>(), sigmoid_x.data_ptr<float>(),
+                   grad_input.data_ptr<float>(), n, stream);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "SiLU backward (DPS)"); }
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

@@ -1,0 +1,133 @@
+id: r2-oproj-rinit-tmem-ab
+parents:
+  - r1-oproj-cutlass-t224-dispatch
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: persistent
+  launch: fused
+  tile: rows256
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H15: put the residual into the TMEM accumulator before the K loop, so the epilogue needs no C operand. The
+  epilogue warps load the next tile's R block (bf16 to fp32) and tcgen05.st it into the accumulator stage
+  their previous store drained. An acc_init mbarrier per stage hands it to the MMA warp, which then always
+  accumulates. A CTA's first tile instead accumulates from zero and gets R added in TMEM after its MMA.
+  Rented B200 result: correct 16/16 but 1.5% slower than the parent's fused-C kernel at L (70.2-70.6 vs
+  69.1-69.5 us); C=void is 66 us. Shipped as a portal A/B in the 8192 group: 16x512 runs the parent's kernel,
+  the other large shapes run R-init. This tests H17: whether the R read, taken off the epilogue's
+  SM-clock-bound chain, scales like a plain GEMM (portal/rented 1.22) rather than like the fused kernels (1.36).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 1
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 255
+  smem_per_cta_bytes: 202816
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 184320
+  launches_per_call: 1
+knobs:
+  cutlass_min_m: 6144
+  tile: 256x224x64 (transposed, features x tokens)
+  cluster: 2x1x1
+  epilogue_tile: 128x32 (C=void)
+  mainloop_stages: 6
+  accumulator_stages: 2
+  fill_batch_tokens: 128
+  fill_unroll: false
+  fill_prefetch_l2: true
+  raster_order: AlongM
+  ab_control_shape: 16x512 (parent fused-C kernel)
+dispatch:
+  - max_tokens: 6143
+    kernel: cublasLt heuristic-0 (C = residual, D = output), as in the parent
+    meta:
+      workspace_mb: 32
+  - max_tokens: null
+    kernel: "batch=16, seq=512: parent CUTLASS 2SM fused-C 256x224 (A/B control); all other shapes: R-init CUTLASS 2SM 256x224 (rinit.cuh)"
+    meta:
+      tile: 256x224x64
+      cluster: 2x1
+      epi_tile: 128x32
+tests:
+  - H15
+  - H17
+findings:
+  - "target (probe_b200, harness_time, interleaved): C=void transposed 2SM t224 at 8192 66.0-67.2 us vs fused-C 69.8-70.9 vs cublasLt 77.3-77.7; t192 at 4096 void 36.9-37.8, fused-C 41.3, lt 39.3-39.5; t96 at 2048 void 24.7-25.0, fused-C 26.6, lt 23.3 [probe_b200]"
+  - "builder facts: C=void t224 has 6 mainloop stages, 2 accumulator stages, not overlapping, 202.8 KB smem; t192 7 stages, 2 acc stages; t96 9 stages, 4 acc stages. The fused-C epilogue does not cost t224 a mainloop stage (6 with or without C) [probe_b200]"
+  - "R-init built by subclassing, not copying headers: a derived collective overrides mma() (one ScaleOut line), and a derived kernel struct re-implements CUTLASS 4.4's sm100 operator() (all names come in through using-declarations). It is launched with its own __global__ and cudaLaunchKernelEx (cluster 2x1), with Params from Base::to_underlying_arguments. acc_init barriers sit in dynamic smem after SharedStorageSize. Correct on the first build at 8192/7976/4096/4106/2048/1571/586/256 [probe_b200]"
+  - "TMEM mapping confirmed: 2SM M=256 tile puts CTA rows (features M_idx*128 + lane) in TMEM lanes 0-127 and tokens in columns; work_tile_to_cta_coord gives the CTA-level M_idx; epilogue warp w%4 owns lanes 32*(w%4)..+31, mirrored with tcgen05.st 32x32b [probe_b200]"
+  - "the sm100 kernel's epilogue warps call fetch_next_work before store(), so the next tile's coordinates are known one tile ahead: enough lookahead to fill stage (t+1)%S while tile t is in the mainloop, with no change to the CLC scheduler [probe_b200 source read]"
+  - "dead end, v1: per-thread 2-byte loads in a select expression made ptxas reuse one register and consume each load immediately: SASS shows LDG.U16 then SHF.L on the same register, so loads are fully serialised. 286 us at 8192 (vs 66 void) [probe_b200 SASS]"
+  - "v1b: asm volatile loads first, shifts after: 101.6 us at 8192, 57.5 at 4096, 29.3 at 2048; 255 regs with 450 B of spills at t224/t192 [probe_b200]"
+  - "v2: 32-bit loads (2 tokens x 64 B per warp instruction) plus 2 shuffles per token pair, compile-time row stride (immediate offsets), cp.async.bulk.prefetch.L2 of the whole block: 72.3 us at 8192, 41.8 at 4096, 27.7 at 2048, 16/16 [run_tests]"
+  - "v3: the prefill of each CTA's first tile was exposed. Running tile 0 with ScaleOut::Zero and adding R in TMEM after its MMA (tcgen05.ld + fp32 add + st before the CUTLASS store) cut 1.3 us at 8192 (70.9), 1.1 at 4096 (40.6), 0.4 at 2048 (27.3) [run_tests]"
+  - "the remaining ~5 us over C=void (1.5 us over fused-C) does not depend on the fill code. 8192, same runs: 128-token batches 70.8-71.1, 64-token 70.7-71.2, no L2 prefetch 70.8, rolled loop 70.7-71.1 (unrolled 70.8). So the fill is not on the MMA critical path. The cost is elsewhere: R DRAM traffic contention or start-up, not resolved [run_tests]"
+  - "M band: R-init t192 at 4096/4106 40.5-40.8 vs cublasLt 38.6-39.1 (+4.6%); R-init t96 at 2048 27.2-28.0 vs lt 23.1 (+18%). R-init cannot beat cuBLASLt below about 6000 tokens on the rented box [run_tests]"
+  - "final candidate, run_tests: 16x512 (parent kernel) 69.6 vs 69.4; R-init 8x1024 70.6, 64x128 70.6, 32x256 70.5, 8x997 70.2 vs parent 69.1-69.5 (+1.5%); S/M unchanged (+-1%); 16/16 [run_tests]"
+  - "H15 refuted on the rented box by its own criterion: the R-init path (LDG + shuffle + tcgen05.st, plus the acc_init handoff) costs about 1.4x the TMA C epilogue it replaces at L. One TMEM stage per tile is not the limit: t224/t192 have 2 stages and t96 has 4 [run_tests]"
+  - "probe budget ran out before the cycle-counter profile (clock64 around fill/store/MMA wait) ran. That profile is the next step to place the last 5 us [session]"
+paths:
+  - max_tokens: 6143
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 128
+    grid: persistent
+    mem: tma
+    wstat: false
+    launches: 1
+    prefetch: false
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: persistent
+    mem: tma
+    wstat: false
+    launches: 1
+    prefetch: true
+    x: none
+    w: none
+    st: none
+    cluster: 2
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "large-M paths are sm100a-only (tcgen05 2SM, TMEM)"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "OPERATOR: the lint flags CUTLASS's bf16 type name (the problem's own dtype, fp32 accumulate); it is token-pasted in rinit.cuh and fused_t224.cu as in the parent. Please whitelist it for #30"
+  - "portal A/B packaging (ledger r2 rule): (batch, seq) dispatch inside the 8192 group; both variants are real candidates, 16/16 correct, one launch each. Rented per-shape times for both are listed in findings"
+  - "if R-init scales at the portal like the fused kernels (1.36), the four R-init shapes lose about 8 us each (S about -0.06), roughly -0.015 overall; if it scales like a plain GEMM (1.22), each gains about 0.02 (+0.005 overall)"
+  - "the R-init kernel uses 255 registers and has small spills in the epilogue path; the copied CUTLASS operator() is tied to CUTLASS 4.4.1"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

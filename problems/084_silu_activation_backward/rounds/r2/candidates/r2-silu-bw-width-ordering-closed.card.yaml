@@ -1,0 +1,56 @@
+id: r2-silu-bw-width-ordering-closed
+parents: [r1-silu-bw-cluster2-small]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E3/H3: at L (n > 1.2M), 256-bit loads and stores with the exact EF/EL policy forms, or two-stream chunk ordering,
+  could beat the 128-bit mapping by 2% or more. Refuted. Every variant ties or loses by 1-3%, so the parent kernel is
+  submitted unchanged.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs: {THREADS: 256, FLOATS_PER_THREAD: 4, CLUSTER: 2, CLUSTER_MAX_GRID: 1184, LOAD_HINT: evict_first_const, STORE_HINT: evict_last_const}
+tests: [H3]
+findings:
+  - "probe: E3 ABAB, 7 reps, harness_time medians (us) at 2.1M/4.2M/8.4M/16.8M. (a) parent 128-bit 7.14/11.42/19.87/38.32; (b) v8 L2::cache_hint EF/EL 7.36/11.62/20.48/38.94; (c) same 8-float mapping with 2x128-bit per stream 7.33/11.81/20.40/39.07; (d) nc.L2::evict_first.v8 + st.L2::evict_last.v8 7.36/11.60/20.42/38.85; (e) two-stream (float4 i and i+n/8) 7.59/12.00/20.59/39.10; (f) b with 512 threads 7.30/11.62/20.45/38.79 [probe_b200]"
+  - "result: no variant is faster than the parent at any L size. Width variants cost +1.6 to +3.1%, the two-stream ordering +2.6 to +6%. Success needed -2% at 3 of 4 sizes, so H3 is refuted at L for both the register and qualifier policy forms. L stays parked at the H7 DRAM-efficiency ceiling [probe_b200]"
+  - "mechanism hint: c (8-float mapping, 128-bit instructions) is as slow as b and d (256-bit). So the loss comes from the mapping (half as many threads, each reading 32 B per stream, which splits each warp's access into strided 16-B pieces), not from the 256-bit width. The 8-floats-per-thread mapping is the thing to avoid [probe_b200, INFERRED]"
+  - "SASS: the register-policy form ld/st.global.L2::cache_hint.v8.f32 compiles to LDG.E.ENL2.256 / STG.E.ENL2.256. The qualifier form compiles to LDG.E.EFL2.256.CONSTANT / STG.E.ELL2.256. Both are valid on sm_100a and nvrtc accepts them [probe_b200 sass]"
+  - "regs from nvrtc: parent 22, b/c/d/f 32, e 30, all with 0 smem and 0 spills. They all fit 2048 threads/SM (b/c/d/f use all 32 regs) [probe_b200]"
+  - "correctness: all six variants are bit-identical to the PyTorch expression at 2.1M (max err 0.0) [probe_b200]"
+  - "run_tests of the parent code: 16/16 passed; vs r1 on the same GPU S -0.9%, M 0.0%, L -0.1% (noise); predicted portal score 0.5172 +/- 0.0046 vs 0.5166, so no change expected [run_tests]"
+  - "closing result: width (128 vs 256-bit), the EF/EL policy form, threads per CTA (256 vs 512) and two-stream ordering all fail to beat the parent at L. Do not spend further slots on L access mechanics. The remaining L gap is DRAM read/write mix (H7), and the portal L score is compressed by Tsol ~4n bytes/8 TB/s (H17)"
+paths:
+  - {max_tokens: 1212416, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 2}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "cluster launch cost differs per chip; measured on B200 only"}
+  A100: {runs: false, representative: false, note: "no thread-block clusters on sm_80"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Identical to the r1 parent, so it adds nothing to the portal score; any difference is noise"
+  - "The cluster-2 gain was measured on unlocked clocks and may shrink under the portal's 1500 MHz lock"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

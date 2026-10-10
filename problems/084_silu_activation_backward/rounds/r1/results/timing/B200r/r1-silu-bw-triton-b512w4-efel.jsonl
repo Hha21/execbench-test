@@ -1,0 +1,16 @@
+{"workload": {"axes": {"num_elements": 40960}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0023}}}
+{"workload": {"axes": {"num_elements": 16384}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00216}}}
+{"workload": {"axes": {"num_elements": 16777216}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.03857}}}
+{"workload": {"axes": {"num_elements": 131}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00214}}}
+{"workload": {"axes": {"num_elements": 655360}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0041600000000000005}}}
+{"workload": {"axes": {"num_elements": 786432}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00445}}}
+{"workload": {"axes": {"num_elements": 163840}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00269}}}
+{"workload": {"axes": {"num_elements": 8388608}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.019989999999999997}}}
+{"workload": {"axes": {"num_elements": 4194304}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01168}}}
+{"workload": {"axes": {"num_elements": 4096}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00211}}}
+{"workload": {"axes": {"num_elements": 3089}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0021000000000000003}}}
+{"workload": {"axes": {"num_elements": 2097152}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00717}}}
+{"workload": {"axes": {"num_elements": 262144}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00309}}}
+{"workload": {"axes": {"num_elements": 5242880}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01368}}}
+{"workload": {"axes": {"num_elements": 2053}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0020800000000000003}}}
+{"workload": {"axes": {"num_elements": 10485760}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.02479}}}

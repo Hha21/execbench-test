@@ -1,0 +1,37 @@
+{
+ "name": "r1-silu-bw-cuda-ldg128-os-efel-e3",
+ "definition": "084_silu_activation_backward",
+ "author": "solx-loop",
+ "description": "E3/H13 is refuted. The dirty-L2 write-back cost inside the window is large: dirty minus zero+sweep flush is 5.9 us at 268 MB and 2.6 us at 134 MB. It cannot be removed, though: when every L2 line starts dirty, each output line costs one DRAM write in the window, either as a flush-line write-back (EL stores) or as the output's own write (any other store policy). r0's EF loads + EL(1.0) stores therefore already move the minimum traffic (reads + one write per output line) at about 90% of the 8.18 T",
+ "spec": {
+  "languages": [
+   "cuda_cpp"
+  ],
+  "target_hardware": [
+   "B200",
+   "LOCAL"
+  ],
+  "entry_point": "binding.cpp::run",
+  "dependencies": [
+   "torch"
+  ],
+  "destination_passing_style": true,
+  "compile_options": {
+   "cuda_cflags": [
+    "-O3",
+    "--use_fast_math",
+    "-std=c++17"
+   ]
+  }
+ },
+ "sources": [
+  {
+   "path": "kernel.cu",
+   "content": "// SiLU backward: grad_input = grad_output * sigmoid_x * (1 + x * (1 - sigmoid_x)), fp32 elementwise.\n// One fused launch. 128-bit loads/stores, one float4 per thread, one-shot grid.\n// Loads carry L2 evict_first, stores L2 evict_last. The harness's zero-fill flush leaves L2 full of dirty lines, so\n// every L2 slot our outputs occupy costs one write-back inside the timed window (E3: 5.9 us at 268 MB). EF loads +\n// EL(1.0) stores is the cheapest arrangement measured: fractional EF/EL, evict_unchanged/normal stores, persistent\n// store-before-next-load ordering, contiguous per-CTA chunks and fat one-wave CTAs all tie or lose (E3 probes).\n#include <cuda_runtime.h>\n#include <stdint.h>\n\n// Same operation order as the PyTorch reference, with IEEE-rounded ops (no FMA contraction), so results are bit-identical.\n__device__ __forceinline__ float silu_bw(float g, float x, float s) {\n    return __fmul_rn(g, __fmul_rn(s, __fadd_rn(1.0f, __fmul_rn(x, __fsub_rn(1.0f, s)))));\n}\n\n__device__ __forceinline__ float4 ld4_hint(const float* p, unsigned long long pol) {\n    float4 v;\n    asm volatile(\"ld.global.L2::cache_hint.v4.f32 {%0,%1,%2,%3}, [%4], %5;\"\n                 : \"=f\"(v.x), \"=f\"(v.y), \"=f\"(v.z), \"=f\"(v.w) : \"l\"(p), \"l\"(pol));\n    return v;\n}\n\n__device__ __forceinline__ void st4_hint(float* p, float4 v, unsigned long long pol) {\n    asm volatile(\"st.global.L2::cache_hint.v4.f32 [%0], {%1,%2,%3,%4}, %5;\"\n                 :: \"l\"(p), \"f\"(v.x), \"f\"(v.y), \"f\"(v.z), \"f\"(v.w), \"l\"(pol) : \"memory\");\n}\n\nstatic constexpr int THREADS = 256;\n\n// Vector path: thread i handles floats [4i, 4i+4). The thread with i == nvec handles the < 4 tail elements.\n__global__ void __launch_bounds__(THREADS)\nsilu_bw_vec4(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,\n             float* __restrict__ o, long long n) {\n    const long long nvec = n >> 2;\n    const long long i = (long long)blockIdx.x * THREADS + threadIdx.x;\n    if (i < nvec) {\n        unsigned long long pol_ld, pol_st;\n        asm volatile(\"createpolicy.fractional.L2::evict_first.b64 %0, 1.0;\" : \"=l\"(pol_ld));\n        asm volatile(\"createpolicy.fractional.L2::evict_last.b64 %0, 1.0;\" : \"=l\"(pol_st));\n        const float4 a = ld4_hint(g + (i << 2), pol_ld);\n        const float4 b = ld4_hint(x + (i << 2), pol_ld);\n        const float4 c = ld4_hint(s + (i << 2), pol_ld);\n        float4 r;\n        r.x = silu_bw(a.x, b.x, c.x);\n        r.y = silu_bw(a.y, b.y, c.y);\n        r.z = silu_bw(a.z, b.z, c.z);\n        r.w = silu_bw(a.w, b.w, c.w);\n        st4_hint(o + (i << 2), r, pol_st);\n    } else if (i == nvec) {\n        for (long long e = nvec << 2; e < n; ++e) o[e] = silu_bw(g[e], x[e], s[e]);\n    }\n}\n\n// Scalar fallback for pointers that are not 16-B aligned (never the case under the harness).\n__global__ void __launch_bounds__(THREADS)\nsilu_bw_scalar(const float* __restrict__ g, const float* __restrict__ x, const float* __restrict__ s,\n               float* __restrict__ o, long long n) {\n    const long long i = (long long)blockIdx.x * THREADS + threadIdx.x;\n    if (i < n) o[i] = silu_bw(g[i], x[i], s[i]);\n}\n\nextern \"C\" void silu_bw_launch(const float* g, const float* x, const float* s, float* o, long long n,\n                               cudaStream_t stream) {\n    if (n <= 0) return;\n    const bool aligned = ((reinterpret_cast<uintptr_t>(g) | reinterpret_cast<uintptr_t>(x) |\n                          reinterpret_cast<uintptr_t>(s) | reinterpret_cast<uintptr_t>(o)) & 15u) == 0;\n    if (aligned) {\n        const long long nthreads = (n >> 2) + ((n & 3) ? 1 : 0);\n        const unsigned grid = (unsigned)((nthreads + THREADS - 1) / THREADS);\n        silu_bw_vec4<<<grid, THREADS, 0, stream>>>(g, x, s, o, n);\n    } else {\n        const unsigned grid = (unsigned)((n + THREADS - 1) / THREADS);\n        silu_bw_scalar<<<grid, THREADS, 0, stream>>>(g, x, s, o, n);\n    }\n}\n"
+  },
+  {
+   "path": "binding.cpp",
+   "content": "#include <torch/extension.h>\n#include <c10/cuda/CUDAGuard.h>\n#include <c10/cuda/CUDAStream.h>\n#include <cuda_runtime.h>\n\nextern \"C\" void silu_bw_launch(const float* g, const float* x, const float* s, float* o, long long n,\n                               cudaStream_t stream);\n\n// DPS: run(grad_output, x, sigmoid_x, grad_input) writes grad_input in place.\nvoid run(torch::Tensor grad_output, torch::Tensor x, torch::Tensor sigmoid_x, torch::Tensor grad_input) {\n    TORCH_CHECK(grad_output.is_cuda() && x.is_cuda() && sigmoid_x.is_cuda() && grad_input.is_cuda(), \"CUDA tensors expected\");\n    TORCH_CHECK(grad_output.scalar_type() == torch::kFloat32 && x.scalar_type() == torch::kFloat32 &&\n                sigmoid_x.scalar_type() == torch::kFloat32 && grad_input.scalar_type() == torch::kFloat32, \"fp32 expected\");\n    TORCH_CHECK(grad_output.is_contiguous() && x.is_contiguous() && sigmoid_x.is_contiguous() && grad_input.is_contiguous(),\n                \"contiguous tensors expected\");\n    const long long n = grad_output.numel();\n    TORCH_CHECK(x.numel() == n && sigmoid_x.numel() == n && grad_input.numel() == n, \"numel mismatch\");\n    const c10::cuda::CUDAGuard guard(grad_output.device());\n    cudaStream_t stream = c10::cuda::getCurrentCUDAStream().stream();\n    silu_bw_launch(grad_output.data_ptr<float>(), x.data_ptr<float>(), sigmoid_x.data_ptr<float>(),\n                   grad_input.data_ptr<float>(), n, stream);\n}\n\nPYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def(\"run\", &run, \"SiLU backward (DPS)\"); }\n"
+  }
+ ]
+}

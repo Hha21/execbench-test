@@ -1,0 +1,59 @@
+id: r1-silu-bw-cluster2-small
+parents: [r0-silu-bw-cuda-ldg128-os-efel]
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems1024
+  red: none
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Launching the one-shot kernel as clusters of 2 (compile-time __cluster_dims__, grid padded to an even count) lowers the
+  per-launch span by about 0.15-0.2 us on B200 at every size with a grid of 1184 CTAs or fewer. 32-bit index math, constant
+  L2 policies and a branch-free tail change nothing measurable. Dispatch is on n only.
+expected_effect:
+  S: {pct: -5, confidence: medium}
+  M: {pct: -4, confidence: medium}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 30
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs: {THREADS: 256, FLOATS_PER_THREAD: 4, CLUSTER: 2, CLUSTER_MAX_GRID: 1184, LOAD_HINT: evict_first_const, STORE_HINT: evict_last_const}
+tests: [H12]
+findings:
+  - "probe: 5 variants ABAB, 7 reps, 12 sizes, harness_time. Cluster-of-2 (V2) is 0.12-0.20 us faster than r0 at every size <= 2.1M (131: 2.06->1.89, 4096: 2.08->1.92, 40960: 2.32->2.18, 262144: 3.02->2.88, 786432: 4.48->4.30, 2.1M: 7.19->6.98); 16.8M tie (38.66 vs 38.36) [probe_b200]"
+  - "probe: V1 (32-bit index, constant EF/EL policies, 3 predicated tail loads, no cluster) ties r0 within 0.04 us at all sizes: the pre-load instruction count is irrelevant; the cluster launch alone gives the gain [probe_b200]"
+  - "probe: control with the same even-padded grid but no cluster attribute (P) equals r0 at every size, so padding is not the cause [probe_b200]"
+  - "probe: cluster size 2/4/8 give the same gain (C4/C8 about 0.04 us better at S, 0.04 us worse at 786K-2.1M); 11 reps, sizes 131..4.2M. At 4.2M the gain shrinks to 0.1-0.2 us (1.7%) [probe_b200]"
+  - "probe: V3 (V2 without cache hints) is no faster at S (1.89-2.18 same as V2) but loses 10% at 2.1M and 16.8M (7.87, 42.4): hints cost nothing at S, keep them everywhere [probe_b200]"
+  - "probe: V4 (8 floats per thread, half the CTAs, cluster 2) ties V2 within 0.05 us at M and is slower at 2053-4096 (+0.1-0.2): not worth it [probe_b200]"
+  - "run_tests: 16/16 passed; vs r0 on the same GPU S -4.9%, M -4.3%, L 0.0% (131: 2.0 vs 2.1; 786432: 4.3 vs 4.5; 16.8M: 38.6 vs 38.3 noise); predicted portal score 0.5016 vs 0.4941 [run_tests]"
+  - "compile: 30 regs, 0 smem, 0 spills; the constant-policy loads still compile to the L2 cache-hint form (LDG.128 / STG.128 in the SASS count). I did not check the EF/EL suffixes in the SASS dump [compile_b200]"
+  - "caveat: the #38 ledger says clustered LARGE grids lost 2-5% on the portal and may have slowed later plain launches; here clusters are limited to grids <= 1184 CTAs and the bench shows no loss at 2.1M+, but the portal clock lock and cross-workload effects are untested [INFERRED]"
+  - "clock lock not tested (no E1 report); the gain may differ at SM 1500 MHz"
+paths:
+  - {max_tokens: 1212416, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el, cluster: 2}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: false, note: "cluster launch cost differs per chip; the gain was measured on B200 only"}
+  A100: {runs: false, representative: false, note: "no thread-block clusters on sm_80"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "The cluster gain is a launch-path effect measured on unlocked clocks; it could shrink or vanish on the portal's 1500 MHz lock"
+  - "#38 portal evidence says clustering larger grids lost 2-5% and may slow later plain launches; the L band here uses plain launches, but cross-workload carry-over is untested"
+  - "Clusters of 2 need an even grid; the pad CTA exits immediately on i < nvec"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

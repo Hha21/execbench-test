@@ -1,0 +1,65 @@
+id: r1-silu-bw-triton-b512w4-efel
+parents: [r0-silu-bw-cuda-ldg128-os-efel]
+operation: port
+language: triton
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: elems512
+  red: none
+  cache: stream
+  spec: all
+hypothesis: >-
+  The hidden baseline's S-band lead (portal Tb 2.2-2.5 us vs r0 2.9) is a launch-timing effect, not a faster kernel:
+  a kernel that reaches the GPU while the harness's 73 us flush memset is still running costs ~0.4 us more than one
+  arriving at an idle GPU, and torch.compile's ~60 us of Python dispatch makes its kernel arrive late. A Triton port
+  of r0 (Python launcher, ~10-20 us) is the legitimate launch-path A/B; on the rented B200 it ties r0 at every size.
+expected_effect:
+  S: {pct: -2, confidence: low}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  BLOCK: 512
+  num_warps: 4
+  load_hint: evict_first
+  store_hint: evict_last
+  enable_fp_fusion: false
+tests: [H10, H5]
+findings:
+  - "harness (rented copy): per-trial statistic is the MEDIAN of the 50 calls; inputs are copied into the shifting pool BEFORE the 2xL2 zero-fill, so S-band inputs are cold [probe_b200]"
+  - "clock lock refused on the rented B200: nvidia-smi -lgc/-ac 'no permission', -lmc 'not supported'; all timings unlocked [probe_b200]"
+  - "KEY: same Triton kernel at 131 elements with a CPU busy-wait before launch: 0 us 2.11, 20 us 1.89, 60 us 1.73, 150 us 1.73; 16384: 2.59->2.40; 786432: 4.80->4.64; 16.8M: 42.70->42.53. Flush memset takes 73 us; a kernel queued behind it costs ~0.4 us more at S [probe_b200]"
+  - "torch.compile(reference) as a callable under harness timing: 1.58-1.76 us at 131, 1.92 at 4096, 1.95 at 16384, 2.46 at 163840 vs r0 2.06/2.08/2.21/2.64; the SAME inductor kernel launched directly (CachingAutotuner.run) or as a plain Triton kernel: 2.03-2.08 = r0. CUPTI kernel duration alone 1.47 (compiled path) vs 1.79 us (direct) with positive gaps after the memset, so no overlap and no output-buffer effect (r0 non-DPS with torch.empty output = r0 DPS) [probe_b200]"
+  - "a deliberate CPU delay in run() would capture ~0.4 us at S, but it exploits the timing methodology rather than speeding up the kernel: NOT used; needs operator/NVIDIA ruling [reasoning]"
+  - "inductor configs (torch 2.9, default and max-autotune-no-cudagraphs agree on structure): one kernel triton_poi_fused_add_mul_rsub_0, no hints, FMA on (max diff vs eager 1e-7..1.5e-5); XBLOCK = max(256, min(next_pow2(n)//128, 1024)) -> 256 for n<=16384, 512 for 40960, 1024 for >=163840; num_warps 4 (max-autotune picked 2048/8w at 786432, 512/4w at 2.1M) [probe_b200]"
+  - "inductor-equivalent Triton (no hints, 1024/4w) under harness timing: 4.82 us at 786K, 7.87 at 2.1M, 23.23 at 8.4M, 42.52 at 16.8M; portal Tb 5.0/8.5/24.1/43.1 -> Tb consistent with a torch.compile kernel plus dynamo launch delay (H5 supported) [probe_b200 vs portal]"
+  - "dead end: Triton BLOCK 1024 / 4 warps (8 floats per thread) is 12-24% slower than r0 at 4096-262144 and +2-5% at 0.66-2.1M; BLOCK 2048/8w ties 1024/4w at L [run_tests, probe_b200]"
+  - "Triton BLOCK 512 / 4 warps (one float4 per thread per stream) with EF loads + EL store: 16/16 passed; S -3.5%, M -0.5%, L -0.4% vs r0 on the same GPU (ties within noise) [run_tests]"
+  - "sm_100a: 32 regs, 0 smem, 16 CTAs/SM; LDG.EF.128 + STG.EL.128 when n % 16 == 0, scalar LDG.EF/STG.EL specialisation for 131/2053/3089 [compile_b200 at BLOCK 1024; BLOCK 512 not compiled separately]"
+  - "triton hints vs CUDA hints at L: trh 38.94 vs r0 38.68 at 16.8M, 20.25 vs 20.11 at 8.4M; no-hint inductor-style kernel is +9% at L [probe_b200]"
+paths:
+  - {max_tokens: null, lang: triton, width: 128, threads: 128, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: true, note: "eviction hints exist on sm_90a; the flush-queueing effect should reproduce"}
+  A100: {runs: true, representative: false}
+  L40S: {runs: true, representative: false}
+risks:
+  - "Ties r0 on the rented B200; a portal gain depends on Triton's launcher delay vs the portal's flush time and CPU, likely <= 0.1-0.2 us at S"
+  - "Triton launcher packaging gap on the portal image (launch.h) could break launches; r0 is the fallback"
+  - "Unlocked rented clocks: the portal's 1500 MHz SM lock may change the size of the queueing penalty"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

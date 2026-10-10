@@ -1,0 +1,68 @@
+id: r1-silu-bw-cuda-ldg128-os-efel-e3
+parents:
+  - r0-silu-bw-cuda-ldg128-os-efel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: stream
+  spec: all
+hypothesis: >-
+  E3/H13 is refuted. The dirty-L2 write-back cost inside the window is large: dirty minus zero+sweep flush is 5.9 us
+  at 268 MB and 2.6 us at 134 MB. It cannot be removed, though: when every L2 line starts dirty, each output line
+  costs one DRAM write in the window, either as a flush-line write-back (EL stores) or as the output's own write
+  (any other store policy). r0's EF loads + EL(1.0) stores therefore already move the minimum traffic (reads + one
+  write per output line) at about 90% of the 8.18 TB/s peak. Every fractional-policy, store-ordering,
+  contiguous-chunk and fat-CTA variant tied r0 or lost. The code equals r0 apart from comments; no portal slot is
+  needed.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 24
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  THREADS: 256
+  FLOATS_PER_THREAD: 4
+  LOAD_HINT: evict_first_1.0
+  STORE_HINT: evict_last_1.0
+tests:
+  - H13
+  - H7
+findings:
+  - "probe Part A (r0, median of 3, rented B200) dirty / clean read-sweep / zero+read-sweep, us: 2.6 MB 2.59/2.37/2.34; 12.6 MB 4.51/3.58/3.75; 33.6 MB 7.52/5.83/6.47; 134 MB 20.32/16.30/17.70; 268 MB 38.41/31.71/32.51 -> in-window dirty cost 0.25/0.76/1.05/2.6/5.9 us [probe_b200]"
+  - "probe Part A reads-only (EF loads, no stores) dirty/clean/zero+sweep: 12.6 MB 4.26/3.33/3.62; 33.6 MB 7.27/5.51/6.15; 134 MB 19.17/16.38/17.48; 268 MB 33.23/32.39/32.80 -> at 268 MB almost all the dirty cost comes from the outputs taking L2 slots; reads add <=1 us [probe_b200]"
+  - "probe Part A writes-only (EL stores) is unaffected by flush type: 1.76/1.92/2.53/5.95/10.19 us dirty vs 1.73/1.89/2.50/5.83/10.12 clean [probe_b200]"
+  - "inference (H7 closed): with a fully dirty L2, each output line must cost one in-window DRAM write (a flush-line write-back for EL stores, or the output's own write otherwise), so the dirty cost cannot be avoided without discard (forbidden). r0 moves 268 MB at 268 MB size, about 7.3 TB/s marginal, about 90% of peak; L is at the practical ceiling [INFERRED]"
+  - "dead end: fractional policies at 12.6/33.6/134/268 MB (r0 4.38/7.30/20.22/39.08 us): ld EF0.5 4.35/7.26/21.05/39.94; EF0.25 4.35/7.39/21.34/40.29; EF0.75 4.32/7.20/20.66/39.34; st EL0.5 4.39/7.61/21.43/40.77; st EL0.75 4.38/7.45/20.77/39.68; st EL0.5+EF secondary 4.41/7.62/21.40/41.05 [probe_b200, 5 reps]"
+  - "dead end: store evict_unchanged 43.28 us and evict_normal 43.19 at 268 MB (+11%), because the outputs are then written back in-window on top of displacing flush lines [probe_b200]"
+  - "dead end: persistent grid 148x8x256 with register double buffer (next tile's loads issued before the current store) 42.93 us at 268 MB (+10%), 21.80 at 134 MB (+8%); contiguous per-CTA chunks with the same pipeline 41.94/21.76 (+7%), and 4.64 at 12.6 MB (+6%) [probe_b200]"
+  - "dead end M band (median of 7, 0.66/2.6/4.2/10.5/12.6/33.6 MB; r0 2.27/2.59/2.98/4.06/4.42/7.15 us): U2 per thread, U4, 128-thread CTAs, 128x U2 and balanced 148xk grids all tie within 0.1 us at <=12.6 MB and are 1-5% slower at 33.6 MB. Every M size is already one wave with r0, so CTA balance does not matter [probe_b200]"
+  - "run_tests: 16/16 passed; ties r0 on the same GPU (band geomeans S -0.6%, M 0.0%, L -0.2%: noise) [run_tests]"
+  - "tooling note: b200probe Kernel passes Python ints as int32; wrap 64-bit args in b200probe.i64 (otherwise an illegal address). Monkeypatching sol_execbench timing._clear_cache in a probe changes the flush type for experiments [probe_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 1, grid: oneshot, mem: ldg, launches: 1, x: ef, st: el}
+runs_on:
+  H200: {runs: true, representative: true, note: "createpolicy/L2::cache_hint exist on sm_90a; the 50 MB L2 changes the size of the dirty write-back"}
+  A100: {runs: true, representative: false, note: "40 MB L2, different write-back regime"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "Same code as r0: a portal slot would only measure noise"
+  - "The conservation argument assumes the flush leaves about the whole L2 dirty; if the portal's driver writes back dirty lines eagerly, the dirty cost would be smaller there, but r0's policy is still the best measured"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

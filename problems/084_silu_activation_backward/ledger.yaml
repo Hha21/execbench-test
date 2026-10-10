@@ -1,6 +1,7 @@
 # Hypothesis ledger for #084 silu_activation_backward, seeded 9 October 2026; updated r1 (10 October 2026) by the research lead.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
 - 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
 - Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
 - 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'

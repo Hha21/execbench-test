@@ -538,3 +538,19 @@ r2-silu-bw-c16coop-c1coop,64157,num_elements=262144,0.0032,0.0034,1.06,0.517366,
 r2-silu-bw-c16coop-c1coop,64157,num_elements=5242880,0.0141,0.0169,1.20,0.556829,0.00318
 r2-silu-bw-c16coop-c1coop,64157,num_elements=2053,0.0024,0.0025,1.03,0.507813,
 r2-silu-bw-c16coop-c1coop,64157,num_elements=10485760,0.0255,0.029,1.14,0.540908,
+c1-oproj-t224-control,64523,"batch_size=16, seq_len=512",0.0898,0.086,0.96,0.46624,
+c1-oproj-t224-control,64523,"batch_size=4, seq_len=128",0.0126,0.012,0.95,0.482413,
+c1-oproj-t224-control,64523,"batch_size=8, seq_len=1024",0.0896,0.086,0.96,0.467658,
+c1-oproj-t224-control,64523,"batch_size=1, seq_len=1571",0.0237,0.022,0.93,0.460564,
+c1-oproj-t224-control,64523,"batch_size=4, seq_len=1024",0.0506,0.0442,0.87,0.407816,0.03004
+c1-oproj-t224-control,64523,"batch_size=2, seq_len=2053",0.0507,0.0441,0.87,0.404509,0.03012
+c1-oproj-t224-control,64523,"batch_size=8, seq_len=997",0.0887,0.0857,0.97,0.474586,
+c1-oproj-t224-control,64523,"batch_size=16, seq_len=256",0.0507,0.0442,0.87,0.406499,0.03007
+c1-oproj-t224-control,64523,"batch_size=64, seq_len=128",0.0894,0.086,0.96,0.469887,
+c1-oproj-t224-control,64523,"batch_size=32, seq_len=256",0.0896,0.086,0.96,0.468224,
+c1-oproj-t224-control,64523,"batch_size=8, seq_len=512",0.0508,0.0442,0.87,0.405942,0.02996
+c1-oproj-t224-control,64523,"batch_size=1, seq_len=1024",0.017,0.0158,0.93,0.466574,
+c1-oproj-t224-control,64523,"batch_size=16, seq_len=128",0.0297,0.0259,0.87,0.424588,0.01520
+c1-oproj-t224-control,64523,"batch_size=2, seq_len=293",0.015,0.014,0.93,0.474556,
+c1-oproj-t224-control,64523,"batch_size=1, seq_len=2048",0.0297,0.026,0.87,0.425316,0.01546
+c1-oproj-t224-control,64523,"batch_size=1, seq_len=256",0.0106,0.0099,0.94,0.478799,

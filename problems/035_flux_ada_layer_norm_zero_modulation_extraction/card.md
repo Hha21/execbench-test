@@ -25,8 +25,8 @@ Reference (verbatim):
 - Inputs: emb ~ N(0,1), weight ~ N(0,1) (the harness draws randn for all three; our probes used weight/√3072),
   bias ~ N(0,1). With randn weights the dot products have std √3072 ≈ 55, so rtol 1e-5 is ~5e-4 absolute: the atol
   is the binding term only near zero.
-- Operator rule (task note): exact fp32 for now: FFMA on CUDA cores, or a **3xTF32** split with fp32-level error.
-  Plain TF32 is not allowed until ruled on. Measured max error vs fp64 (weight/√3072 scale, B = 919):
+- Operator ruling (2026-10-10): **plain TF32 is allowed** on #35 (fp32 in/out, tolerance met, and the scoring
+  baseline itself runs at TF32 speed). bf16/fp16 operands and BF16x9 emulation stay forbidden. Measured max error vs fp64 (weight/√3072 scale, B = 919):
   fp32 cuBLAS 1.6e-5; 3xTF32 (hi·hi + hi·lo + lo·hi, fp32 accumulate) 4.3e-5; cuBLAS BF16x9 emulation 3.4e-6;
   plain TF32 1.6e-3 (would scrape the atol). 3xTF32 is fp32-level by the operator's definition.
 - 3xTF32 construction: hi = `cvt.rna.tf32.f32`(x) (11 significant bits), lo = x − hi exact in fp32; the dropped

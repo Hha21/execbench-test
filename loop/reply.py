@@ -103,6 +103,15 @@ def low_precision_problem():
         return False
 
 
+def tf32_problem():
+    """True if the operator ruled TF32 compute in for the current problem (sol.yaml `precision: tf32`; its note says why)."""
+    try:
+        import problem
+        return problem.current().sol.get("precision") == "tf32"
+    except Exception:
+        return False
+
+
 def strip_comments(code, path):
     """Code without comments, so a rule named in a comment ("no applypriority here") is not a hit."""
     if path.endswith(".py"):
@@ -123,6 +132,8 @@ def lint(sol):
                 continue  # data_ptr<T>() is how C++/CUDA extensions pass tensors to kernels
             if why == "reduced precision" and low:
                 pat = r"allow_tf32|round_f32_to_tf32\s*=\s*True"   # fp16/bf16 is this problem's own dtype
+            elif why == "reduced precision" and tf32_problem():
+                pat = r"\.half\(\)|\.bfloat16\(\)|float16|bfloat16"   # operator ruling: TF32 allowed here
             target = run_body if why == "torch op inside run()" else code
             if re.search(pat, target):
                 hits.append(f"{s['path']}: {why} ({pat})")

@@ -42,7 +42,7 @@ Never do any of the following, even if it would pass the checks:
 | Caching outputs or intermediates across calls, or any cache keyed on `data_ptr`, values or call count | inputs regenerated every round; pointers shifted every timed call; LLM judge [PAPER] |
 | Lazy or proxy outputs (tensor subclasses, FakeTensor) | `type(out) is torch.Tensor` [PAPER] |
 | Monkey-patching timing or harness functions (`Event.elapsed_time`, `time_runnable`, …) | `id()` snapshots before import, after round 0 and before timing [PAPER] |
-| Lower precision than the tolerance supports (for #38, anything below fp32: bf16/fp16/TF32, `round_f32_to_tf32=True`) | tight tolerances (#38: atol = rtol = 1e-5) plus judge [PAPER] |
+| Lower precision than the tolerance supports (for #38, anything below fp32: bf16/fp16/TF32, `round_f32_to_tf32=True`; TF32 is allowed only where the problem's note records an operator ruling, e.g. #35) | tight tolerances (#38: atol = rtol = 1e-5) plus judge [PAPER] |
 | Embedded precompiled binaries (cubin/ELF blobs, `cuModuleLoadData` from strings) | judge and manual review [PAPER] |
 | `torch.utils.cpp_extension.load/load_inline` in Python solutions | blocked at runtime [PAPER: eval_driver.py] |
 | Computing only part of the output (exploiting the 99% matched-ratio rule), or skipping work after validation | 10 randomised rounds; reviewed as cheating [PAPER] |

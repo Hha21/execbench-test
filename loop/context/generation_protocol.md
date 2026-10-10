@@ -160,7 +160,7 @@ error), the niches that are empty, and any rule the last round broke.
 1. Parse: fences are present, the spec is valid JSON, the card validates (tags from `niche_tags.yaml`).
 2. Lint (flags go to human review): `torch.cuda.Stream`, `torch.cuda.graph`/`CUDAGraph`, `threading`,
    `multiprocessing`, `concurrent.futures`, `torch.jit.fork`, `os.environ[...] =`, `load_inline`, `cuModuleLoadData`,
-   `base64`, `ctypes` loads, `.half()`/`.bfloat16()`/`float16`/`bfloat16`/`allow_tf32`/`round_f32_to_tf32=True`, module
+   `base64`, `ctypes` loads, `.half()`/`.bfloat16()`/`float16`/`bfloat16`/`allow_tf32`/`round_f32_to_tf32=True` (TF32 not flagged where the problem's note records an operator ruling), module
    globals holding tensors, `lru_cache`/dicts keyed on tensors or `data_ptr()`, torch ops inside `run()`
    (`torch.empty` is allowed; fills, copies and compute are not).
 3. Compile for **sm_100a** without a GPU: Triton via `ASTSource` + `GPUTarget("cuda",100,32)` (see

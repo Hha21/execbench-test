@@ -22,9 +22,10 @@ constraints:
   which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
 - 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented,
   plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
-- '#35 precision (operator note, 2026-10-10): exact fp32 only: FFMA on CUDA cores or a 3xTF32 split with fp32-level error.
-  Plain TF32 (CUBLAS_COMPUTE_32F_FAST_TF32 alone, allow_tf32) and bf16 operands are not allowed until the operator rules.
-  cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9) needs an explicit ruling before a portal slot.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed
+  (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and
+  no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3
+  vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
 - '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
 hypotheses:
 - id: H1

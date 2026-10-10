@@ -1,7 +1,11 @@
 flops: "2 * batch_size * inner_dim * output_dim"     # fp32 GEMM emb @ weight.T (+ bias); weight 18432x3072 fp32 = 226 MB
+precision: tf32       # operator ruling 2026-10-10: plain TF32 compute allowed on this problem (lint follows it)
 note: >-
-  Precision is exact fp32 for now: FP32 FMA on CUDA cores, or a 3xTF32 split with fp32-level error. Plain TF32 is not
-  allowed until the operator rules on it. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give
+  Precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation IS allowed on this
+  problem: inputs and outputs stay fp32, the tolerance is met, the paper permits downcasting when input and output dtypes
+  match, and the portal's own scoring baseline runs at TF32 speed (613 TFLOP/s at B=919). bf16/fp16 operands stay
+  forbidden (they also fail the tolerance), and so does BF16x9 emulation. Keep a margin: TF32's max error is 1.6e-3
+  against atol 2e-3, so accumulate in fp32 and never round outputs or intermediates. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give
   outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 would pass it
   (measured max error 1.6e-3, typical ~3e-4) and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match
   and the tolerance is met.

@@ -570,3 +570,35 @@ r0-geglu-ldg256-2d-stel,64537,"batch_size=1, seq_len=131",0.0042,0.0134,3.21,0.7
 r0-geglu-ldg256-2d-stel,64537,"batch_size=16, seq_len=449",0.0634,0.0675,1.06,0.528138,
 r0-geglu-ldg256-2d-stel,64537,"batch_size=4, seq_len=128",0.0077,0.026,3.37,0.818274,0.00248
 r0-geglu-ldg256-2d-stel,64537,"batch_size=2, seq_len=512",0.0118,0.0453,3.84,0.84837,0.00451
+r0-rope-ldg256-os-stel,64538,"batch_size=4, num_heads=24, num_kv_heads=6, seq_len=293",0.009,0.0167,1.85,0.690779,0.00276
+r0-rope-ldg256-os-stel,64538,"batch_size=32, num_heads=16, num_kv_heads=4, seq_len=4096",0.4476,0.6262,1.40,0.623648,0.17579
+r0-rope-ldg256-os-stel,64538,"batch_size=2, num_heads=40, num_kv_heads=8, seq_len=4096",0.0728,0.1025,1.41,0.622033,0.02681
+r0-rope-ldg256-os-stel,64538,"batch_size=8, num_heads=24, num_kv_heads=8, seq_len=1024",0.0447,0.0713,1.59,0.666066,0.01796
+r0-rope-ldg256-os-stel,64538,"batch_size=8, num_heads=16, num_kv_heads=4, seq_len=373",0.0129,0.0216,1.68,0.670206,0.00447
+r0-rope-ldg256-os-stel,64538,"batch_size=2, num_heads=48, num_kv_heads=6, seq_len=919",0.0193,0.0339,1.76,0.687137,0.00710
+r0-rope-ldg256-os-stel,64538,"batch_size=64, num_heads=8, num_kv_heads=8, seq_len=128",0.0226,0.0285,1.26,0.58953,0.00908
+r0-rope-ldg256-os-stel,64538,"batch_size=8, num_heads=32, num_kv_heads=4, seq_len=1087",0.0589,0.0785,1.33,0.603944,0.02156
+r0-rope-ldg256-os-stel,64538,"batch_size=1, num_heads=40, num_kv_heads=8, seq_len=131",0.004,0.0086,2.14,0.708016,0.00077
+r0-rope-ldg256-os-stel,64538,"batch_size=4, num_heads=48, num_kv_heads=12, seq_len=1321",0.0597,0.0792,1.33,0.602359,0.02182
+r0-rope-ldg256-os-stel,64538,"batch_size=1, num_heads=64, num_kv_heads=8, seq_len=8192",0.107,0.1496,1.40,0.621114,0.04037
+r0-rope-ldg256-os-stel,64538,"batch_size=4, num_heads=36, num_kv_heads=6, seq_len=2048",0.0641,0.0911,1.42,0.624605,0.02343
+r0-rope-ldg256-os-stel,64538,"batch_size=2, num_heads=32, num_kv_heads=4, seq_len=211",0.0059,0.0108,1.84,0.678035,0.00147
+r0-rope-ldg256-os-stel,64538,"batch_size=1, num_heads=56, num_kv_heads=8, seq_len=853",0.0123,0.0207,1.68,0.668869,0.00406
+r0-rope-ldg256-os-stel,64538,"batch_size=1, num_heads=8, num_kv_heads=8, seq_len=128",0.0036,0.0029,0.81,0.436537,0.00049
+r0-rope-ldg256-os-stel,64538,"batch_size=8, num_heads=28, num_kv_heads=4, seq_len=1024",0.0459,0.0743,1.62,0.668385,0.01793
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=512,0.44,0.123,0.28,0.181831,0.03242
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=211,0.304,0.1008,0.33,0.227046,0.01629
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=449,0.4324,0.1191,0.28,0.183287,0.02844
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=373,0.3876,0.1102,0.28,0.19203,0.02372
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=16,0.1135,0.0831,0.73,0.408532,0.01521
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=192,0.3034,0.0984,0.32,0.222713,0.01607
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=131,0.2964,0.0938,0.32,0.217561,0.01577
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=919,0.6889,0.1698,0.25,0.150595,0.05793
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=32,0.1423,0.0848,0.60,0.353665,0.01532
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=853,0.6819,0.1643,0.24,0.149719,0.05368
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=128,0.2733,0.0907,0.33,0.225394,0.01576
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=773,0.6734,0.1517,0.23,0.141583,0.04866
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=5,0.0761,0.0828,1.09,0.526396,
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=384,0.3886,0.1105,0.28,0.191167,0.02443
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=691,0.5637,0.145,0.26,0.163175,0.04358
+r0-adamod-dispatch-skinny-fp32-3xtf32,64540,batch_size=96,0.274,0.0901,0.33,0.223686,0.01566

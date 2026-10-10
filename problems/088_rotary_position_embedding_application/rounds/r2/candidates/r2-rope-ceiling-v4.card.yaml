@@ -1,0 +1,63 @@
+id: r2-rope-ceiling-v4
+parents: [r1-rope-v4nc-s128]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H14: the bench's about 7.0 TB/s read+write stream (LDG.128, one-shot, evict_last stores) is the ceiling at L. No
+  memory path tested (256-bit accesses, 1-D bulk rings, one-shot bulk tiles, interleaved or reversed CTA order,
+  plain stores) beats it by 3% at 612 or 2689 MB. So the candidate is r1's kernel unchanged.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 256
+  ctas_per_sm: 8
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS_S: 128, THREADS_L: 256, ROWS_S: 8, ROWS_L: 16, row_threshold: 262144, store_hint: evict_last}
+dispatch:
+  - {max_rows: 262144, kernel: rope_kernel<128>, meta: {threads: 128, rows: 8}}
+  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 16}}
+tests: [H14]
+findings:
+  - "H14 SUPPORTED: control copy (r1 LDG.128 nc/no_allocate loads, 16 lanes/row, no maths, evict_last cache_hint stores) = 86.7-86.9 us at 612 MB (6.95-6.97 TB/s), 385.7-386.5 us at 2689 MB (6.95-6.96 TB/s), marginal slope 6.94-6.96 TB/s; 128 and 256 threads tie (6.97 vs 6.96 at 2689 MB) [probe_b200, harness_time, 3 interleaved repeats]"
+  - "(b) LDG.256/STG.256, 8 lanes/row (64/128/256 thr): 6.86-6.90 TB/s at both sizes, 0.5-1.3% below the control; 256-bit does not raise the ceiling, it slightly lowers it [probe_b200]"
+  - "(e) Q/K CTAs interleaved 1:1 (until K runs out): 6.92/6.94 TB/s, -0.4% vs control; grid reversed: 6.95/6.95, tie. CTA order is not a lever [probe_b200]"
+  - "(f) plain stores instead of evict_last (v4, 128 and 256 thr): 6.62-6.64 TB/s at 612 MB (+5% time) but 6.88-6.91 at 2689 MB (-0.8%); 256-bit plain stores similar. evict_last stores matter below about 1 GB, converge at 2689 MB where the parked write-back is under 5% of traffic [probe_b200]"
+  - "(c) persistent 1-D cp.async.bulk rings, bulk load to smem then cp.async.bulk store with L2 evict_last policy (single issuing thread, mbarrier expect_tx): 32 KB x6 CTAs/SM, 64 KB x3, 96 KB x2, tiles 4-32 KB, 3-16 stages: 612 MB 94.9-97.1 us (6.22-6.36 TB/s), 2689 MB 431-440 us (6.10-6.22 TB/s), slope 6.06-6.19 TB/s. 11-12% SLOWER than control for every config; the ring size (32 to 96 KB in flight per CTA) does not matter [probe_b200]"
+  - "(c') same ring with stores from registers (128/256 threads read smem, STG.128 evict_last): 6.12-6.18 TB/s at 2689 MB, same as the bulk-store ring. The bulk store is not the limiter either; the persistent grid-stride structure is [probe_b200]"
+  - "one-shot bulk (one 4/8/16 KB tile per 32-thread CTA, load then bulk store, evict_last policy): 612 MB 87.3-87.6 us (6.90-6.92 TB/s), 2689 MB 390-391 us (6.87-6.88 TB/s), 134 MB 18.8-19.0 us. Ties the control within 1%, so the TMA engine itself reaches the ceiling but never exceeds it; persistence costs 11% [probe_b200]"
+  - "fixed cost at 134 MB: control 18.9 us, one-shot bulk 18.8-19.0 us, persistent rings 19.8-20.1 us (plain-store bulk ring 23.5-23.7 us, +24%, confirming evict_last on the bulk copy matters). 36 MB was not timed for the rings [probe_b200]"
+  - "not run: (d) 2-D TMA with cuTensorMapEncodeTiled. The 1-D bulk path already shares the same copy engine and a one-shot 1-D tile ties the control, so a 2-D descriptor is not expected to exceed it [reasoning]"
+  - "L ceiling on the bench is about 6.96 TB/s (about 85% of 8.18 TB/s). r1's RoPE kernel at 2689 MB is 387.7 us in run_tests, 1.0-1.5% above the copy control, so the maths and tables cost almost nothing at L. Remaining L-band gap to the portal (portal 399 us vs bench 387.7) is a portal-vs-bench effect, not a memory-path effect [probe_b200, run_tests]"
+  - "run_tests of the unchanged r1 code: 16/16 pass; S +0.3%, M +0.3%, L +0.6% vs r1 on the same GPU (noise); predicted portal 0.6761 +/- 0.0116 [run_tests]"
+  - "consequence: later rounds should target S/M and the portal-vs-bench gap (H15, H11); L-band memory-path work (TMA, bulk rings, 256-bit, CTA ordering) is a dead end"
+paths:
+  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+runs_on:
+  H200: {runs: false, representative: false, note: "createpolicy evict_last not measured on sm_90a; B200 timings only"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Identical to r1-rope-v4nc-s128; a portal submission would repeat its 0.677 within noise, so it is not worth a slot"
+  - "Ceiling probes ran on the unlocked rented card; at the portal's 1.5 GHz lock the ordering of TMA against LDG paths could differ (TMA needs fewer SM instructions per byte), but one-shot bulk only tied here"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

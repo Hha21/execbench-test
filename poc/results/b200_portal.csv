@@ -32,3 +32,4 @@ r1-silu-bw-cluster2-small,0.005681,0.516640,12,1.057,63929,084_silu_activation_b
 r1-oproj-cutlass-t224-dispatch,0.038618,0.452935,0,0.924,63930,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/63930_r1-oproj-cutlass-t224-dispatch.html
 r2-silu-bw-c16coop-c1coop,0.005600,0.521903,13,1.073,64157,084_silu_activation_backward,B200,v1.1,Private,AC,portal_html/64157_r2-silu-bw-c16coop-c1coop.html
 c1-oproj-t224-control,0.038847,0.449011,0,0.919,64523,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/64523_c1-oproj-t224-control.html
+r0-geglu-ldg256-2d-stel,0.017381,0.674219,16,1.868,64537,085_geglu_activation,B200,v1.1,Private,AC,portal_html/64537_r0-geglu-ldg256-2d-stel.html

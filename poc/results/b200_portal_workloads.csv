@@ -490,3 +490,35 @@ r0-oproj-cublaslt-fused-v0,63900,"batch_size=16, seq_len=128",0.0308,0.0259,0.84
 r0-oproj-cublaslt-fused-v0,63900,"batch_size=2, seq_len=293",0.0153,0.014,0.91,0.467371,
 r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=2048",0.0309,0.026,0.84,0.406772,0.01531
 r0-oproj-cublaslt-fused-v0,63900,"batch_size=1, seq_len=256",0.0106,0.0099,0.94,0.478799,
+r1-silu-bw-cluster2-small,63929,num_elements=40960,0.0026,0.0025,0.98,0.492595,
+r1-silu-bw-cluster2-small,63929,num_elements=16384,0.0024,0.0025,1.03,0.507935,
+r1-silu-bw-cluster2-small,63929,num_elements=16777216,0.0398,0.0431,1.08,0.525302,
+r1-silu-bw-cluster2-small,63929,num_elements=131,0.0023,0.0024,1.01,0.504162,
+r1-silu-bw-cluster2-small,63929,num_elements=655360,0.0044,0.0048,1.07,0.519518,
+r1-silu-bw-cluster2-small,63929,num_elements=786432,0.0048,0.005,1.05,0.513696,
+r1-silu-bw-cluster2-small,63929,num_elements=163840,0.0029,0.003,1.03,0.50968,
+r1-silu-bw-cluster2-small,63929,num_elements=8388608,0.0207,0.0241,1.16,0.547281,
+r1-silu-bw-cluster2-small,63929,num_elements=4194304,0.0124,0.0137,1.11,0.532233,
+r1-silu-bw-cluster2-small,63929,num_elements=4096,0.0024,0.0024,1.03,0.508,
+r1-silu-bw-cluster2-small,63929,num_elements=3089,0.0023,0.0022,0.95,0.485038,
+r1-silu-bw-cluster2-small,63929,num_elements=2097152,0.008,0.0085,1.07,0.519635,
+r1-silu-bw-cluster2-small,63929,num_elements=262144,0.0033,0.0034,1.01,0.502813,
+r1-silu-bw-cluster2-small,63929,num_elements=5242880,0.0141,0.0169,1.20,0.556111,0.00302
+r1-silu-bw-cluster2-small,63929,num_elements=2053,0.0025,0.0025,1.01,0.501931,
+r1-silu-bw-cluster2-small,63929,num_elements=10485760,0.0255,0.029,1.13,0.540306,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=16, seq_len=512",0.0885,0.086,0.97,0.476795,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=4, seq_len=128",0.0127,0.012,0.95,0.479602,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=8, seq_len=1024",0.0885,0.086,0.97,0.476759,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=1, seq_len=1571",0.0239,0.022,0.92,0.456272,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=4, seq_len=1024",0.0504,0.0442,0.88,0.409895,0.03010
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=2, seq_len=2053",0.0503,0.0441,0.88,0.409623,0.03005
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=8, seq_len=997",0.0878,0.0857,0.98,0.48213,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=16, seq_len=256",0.0505,0.0442,0.88,0.409319,0.02998
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=64, seq_len=128",0.0887,0.086,0.97,0.476132,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=32, seq_len=256",0.0886,0.086,0.97,0.476647,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=8, seq_len=512",0.0505,0.0442,0.88,0.409683,0.02991
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=1, seq_len=1024",0.0169,0.0158,0.94,0.470065,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=16, seq_len=128",0.0295,0.0259,0.88,0.429221,0.01498
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=2, seq_len=293",0.0148,0.014,0.94,0.47842,
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=1, seq_len=2048",0.0295,0.026,0.88,0.428571,0.01550
+r1-oproj-cutlass-t224-dispatch,63930,"batch_size=1, seq_len=256",0.0106,0.0099,0.93,0.477834,

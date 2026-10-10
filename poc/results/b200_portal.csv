@@ -28,3 +28,5 @@ r1b-lt-tiles,0.020068,0.481823,10,0.998,62899,009_gemm_n5120_k2048,B200,v1.1,Pri
 x1-shape-ab,0.023216,0.610241,16,1.367,63840,038_flux_multi_head_rmsnorm_qk,B200,v1.1,Private,AC,portal_html/63840_x1-shape-ab.html
 r0-silu-bw-cuda-ldg128-os-efel,0.006142,0.494149,7,0.978,63899,084_silu_activation_backward,B200,v1.1,Private,AC,portal_html/63899_r0-silu-bw-cuda-ldg128-os-efel.html
 r0-oproj-cublaslt-fused-v0,0.042053,0.402363,0,0.849,63900,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/63900_r0-oproj-cublaslt-fused-v0.html
+r1-silu-bw-cluster2-small,0.005681,0.516640,12,1.057,63929,084_silu_activation_backward,B200,v1.1,Private,AC,portal_html/63929_r1-silu-bw-cluster2-small.html
+r1-oproj-cutlass-t224-dispatch,0.038618,0.452935,0,0.924,63930,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/63930_r1-oproj-cutlass-t224-dispatch.html

@@ -1,0 +1,57 @@
+id: r0-geglu-ldg256-2d-stel
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: default
+  spec: all
+hypothesis: >-
+  A pure one-pass elementwise stream: one launch, a 2-D grid of 5 CTAs per row with 128 threads, each thread two
+  256-bit loads (gate, linear) and one 256-bit store under L2 evict_last, GELU computed as a*sigmoid(2u) with one
+  exp and one reciprocal. Evict_last stores cut the in-window write-back of the harness's dirty L2 lines, which is
+  what separates this from a plain copy at M/L.
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS: 128, CTAS_PER_ROW: 5, FLOATS_PER_THREAD: 8, STORE_HINT: evict_last}
+tests: [H1, H2, H3, H4]
+findings:
+  - "evict_last stores vs plain: -8% at 63 MB, -13% at 126 MB, -12% at 252 MB, -6% at 503 MB, 0 at S [probe_b200]"
+  - "1 chunk (8 floats) per thread best; 2 chunks +1..5%, 4 chunks +3..10% with 82 regs [probe_b200]"
+  - "CTA size 128/256/512 within 1%; 2-D grid without division -2% at S vs 1-D grid, equal at L [probe_b200]"
+  - "sigmoid form (__expf + __fdividef) max abs err 1.9e-6, zero elements out of 1e-5 tolerance; tanhf form 3-10% slower [probe_b200]"
+  - "copy-only kernel (no GELU) equals the full kernel at every size at 1965 MHz: compute hidden on the rented clock [probe_b200]"
+  - "ld.global.nc vs plain loads: identical [probe_b200]"
+  - "empty kernel 1.73 us; read-only 3.52 us; full 3.6-3.8 us at 7.9 MB; read-only reaches only 5.3 TB/s at 503 MB vs 7.0 read+write [probe_b200]"
+  - "run_tests: 16/16 pass, 0.69-0.95x plain copy time; 7.0-7.2 TB/s at L, 5.8-6.8 at M, 2.2-4.6 at S [run_tests]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st and L2::cache_hint on st need sm_100; would need a 128-bit fallback"}
+  A100: {runs: false, representative: false, note: "sm_100-only PTX"}
+  L40S: {runs: false, representative: false, note: "sm_100-only PTX"}
+risks:
+  - "At the portal's 1500 MHz the 2 MUFU per element (37% of MUFU capacity) may become visible at M/L (H5)"
+  - "gridDim.y limit 65535 rows: larger inputs fall back to the scalar generic kernel (never hit by the 16 workloads)"
+  - "Tb and Tsol unknown until the first portal result"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

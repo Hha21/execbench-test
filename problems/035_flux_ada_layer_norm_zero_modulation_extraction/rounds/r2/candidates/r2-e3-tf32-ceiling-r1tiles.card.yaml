@@ -1,0 +1,197 @@
+id: r2-e3-tf32-ceiling-r1tiles
+parents:
+  - r1-adamod-cutlass-tf32-2sm-chunkepi
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E3 result, not a new mechanism. Under harness conditions at 1963-1975 MHz, tcgen05 GEMMs stop at about 70-79% of the
+  clock peak for both TF32 and BF16, on square and on our shapes. When power-capped to 1.2-1.33 GHz they reach 89-96%.
+  So the ceiling sits in a domain that does not scale with the SM clock, likely L2/fabric. It is neither TF32-specific
+  nor shape-specific, and it is not the SM-side shared-memory traffic model. W multicast (cluster 2x2), K-tile 16/64,
+  and raster swizzle 2/4 are all slower. The r1 dispatch is kept unchanged (comments only) as the best tested version.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 198
+  smem_per_cta_bytes: 229888
+  threads_per_cta: 192
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  CLUSTER: "2x1x1"
+  TILE_K: 32
+  MAX_SWIZZLE: 1
+  S_TILE: "128x64, 16 stages"
+  M_TILE_65_128: "256x64, auto stages"
+  TILE_129_192_257_384_513plus: "256x192, auto stages (8)"
+  TILE_193_256_385_512: "256x256, auto stages (7)"
+dispatch:
+  - max_tokens: 64
+    kernel: Tf32Gemm<128,64,16>
+    meta:
+      launches: 1
+  - max_tokens: 128
+    kernel: Tf32Gemm<256,64,0>
+    meta:
+      launches: 1
+  - max_tokens: 192
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H12
+findings:
+  - "H12 step 1 (harness mode: flush + CUPTI, clock read in-kernel at 1960-1975 MHz, 3 rounds, spread < 3%): cuBLAS TF32 4096^3 822-854 TF/s (69-72% of clock peak), 8192x8192x2048 894-897 (75%), 8192^3 846-847 (71%); BF16 4096^3 1692-1697 (71%), 8192x8192x2048 1890 (79%), 8192^3 1640-1652 (69%). TF32 is NOT uniquely capped: BF16 stops at the same fraction [probe_b200]"
+  - "H12: same shapes under sustained back-to-back load are power-capped (throttle reason 0x4 SW power cap, ~1000 W) to 1190-1330 MHz and then reach 89-91% (TF32 8192^3 716 TF/s at 1330 MHz) and 94-96% (BF16 1361 TF/s at 1200 MHz) per clock: the ceiling does not scale with the SM clock, so it is not SM-side shared-memory traffic or the TF32 issue rate; likely L2/fabric (~13 TB/s operand reads in both dtypes) [probe_b200]"
+  - "H12 verdict: refuted as a TF32-specific hardware cap and as a shape-specific loss. cuBLAS on our shape at B=1024 (no padding) gets 75% per clock at 1965 MHz, the same as square. B=919 gets 68.5% only because of N padding [probe_b200]"
+  - "probe: the rented card's clock state drifts. The same cuBLAS L919 GEMM ran 128-136 us in short-burst runs at ~1965 MHz and 167-175 us after sustained loops (1349-1427 MHz). Rented time differences of ~7% between sessions with identical code are clock or thermal, not kernel changes [probe_b200]"
+  - "run_tests (code identical to r1, comments only): 16/16 PASS; B=5..128 51.8/48.9/49.0/55.3/55.8, M 56.9/57.1/60.5/66.9/66.5, L 75.7/76.6/103.1/122.6/124.1/125.2 us. The L -7% vs the stored r1 times is clock drift (same binary), so the emulator's 0.615 is spurious: expect the portal to repeat r1's 0.588 [run_tests]"
+  - "dead end: cluster 2x2 (W tile multicast to two pairs along the batch dim) is 20-30% slower: 919 153.6-159.7 vs 125.2 us; 691 118-150 vs 101.6; 512/449 99-118 vs 75.7; 384 82.7-98 vs 66.3 [probe_b200]"
+  - "dead end: K-tile 16 (16/14 stages) is 10-19% slower and K-tile 64 (4/3 stages) is 2-7% slower than K-tile 32 at B=449-919; max_swizzle 2/4 is +0.5-1.5% slower than 1 [probe_b200]"
+  - "tile check (harness mode, interleaved x3): 256x192 vs 256x256 at 919 125.0 vs 130.9, at 691 101.6-103.3 vs 102.4-103.5, at 512 83.7 vs 75.6, at 449 83.3 vs 75.7, at 384 66.3 vs 75.1 us: the r1 dispatch table is already optimal among the tiles that build [probe_b200]"
+  - "dead end: 2SM 256x240 does not build in CUTLASS 4.4.1 (B-operand smem layout/TMA static assert; 120 batch rows per CTA) [probe_b200]"
+  - "max |err| vs fp64 (W/sqrt(3072), bias randn) at B=919: 1.58e-3 on one draw, 1.79e-3 on another (above the 1.7e-3 bar, under atol 2e-3). Identical for every tile, cluster and K-tile variant (same tf32 truncation). The margin depends on the draw; the harness passed 16/16 x 10 rounds [probe_b200, run_tests]"
+  - "method: CUTLASS variants build in a probe with nvcc -c in parallel (~30 s for 4-6 TUs on 24 cores) into /tmp/*.so loaded by ctypes; /tmp persists between probes, so build and time can be split [probe_b200]"
+  - "consequence: any remaining L gain needs fewer L2 bytes per FLOP without 4-CTA clusters, or less N padding (E2/H18: 208/224-wide tiles). The tcgen05 rate itself cannot be raised by tile, stage or scheduler knobs [INFERRED]"
+paths:
+  - max_tokens: 64
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 64
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 128
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 192
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM and sm100a-only CUTLASS collectives; does not build for sm_90"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Code is identical to r1 (portal 0.5884); not worth a portal slot except as a repeat-noise measurement"
+  - "Plain TF32 (operator ruling): max error 1.58-1.79e-3 vs atol 2.0e-3 depending on the draw; 16/16 x 10 rounds passed"
+  - "The epilogue wrapper relies on CUTLASS 4.4.1's no-smem epilogue holding a const reference to its Params"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

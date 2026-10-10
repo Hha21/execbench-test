@@ -1,0 +1,689 @@
+=== TASK ===
+Round: r2   Operation: new_design
+Problem: L1/035_flux_ada_layer_norm_zero_modulation_extraction   Target niche: exp:E3:H12   Target band: L
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r2-'.
+Experiment E3 (tests H12): Is 68% of the TF32 peak a hardware ceiling? Square hot GEMM probe, then L diagnosis. Step 1 (probe, 30 min): with the r1 Tf32Gemm template (plain LinearCombination epilogue, no chunk wrapper) time CUTLASS 2SM 256x256 and 1SM 128x256 TF32 on M=N=K=8192 with hot inputs (no flush, 3 rounds, CUPTI), plus cuBLAS TF32 on the same shape, plus the same CUTLASS 2SM 256x256 template in BF16 (256x256x16 tile) as the control (expected 1.6-2.0 PF/s rented). Report TF/s and the fraction of 1.19 PF/s (TF32) and 2.37 PF/s (BF16) at 1965 MHz. Step 2: our shape with W fitting L2: M=6144 (two chunks, 75 MB), N=919, K=3072, hot vs harness-flushed, and M=18432 flushed: this separates DRAM/dirty-L2 effects from the compute rate. Step 3, if TF32 square >= 85%: the loss is shape-specific; sweep on B=919 and 691 interleaved: K-tile 16/32/64 at auto stages, stage count, CLC vs static persistent scheduler, raster swizzle size (max_swizzle 1/2/4/8), AlongN vs AlongM with the swapped layout fixed, and the epilogue (NoSmem vs TMA-store epilogue). Build the best as a candidate with per-B tiles from E2 and run_tests 16/16 (max |err| <= 1.7e-3). Step 3, if TF32 square <= 72% while BF16 >= 80%: the TF32 instruction rate is the cap; record the per-clock MAC rate and stop L work; write the finding so later rounds do not revisit it. Step 3, if both TF32 and BF16 stop near 70%: the smem-traffic model holds; test whether K-tile 64 (fewer, larger TMA writes) or 1SM 128x256 with 2 CTAs per SM changes the rate by > 5%. Success: Either a candidate >= 8% faster rented at B=691-919 (919: <= 123 us vs 133.6) with 16/16 pass, or a decisive ceiling measurement (TF32 and BF16 square rates with < 3% spread over 3 rounds) that settles H12 Refuted if: CUTLASS 2SM 256x256 TF32 on 8192^3 hot reaches <= 72% of 1.19 PF/s while BF16 reaches >= 80%: TF32 is hardware-capped at the rate cuBLAS and we already achieve, and H12's headroom is gone This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r1-adamod-cutlass-tf32-2sm-chunkepi | tma-tensor/persistent/dispatch:size | cuda_cpp | 52.0/62.2/109.1 | -/-/- | -/-/- | -/-/- | 55.3/69.6/136.9 | 0.588448 | - | passed |
+| r0-adamod-dispatch-skinny-fp32-3xtf32 | cpasync/oneshot/dispatch:size | cuda_cpp | 134.1/300.5/475.2 | -/-/- | -/-/- | -/-/- | 155.9/333.4/569.0 | 0.234899 | 128/1024/None; 108/1024/None | passed |
+| r1-e1-lt-fasttf32-bias-scatter | tma-tensor/oneshot/all | cuda_cpp | 56.8/75.3/138.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 20/0/None | passed |
+| r1-ef-bulk-tf32-stream-b16 | bulk1d/oneshot/dispatch:size | cuda_cpp | 51.3/75.7/138.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 140/1152/None; 90/1152/None | passed |
+B200 results so far:
+- r0-adamod-dispatch-skinny-fp32-3xtf32: B200 score 0.235, geomean 321.2 µs, B200 S/M/L 155.9/333.4/569.0 µs
+- r1-adamod-cutlass-tf32-2sm-chunkepi: B200 score 0.588, geomean 83.5 µs, B200 S/M/L 55.3/69.6/136.9 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #35 (035_flux_ada_layer_norm_zero_modulation_extraction). Seeded 2026-10-10 (research round r0); updated r1 2026-10-10; updated r2 2026-10-10.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 / 8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented, plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3 vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
+- '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
+- '#35 TF32 margin (operator, r1): accumulate in fp32 over the full K = 3072 inside one tensor-core accumulator; no split-K whose partials are stored or re-fed below fp32; no rounding of outputs or intermediates. Every candidate records max |err| vs fp64 per B (must stay <= 1.7e-3 against atol 2.0e-3) in its findings.'
+- '#35 cache hints (r2): L2 evict_first is used only on the TMA/bulk loads of this call''s own weight buffer and evict_last/evict_first only on this call''s outputs; no applypriority, no persisting-L2 windows. Record the hint in the card''s paths (w: ef) so the emulator can learn the portal ratio of hinted paths.'
+- '#35 portal ratios (r2, H15): emulator predictions for tensor-core-bound paths must use 1.25-1.31 portal/rented; DRAM-bound paths 1.03-1.07. The r1 emulator overpredicted L (0.603 predicted vs 0.5884 portal) by ignoring this.'
+hypotheses:
+- id: H1
+  statement: The reference's cuBLAS SIMT sgemm is within 25-30% of the FFMA peak at M/L, so FFMA-only designs cannot gain more than about 1.3x there; packed fma.f32x2 adds no throughput.
+  status: supported
+  evidence:
+  - 'probe: cutlass3x_sm100_simt_sgemm 55-57 TF/s at B=384/919 vs 74.4 TF/s peak at 1965 MHz [probe_b200]'
+  - 'probe: FFMA 67.6 TF/s vs FFMA2 (fma.rn.f32x2) 73.5 TF/s on 148x8 CTAs: same 128 FMA/clk/SM datapath [probe_b200]'
+  - 'r1: moot since the TF32 ruling and Tb = TF32 speed; FFMA paths cannot score anywhere (B=5 skinny 76.1 us portal vs Tb 82.8)'
+- id: H2
+  statement: 3xTF32 (hi/lo split, three TF32 tensor-core GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster than the reference at L even with a separate split pass and scatter.
+  status: parked
+  evidence:
+  - 'probe: max error vs fp64 4.3e-5 (fp32 cuBLAS 1.6e-5, tolerance atol 2e-3) at B=919; gemms 415 us + split 112 + scatter [probe_b200]'
+  - 'run_tests r0: 575 us at 919 vs 1882 reference, 345 at 384 vs 762, 16/16 pass on 10 random rounds [r0-adamod-dispatch-skinny-fp32-3xtf32]'
+  - 'portal r0: 688.9 us at 919 scores 0.151 against Tb 169.8 (TF32 speed); retired by the 2026-10-10 TF32 ruling'
+- id: H3
+  statement: A fused tcgen05 3xTF32 kernel (TMA load, hi/lo split in shared memory, 3 MMAs per k-block, bias + six-way split in the epilogue, one launch) removes the 107-112 us split pass and the 7-47 us scatter and reaches max(3 x FLOPs / 588 TF/s, memory floor).
+  status: parked
+  evidence:
+  - 'estimate: 531 us at 919 at the lock vs r0 575 rented (~690 at the lock); 76-222 us at M vs 272-345; ~55-75 us at S vs 256'
+  - 'r1: superseded by plain TF32 (ruling); 3 MMAs per k-block can never reach Tb (169.8 us at 919 = 613 TF/s). The fused-epilogue part lives on as H14'
+- id: H4
+  statement: For B <= 128 one M-tile covers all rows, so a tensor-core TF32 kernel streams W exactly once and the S band is memory-bound; the S floor is the evict_first reads-only stream (39-40 us rented, H16), not the 50 us plain stream cuBLAS sits at.
+  status: supported
+  evidence:
+  - 'probe: plain cuBLAS TF32 runs 50-51 us at B=5..128 rented, i.e. at the dirty-L2 plain stream floor [probe_b200]'
+  - 'portal r0: Tb 82.8-90.7 us at B<=128, Tsol about 15 us; t = 50 us scores 0.66, t = 40 us 0.73'
+  - 'portal r1: CUTLASS 128x64/256x64 at 57.0/50.4/50.5/59.5/59.9 us (B=5..128) score 0.62-0.66; r1-ef mma.sync stream kernel 41.6/43.6 rented at B=5/16 shows the hinted floor is reachable with a GEMM attached'
+- id: H5
+  statement: The skinny SIMT kernel (lane = W row, cp.async-staged 128x64 tiles, emb broadcast from smem) is at the copy floor at B=5 but issue/latency bound at B=16 and 32; 2 CTAs/SM and 2-row-per-lane register tiling recover the 32-64 us FFMA floor.
+  status: parked
+  evidence:
+  - 'probe: 54.6 / 88.8 / 145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs, 108-129 KB smem); run_tests 60.6 / 88.3 [probe_b200, r0]'
+  - 'dead end: skinny<32> loses to cuBLASLt fp32 (122 us) so B=32 stays on the library path in r0'
+  - 'portal r0: 76.1 us at B=5 (x1.26 vs rented: it scales with the SM clock, so it is issue-bound, not DRAM-bound); cuBLAS TF32 at 50 us beats it. Parked'
+- id: H6
+  statement: cuBLAS BF16x9 emulation is a legitimate one-call fp32-level path (error 3.4e-6) but is slower than 3xTF32 at L and falls back to SIMT below B~64.
+  status: refuted
+  evidence:
+  - 'probe: 117 / 131 / 177 / 358 / 754 us at B=5/32/128/384/919, maxerr 3.4e-6; r0 3xTF32 path 575 at 919 [probe_b200]'
+  - 'operator ruling 2026-10-10: BF16x9 emulation stays forbidden; and it is 4x slower than Tb at 919 anyway'
+- id: H7
+  statement: SOLAR's Tsol for this problem uses the FP32 CUDA-core peak, so 3xTF32 designs can go below Tsol at M/L (scores above 0.5 come cheaply there and the S band decides the ranking).
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol = (Tb - S t - S Tb)/(1 - 2S) gives 15.0 us at B=5, 23.7 at 373, 57.9 at 919 = FLOPs / 1.8 PF/s (bf16-like dense rate, 2x the TF32 peak), floored at about 15 us for B <= 211'
+  - 'consequence: no TF32 kernel can reach Tsol; the lock-time TF32 peak (909 TF/s, 115 us at 919) scores at most 0.66 there'
+- id: H8
+  statement: The hidden Tb is close to the fp32 reference (~2.4 ms at 919 at the lock), not a TF32-enabled PyTorch solution (~180 us).
+  status: refuted
+  evidence:
+  - 'portal r0: Tb = 82.8 / 83.1 / 84.8 / 90.1 / 90.7 (B=5..128), 93.8-110.5 (M), 119.1-169.8 (L) us; 169.8 at 919 = 613 TF/s: a TF32 PyTorch matmul at the lock, slightly faster than our rented cuBLAS TF32 scaled by 1.31 (177 us)'
+- id: H9
+  statement: The separate scatter and any tmp[B,18432] round trip cost 5 us at B=5 and 22 us at 919 (3-13% of Tb, not the 28% first estimated); a fused epilogue that adds the bias and picks the output tensor by column chunk gains that much and no more before the GEMM itself improves.
+  status: supported
+  evidence:
+  - 'probe r1-e1: GEMM alone 49.5 vs 55.1 with scatter at B=5; 135 vs 157 at 919. r0''s 47 us figure was inflated by the 453 MB scratch traffic [probe_b200]'
+  - 'portal r1: fused CUTLASS 167.9 us at 919 vs Tb 169.8 (cuBLAS TF32 + bias pass): the fused epilogue is worth about the scatter and the GEMM rate is identical to Tb''s'
+- id: H10
+  statement: 'L2 evict_first on the W stream removes most of the dirty-L2 write-back penalty from the timed window (reads-only 45.9 -> 39.9 us plain LDG, 45.0 -> 38.7 bulk ring); store hints on the outputs are not a lever (<= 0.5 us).'
+  status: supported
+  evidence:
+  - 'probe r1-ef: with the harness zero-flush, plain LDG.128 45.9 us, evict_first 39.9; bulk ring 45.0, bulk + evict_first 38.7; ld.global.v8 256-bit 41.5 (no gain) [probe_b200]'
+  - 'probe r1-ef: read-based flush gives 38.9 us for every variant; so the dirty write-back costs 6-12 us for plain reads and 4-5 us with evict_first [probe_b200]'
+  - 'probe r1-ef: reads + six outputs at B=128: st default 40.3, evict_last 39.8, evict_first 40.3 us [probe_b200]'
+- id: H11
+  statement: cuBLASLt CUBLAS_COMPUTE_32F_FAST_TF32 with a bias epilogue plus a scatter is a 16/16-correct path at 55-177 us rented (score about 0.54); cuBLAS 13's batched pointer-array mode over the six chunks removes the scatter at no GEMM cost.
+  status: refuted
+  evidence:
+  - 'run_tests r1-e1: 55.5/54.1/54.8/59.5/60.4 (S), 62.7-94.5 (M), 99.3-177.0 (L) us, 16/16, emulator 0.537 [r1-e1-lt-fasttf32-bias-scatter]'
+  - 'refuted part: pointer-array batched GEMM (bias via C broadcast, pinned pointer arrays) is 12-43% slower than big GEMM + scatter at every B; bias epilogue + pointer array is NOT_SUPPORTED; the pointer arrays must change per call and reach the GPU over PCIe [probe_b200]'
+  - 'superseded: the CUTLASS fused epilogue (H14) is faster at every B and needs no library heuristics'
+- id: H12
+  statement: 'tcgen05 TF32 stops at about 68% of the 909 TF/s lock-time peak (cuBLAS 613 TF/s = Tb; our 2SM 256x192/256x256 the same) because of operand traffic through shared memory: a 2SM 256x256x8 MMA needs 8 KB of TMA writes and 12 KB of MMA reads per CTA per 128 clk (160 B/clk against 128 B/clk), a hardware ceiling no tile beats. The alternative is that the loss is shape-specific (72 W tiles, 1-5 batch tiles, K loop of 96 stages, W from DRAM) and a square hot GEMM shows >= 85%.'
+  status: open
+  evidence:
+  - 'probe r0: cuBLAS TF32 770 TF/s unlocked at 919 = 65-67% of the 1.19 PF/s TF32 peak at 1965 MHz [probe_b200]'
+  - 'probe r1: swapped 2SM 256x256 142 us, 256x192 135.5, 1SM 128x256 161 at 919: 2SM is 1.13-1.19x 1SM but the best core is 780 TF/s rented, the same as cuBLAS which already uses 2SM 256x256. The 2SM half of the original claim is refuted [probe_b200]'
+  - 'portal r1: L ratio portal/rented 1.25-1.27 (clock ratio 1.31): SM-clock-bound, not DRAM-bound'
+  - 'E3 (r2) measures CUTLASS 2SM 256x256 TF32 and BF16 on 8192^3 hot: TF32 >= 85% means shape loss (fixable), TF32 ~70% with BF16 >= 80% means TF32-specific hardware cap'
+- id: H13
+  statement: Re-reading W from L2 once per 128- or 256-row M-tile is the second limiter at L; a cluster of 2-4 CTAs along M with TMA multicast of the W tile cuts it to 1-2 passes.
+  status: refuted
+  evidence:
+  - 'probe r1: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]'
+  - 'probe r1: raster AlongN (batch tiles of one W tile together) already reads W from DRAM once; AlongM re-reads it and costs 306 vs 148 us [probe_b200]'
+- id: H14
+  statement: 'A one-launch CUTLASS sm100 TF32 kernel with the bias and the six-way split in the epilogue (output pointer picked by N-tile) removes the scatter and the tmp round trip and matches cuBLAS GEMM-only time at every B.'
+  status: supported
+  evidence:
+  - 'run_tests r1: 51.0/48.8/49.0/55.5/56.0 (S), 57.0-68.5 (M), 79.6-133.6 (L) us rented, 16/16, one launch, builds in 31-39 s per variant [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'portal r1: 0.5884; S/M/L 55.3/69.6/136.9 us; predicted 0.603 (L overpredicted: the GEMM rate did not beat Tb''s, see H12/H15)'
+  - 'dead end: 2SM 128xN tiles with N >= 128 trip a device assertion in the no-smem epilogue TMEM load; 128x64 is fine [probe_b200]'
+- id: H15
+  statement: Portal/rented time ratios on #35 are 1.25-1.31 for SM-clock-bound paths (tensor core, issue-bound SIMT) and 1.03-1.07 for DRAM-bound paths; the emulator must use the path's bound, not the language, to predict the portal time.
+  status: supported
+  evidence:
+  - 'portal vs rented r0: skinny B=5 76.1/60.6 = 1.26; cuBLASLt fp32 B=32 142.3/123.7 = 1.15; 3xTF32 B=919 688.9/574.6 = 1.20'
+  - 'portal vs rented r1 (CUTLASS): B=16/32 1.03, B=96/128 1.07, B=5 1.12 (128x64 tile, 2 waves), M 1.07-1.19 rising with B, L 1.25-1.27'
+  - 'dead end: nvidia-smi -lgc is not permitted on the rented card; the ratio comes from portal pairs only'
+- id: H16
+  statement: Any kernel that reads W once pays the dirty-L2 write-back (about 126 MB) on top of 227 MB, so the S/M floor under harness conditions is 45-53 us.
+  status: refuted
+  evidence:
+  - 'probe r1-ef: reads-only floor with the harness flush is 39-40 us with evict_first (38.9 with a read-based flush): the hinted reads recycle their own lines and the write-back leaves the timed window [probe_b200]'
+  - 'consequence: S scores can reach about 0.73 (t = 40 us vs Tb 83); the CUTLASS tiles at 49-56 us rented leave 20% on the table'
+- id: H17
+  statement: 'A fused tcgen05 TF32 kernel whose W loads carry L2 evict_first (one N tile for B <= 128: 144 one-SM CTAs of 128 W rows, N = B padded to 16, >= 96 KB of W in flight; N = 256 tiles for 131-256) reaches 42-45 us rented at every B <= 128 and about 45-50 us at 131-211, against 49-61 us for the unhinted CUTLASS tiles; portal ratio about 1.05 (DRAM-bound). Worth about +0.03.'
+  status: open
+  evidence:
+  - 'probe r1-ef: reads-only evict_first floor 39-40 us; mma.sync version 41.6/43.6 at B=5/16 but 63 at B=32 (mma.sync is compute/issue-bound above B ~ 16) [r1-ef-bulk-tf32-stream-b16]'
+  - 'r1 open: CUTLASS 256x64/256x128/256x192 all 55-61 us at B=96-211; 128x64 16-stage 49-52 at B <= 32 [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'E1 (r2) tests it twice: CUTLASS mainloop with EVICT_FIRST on the A (W) TMA loads, then a hand-written tcgen05 kernel for B <= 256'
+- id: H18
+  statement: 'Batch-side tile quantization costs 6-24% at L: the r1 dispatch pads B=449/691/773/853 to 512/768/960/960 columns; per-B N tiles of 240/240/208/224 (multiples of 16, 4 or fewer batch tiles) pad to 480/720/832/896 and gain 6-13% there, about +0.01, provided CUTLASS 2SM 256xN builds and passes for those N.'
+  status: open
+  evidence:
+  - 'portal r1: 449 101.4 us = 512 101.9 (same padded work); 691 138.0; 773 164.9 = 853 166.7 = 919 167.9 (all padded to 960): times follow padded N, not B'
+  - 'E2 (r2) builds 256x208/224/240 and measures per B'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r0-adamod-dispatch-skinny-fp32-3xtf32 (portal 0.2349) vs r1-adamod-cutlass-tf32-2sm-chunkepi: S bench +158.1% / portal +181.9%; M bench +383.5% / portal +378.8%; L bench +335.6% / portal +315.6%
+Findings recorded by design sessions, newest round first:
+Round r1:
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] run_tests: 16/16 pass, one launch; rented us B=5/16/32/96/128: 51.0/48.8/49.0/55.5/56.0; 131/192/211/373/384: 57.0/57.1/60.8/68.5/68.5; 449/512/691/773/853/919: 79.6/81.3/112.0/131.4/132.7/133.6 (-61/-79/-77% S/M/L vs r0); emulator 0.603 +- 0.012 [run_tests]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] build: each CUTLASS sm100 variant compiles in 31-39 s with nvcc 13.1 (8 cores, parallel TUs); whole run_tests incl. 4-variant build and all tests 53 s, far under 300 s [probe_b200, run_tests]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: max |err| vs fp64 (weight/sqrt(3072) scale) 1.3e-3 at B=5, 1.4e-3 at 131, 1.54-1.6e-3 at 919 for every CUTLASS variant, bit-identical max to cuBLAS TF32 (both read fp32 as tf32 by truncation); no cvt.rna transform needed [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: with unscaled randn weights both cuBLAS TF32 and this kernel fail 88% of elements (max err 7e-2), so the harness inputs are not unscaled randn W; correctness only from run_tests [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] H12 probe (non-swapped, M=batch): 2SM 256x256 146 us vs 1SM 128x256 173 us at B=919 (1.19x); swapped: 2SM 256x256 142, 256x192 135.5, 1SM 128x256 161 (1.13-1.19x). The best core reaches about 780 TF/s rented (68% of the TF32 peak), the same as cuBLAS, which already uses 2SM 256x256: 2SM alone does not beat Tb's GEMM rate [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] H13 refuted: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: operand order matters: non-swapped (M=batch, N=W) 2SM tiles are 7-10% slower than swapped at M/L and 10-20% slower at S (256x128 non-swapped gives 144 tiles on 74 pairs = 2 waves at B=5) [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: raster order AlongM on the swapped layout re-reads W from DRAM per batch tile: 306 vs 148 us (256x128) and 204 vs 135.5 (256x192) at 919; heuristic = AlongN is right [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: S band: 2SM 128x64 with 16 stages (197 KB smem, 128 KB of W in flight per SM) runs 48.9-52.1 us at B<=32, as fast as or faster than cuBLAS TF32 without scatter (48.4-52.3); 8 stages at 2 CTAs/SM 54.3-54.7; 256x64 auto 53.8; 1SM 128x128 55-62 [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: cuBLAS TF32 picks cutlass3x_sm100 tnn 2sm kernels: 128x64 at B=32, 256x128 at 128/384, 256x256 at 131/919, all with a bias epilogue [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] dead end: 2SM 128xN tiles with N>=128 (64 W rows per CTA) trip a CUTLASS device assertion in the no-smem epilogue TMEM load (warp/TMEM lane-quadrant mismatch); 128x64 is fine; 128x96 does not build [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] probe: CUPTI harness_time occasionally returns 'No timing results' on single calls of these cluster launches in probes (about 1 in 30); run_tests timed all 16 workloads without error [probe_b200]
+- [r1-adamod-cutlass-tf32-2sm-chunkepi] open: B=96-211 sits 6-12 us above the 49 us S-band floor; no tested tile closes it (256x64/256x128/256x192 all 55-61 us) [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] run_tests B200 rented, 16/16 pass: B=5/16/32/96/128 -> 55.5/54.1/54.8/59.5/60.4; 131/192/211/373/384 -> 62.7/64.9/67.5/94.5/93.3; 449/512/691/773/853/919 -> 99.3/102.1/137.8/167.4/172.5/177.0 us (r0: 61/88/124/256/257 ... 576). Emulator: portal 0.537 +- 0.011 [run_tests]
+- [r1-e1-lt-fasttf32-bias-scatter] max |err| vs fp64 (weight/sqrt(3072) as the harness draws, 3 trials per B): 1.39e-3 (B=5), 1.58-1.59 (16, 96), 1.75 (128), 1.53-1.67 elsewhere, max 1.752e-3 at B=128. No element exceeded atol 2e-3 + 1e-5|ref| (fraction 0 at every B). Margin to atol is thin (13%): B=128 is above the 1.7e-3 success bar [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] cuBLASLt batched pointer-array API, accepted: A, B and D all pointer-array and no bias epilogue (7-8 heuristics, algo 73, tcgen05 kernels such as cutlass3x_sm100_tensorop_s128x128x8tf32gemm_..._2sm_epi_tma_ptr_array at B=128 and s256x256x8tf32gemm_..._2sm_ptr_array at B=919) [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] cuBLASLt API, rejected: strided A with pointer-array C/D gives no heuristic (CUBLAS_STATUS_INVALID_VALUE, status 7); pointer-array with CUBLASLT_EPILOGUE_BIAS gives CUBLAS_STATUS_NOT_SUPPORTED (15) [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] workaround that works: pointer-array C = six pointers into bias (C layout ld=0, i.e. a column-broadcast), beta=1: same error as the bias epilogue (1.4-1.6e-3). ldc=3072 reads out of range and gives NaN [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] pointer arrays must be device-visible and change every call (the harness shifts pointers). A cudaMemcpyAsync or torch H2D copy adds a timed activity, so the probe used a pinned host buffer rewritten per call. That buffer is read by the GPU over PCIe: 163 us pinned vs 150 us with a fixed device array at B=919, 63-68 vs 58 at B=128 [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] timing, interleaved 3 rounds, best of 7-8 heuristics, big GEMM+bias epilogue+scatter vs batched pointer-array (bias via C, pinned arrays): B=5 55.1 vs 63.4; 16 51.9 vs 61.8; 32 53.4 vs 64.7; 128 57.0 vs 81.6; 384 86.3 vs 100.9; 919 157.0 vs 178.4 us. Batched is 12-43% slower, and +14% at 919, +15% at 5: refuted by the >10% rule [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] scatter cost (rented): about 5 us at B=5 (GEMM alone 49.5 vs 55.1 with scatter) and about 22 us at B=919 (GEMM 135); r0's 47 us scatter figure was inflated by the 453 MB scratch traffic around it [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] cuBLASLt log (CUBLASLT_LOG_LEVEL=5): heuristic 0 is algoId 73 (sm100 tcgen05) with tile 64x64 and cluster 2x1x1 at B=5, tile 128x128 and cluster 2x1x1 at B=128 and B=384, tile 128x256 with no cluster at B=919. Evidence for H12: cuBLAS picks 2-CTA cluster shapes for B<=384 and a 128x256 1-SM tile at 919 [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] heuristics 0-3 are within 1-3% of each other at B=5/16/32/128/384/919 (noise level), so a per-B table gains nothing; heuristic 0 is used everywhere [probe_b200]
+- [r1-e1-lt-fasttf32-bias-scatter] dead end: profiler kernel names are not retrievable inside the probe after the first torch.profiler call; use CUBLASLT_LOG_LEVEL=5 instead [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: reads-only 226.5 MB with the harness flush (zero_ 252 MB), CUPTI: plain LDG.128 1184x256 thr 45.9 us (4.9 TB/s), L2::cache_hint evict_first 39.9 us (5.7 TB/s), 1-D bulk ring 148 CTAs x 4 x 32 KB 45.0 us, same ring with evict_first 38.7 us (5.85 TB/s), 256-bit ld.global.v8 with evict_first 41.5 us (no gain over 128-bit) [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: same variants, own event loop (events add about 5 us), read-flush vs zero-flush: plain 38.9 vs 51.2, evict_first 38.9 vs 44.1, bulk 38.9 vs 49.2, bulk evict_first 38.9 vs 43.0, ldg256 41.0 vs 50.1. The dirty write-back penalty is 6-12 us for plain reads and 4-5 us for evict_first. Both land at 38.9 with a read-based flush [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] H16 refuted: the reads-only floor with the harness flush is 39-40 us (cap was 45-53). Mechanism: evict_first reads recycle their own L2 lines instead of evicting the dirty flush lines, so the write-back leaves the timed window
+- [r1-ef-bulk-tf32-stream-b16] probe: reads + six outputs for B=128 (9.4 MB written): st default 40.3, evict_last 39.8, evict_first 40.3 us. Store hints change the time by at most 0.5 us (about 1%), so a store hint is not a lever
+- [r1-ef-bulk-tf32-stream-b16] probe: cuBLAS TF32 addmm (bias in, harness protocol): 52.4 / 51.0 / 46.4-48.4 / 135.7 us at B=5/128/32/919; B=32 gemm + scatter 53.7 (+5-7 us for the extra launch + scatter), B=919 gemm + scatter 159.0 (+23 us)
+- [r1-ef-bulk-tf32-stream-b16] dead end: nvidia-smi -lgc 1500,1500 is not permitted on the rented card (no permission), so the portal/rented ratio for DRAM-bound vs tensor-core paths could not be measured directly. Estimate from r0 pairs (H15 text): DRAM-bound ~1.0-1.15, SM-clock-bound ~1.26-1.31
+- [r1-ef-bulk-tf32-stream-b16] probe: the harness weight input is N(0,1)/sqrt(fan_in) (io.py _is_weight_matrix), not randn. Plain TF32 is then within tolerance: cuBLAS TF32 max err 1.5e-3 vs atol 2e-3, 100% of elements pass at B=128. With unscaled randn weights only 12% would pass
+- [r1-ef-bulk-tf32-stream-b16] dead end: v1 of the streaming kernel with 256 B bulk copies (128 rows x 64 k per stage) ran 170-207 us at B=5/16/32, 3-4x slower than the stream floor. Small 1-D bulk copies cost about 30-40 clk each in the TMA unit. v2 uses 2 KB row segments (16 rows x 512 k per stage), emb chunk shared by 8 row groups: 41.5 / 43.4 us at B=5/16
+- [r1-ef-bulk-tf32-stream-b16] dead end: v2 at B=32 (NB=4, 3 W stages + 2 x 66 KB emb buffers, 168 regs) 63.2 us vs cuBLAS TF32 + scatter 54.5; the B=17..32 band stays on cuBLAS. Cause not isolated (3-deep ring, emb conversion barriers or LDS pressure)
+- [r1-ef-bulk-tf32-stream-b16] run_tests (final): 16/16 PASS. B=5 41.6, 16 43.6, 32 54.5, 96 59.5, 128 60.5, 131 64.2, 192 66.7, 211 67.5, 373 92.5, 384 93.0, 449 99.1, 512 101.7, 691 137.4, 773 167.2, 853 172.4, 919 175.1 us. Band change vs r0: S -61.6%, M -74.8%, L -71.3%. Emulator 0.546 vs r0 0.235. Max |err| vs fp64 per B was NOT recorded (the margin constraint asks for it); the harness's 99% matched rule passed
+- [r1-ef-bulk-tf32-stream-b16] open: B=32..128 (8 workloads) sit at 54-64 us on cuBLAS + scatter vs a 39-40 us streaming floor. The same evict_first bulk ring with tcgen05 TF32 (single M tile for B<=128) is the round-2 target; mma.sync would be compute-bound above B~32. M/L bands are still cuBLAS 2-launch (scatter 7-23 us)
+Round r0:
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]
+
+=== PARENTS ===
+--- parent r1-adamod-cutlass-tf32-2sm-chunkepi ---
+design card:
+id: r1-adamod-cutlass-tf32-2sm-chunkepi
+parents:
+  - r0-adamod-dispatch-skinny-fp32-3xtf32
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  One CUTLASS 4.4 sm100 TF32 tcgen05 GEMM per call (2SM MMA, cluster 2x1, persistent CLC scheduler) with operands
+  swapped so W is the M side (as cuBLAS tnn). The no-smem epilogue adds bias (C = bias with stride 0 along the batch
+  mode). A wrapper re-points D to outs[c] - c*3072 per tile, so the six outputs are written directly: no tmp, no
+  scatter, one launch. This matches cuBLAS TF32 GEMM-only time and removes the 3-47 us scatter Tb pays. The tile is
+  chosen from B (memory-bound 128x64x16-stage tile at B<=64; 256x192/256x256 at M/L). Error is identical to cuBLAS
+  TF32 (same tf32 truncation, fp32 accumulate over the full K).
+expected_effect:
+  S:
+    pct: -63
+    confidence: high
+  M:
+    pct: -78
+    confidence: high
+  L:
+    pct: -75
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 229888
+  threads_per_cta: 192
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  CLUSTER: "2x1x1"
+  TILE_K: 32
+  S_TILE: "128x64, 16 stages"
+  M_TILE_65_128: "256x64, auto stages (11)"
+  TILE_129_192_257_384_513plus: "256x192, auto stages (8)"
+  TILE_193_256_385_512: "256x256, auto stages (7)"
+  RASTER: heuristic (= AlongN: batch tiles of one W tile run together)
+dispatch:
+  - max_tokens: 64
+    kernel: Tf32Gemm<128,64,16>
+    meta:
+      launches: 1
+  - max_tokens: 128
+    kernel: Tf32Gemm<256,64,0>
+    meta:
+      launches: 1
+  - max_tokens: 192
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H12
+  - H13
+  - H14
+findings:
+  - "run_tests: 16/16 pass, one launch; rented us B=5/16/32/96/128: 51.0/48.8/49.0/55.5/56.0; 131/192/211/373/384: 57.0/57.1/60.8/68.5/68.5; 449/512/691/773/853/919: 79.6/81.3/112.0/131.4/132.7/133.6 (-61/-79/-77% S/M/L vs r0); emulator 0.603 +- 0.012 [run_tests]"
+  - "build: each CUTLASS sm100 variant compiles in 31-39 s with nvcc 13.1 (8 cores, parallel TUs); whole run_tests incl. 4-variant build and all tests 53 s, far under 300 s [probe_b200, run_tests]"
+  - "probe: max |err| vs fp64 (weight/sqrt(3072) scale) 1.3e-3 at B=5, 1.4e-3 at 131, 1.54-1.6e-3 at 919 for every CUTLASS variant, bit-identical max to cuBLAS TF32 (both read fp32 as tf32 by truncation); no cvt.rna transform needed [probe_b200]"
+  - "probe: with unscaled randn weights both cuBLAS TF32 and this kernel fail 88% of elements (max err 7e-2), so the harness inputs are not unscaled randn W; correctness only from run_tests [probe_b200]"
+  - "H12 probe (non-swapped, M=batch): 2SM 256x256 146 us vs 1SM 128x256 173 us at B=919 (1.19x); swapped: 2SM 256x256 142, 256x192 135.5, 1SM 128x256 161 (1.13-1.19x). The best core reaches about 780 TF/s rented (68% of the TF32 peak), the same as cuBLAS, which already uses 2SM 256x256: 2SM alone does not beat Tb's GEMM rate [probe_b200]"
+  - "H13 refuted: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]"
+  - "probe: operand order matters: non-swapped (M=batch, N=W) 2SM tiles are 7-10% slower than swapped at M/L and 10-20% slower at S (256x128 non-swapped gives 144 tiles on 74 pairs = 2 waves at B=5) [probe_b200]"
+  - "probe: raster order AlongM on the swapped layout re-reads W from DRAM per batch tile: 306 vs 148 us (256x128) and 204 vs 135.5 (256x192) at 919; heuristic = AlongN is right [probe_b200]"
+  - "probe: S band: 2SM 128x64 with 16 stages (197 KB smem, 128 KB of W in flight per SM) runs 48.9-52.1 us at B<=32, as fast as or faster than cuBLAS TF32 without scatter (48.4-52.3); 8 stages at 2 CTAs/SM 54.3-54.7; 256x64 auto 53.8; 1SM 128x128 55-62 [probe_b200]"
+  - "probe: cuBLAS TF32 picks cutlass3x_sm100 tnn 2sm kernels: 128x64 at B=32, 256x128 at 128/384, 256x256 at 131/919, all with a bias epilogue [probe_b200]"
+  - "dead end: 2SM 128xN tiles with N>=128 (64 W rows per CTA) trip a CUTLASS device assertion in the no-smem epilogue TMEM load (warp/TMEM lane-quadrant mismatch); 128x64 is fine; 128x96 does not build [probe_b200]"
+  - "probe: CUPTI harness_time occasionally returns 'No timing results' on single calls of these cluster launches in probes (about 1 in 30); run_tests timed all 16 workloads without error [probe_b200]"
+  - "open: B=96-211 sits 6-12 us above the 49 us S-band floor; no tested tile closes it (256x64/256x128/256x192 all 55-61 us) [probe_b200]"
+paths:
+  - max_tokens: 64
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 64
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 128
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 192
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM and sm100a-only CUTLASS collectives; does not build for sm_90"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Plain TF32 (operator ruling for #35): max error 1.3-1.6e-3 vs atol 2.0e-3, identical to cuBLAS TF32 and to Tb's own precision; passed 16/16 x 10 rounds rented"
+  - "The epilogue wrapper re-points CUTLASS's no-smem epilogue Params per tile through a held copy; it relies on that epilogue keeping a const reference to its Params (CUTLASS 4.4.1 layout)"
+  - "D base pointer outs[c] - c*3072 points before the allocation for c > 0; only in-range addresses are dereferenced"
+  - "L band is compute-bound at about 68% of the TF32 peak, the same rate as Tb's cuBLAS GEMM: the L gain on the portal comes from the removed scatter/bias pass, about 1.25-1.3x vs Tb"
+  - "CUTLASS device asserts are compiled in (no NDEBUG); the four shipped tiles never tripped them in about 30 probe runs and the 16x10 test"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 52.0/62.2/109.1
+B200 portal: score 0.588448, geomean 83.486 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=5 | 57.0 | 82.8 | 0.618 |
+| batch_size=16 | 50.4 | 83.1 | 0.658 |
+| batch_size=32 | 50.5 | 84.8 | 0.664 |
+| batch_size=96 | 59.5 | 90.1 | 0.629 |
+| batch_size=128 | 59.9 | 90.7 | 0.630 |
+| batch_size=131 | 60.9 | 93.8 | 0.634 |
+| batch_size=192 | 61.3 | 98.4 | 0.646 |
+| batch_size=211 | 65.6 | 100.8 | 0.631 |
+| batch_size=373 | 81.8 | 110.2 | 0.598 |
+| batch_size=384 | 81.7 | 110.5 | 0.600 |
+| batch_size=449 | 101.4 | 119.1 | 0.554 |
+| batch_size=512 | 101.9 | 123.0 | 0.566 |
+| batch_size=691 | 138.0 | 145.0 | 0.518 |
+| batch_size=773 | 164.9 | 151.7 | 0.470 |
+| batch_size=853 | 166.7 | 164.3 | 0.495 |
+| batch_size=919 | 167.9 | 169.8 | 0.504 |
+sm_100a static features: []
+source:
+--- file adamod_gemm.cuh ---
+#pragma once
+// TF32 tcgen05 GEMM for AdaLayerNormZero modulation: D[m = feature, n = batch] = W[m, :] . emb[n, :] + bias[m],
+// built from CUTLASS 4.4 sm100 collectives (2SM MMA, cluster 2x1, persistent CLC tile scheduler).
+// A = W [18432, 3072] K-major, B = emb [B, 3072] K-major: the large dimension is M, as cuBLAS's tnn kernels do,
+// so a 256-row W tile feeds every batch tile of the same wave and W is read from DRAM once.
+// Epilogue: CUTLASS's no-smem (direct store) epilogue with C = bias broadcast (stride 0 along the batch mode),
+// wrapped so that each tile writes straight into its own output tensor: 3072 % tile_m == 0, so the tile's
+// chunk c = m0 / 3072 is uniform and D is re-based to outs[c] - c * 3072 (column-major, ld 3072).
+#include <cuda_runtime.h>
+#include "cutlass/cutlass.h"
+#include "cute/tensor.hpp"
+#include "cutlass/numeric_types.h"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/gemm/kernel/gemm_universal.hpp"
+#include "cutlass/gemm/collective/collective_builder.hpp"
+#include "cutlass/epilogue/collective/collective_builder.hpp"
+#include "cutlass/util/packed_stride.hpp"
+
+namespace adamod {
+using namespace cute;
+constexpr int kD = 3072;
+constexpr int kN = 6 * kD;
+
+// The base epilogue keeps a const reference to its Params; we own that Params object and re-point ptr_D per tile.
+template <class Base>
+struct HeldParams {
+  typename Base::Params held;
+};
+
+template <class Base>
+class ChunkedEpilogue : private HeldParams<Base>, public Base {
+  using Holder = HeldParams<Base>;
+
+ public:
+  struct Arguments {
+    typename Base::Arguments base;
+    float* outs[6];
+  };
+  struct Params {
+    typename Base::Params base;
+    float* outs[6];
+  };
+
+  template <class PS>
+  static constexpr Params to_underlying_arguments(PS const& ps, Arguments const& a, void* ws) {
+    Params p{Base::to_underlying_arguments(ps, a.base, ws), {}};
+    for (int i = 0; i < 6; ++i) p.outs[i] = a.outs[i];
+    return p;
+  }
+  template <class PS>
+  static size_t get_workspace_size(PS const& ps, Arguments const& a) {
+    return Base::get_workspace_size(ps, a.base);
+  }
+  template <class PS>
+  static cutlass::Status initialize_workspace(PS const& ps, Arguments const& a, void* ws, cudaStream_t s,
+                                              cutlass::CudaHostAdapter* h = nullptr) {
+    return Base::initialize_workspace(ps, a.base, ws, s, h);
+  }
+  template <class PS>
+  static bool can_implement(PS const& ps, Arguments const& a) {
+    return Base::can_implement(ps, a.base);
+  }
+  CUTLASS_DEVICE static void prefetch_tma_descriptors(Params const&) {}
+
+  CUTLASS_DEVICE ChunkedEpilogue(Params const& p, typename Base::TensorStorage& st)
+      : Holder{p.base}, Base(Holder::held, st), outs_(p.outs) {}
+
+  template <bool ReuseTmem = false, class LP, class LPS, class SP, class SPS, class AP, class APS, class PS, class CS,
+            class CC, class TS, class TM, class Acc, class ST>
+  CUTLASS_DEVICE auto store(LP lp, LPS lps, SP sp, SPS sps, AP ap, APS aps, PS ps, CS cs, CC cc, TS ts, TM tm, Acc acc,
+                            ST& st) {
+    const int c = (int(get<0>(cc)) * int(size<0>(cs))) / kD;   // chunk of this CTA's rows
+    Holder::held.ptr_D = outs_[c] - (size_t)c * kD;             // feature m -> outs[c][b * 3072 + m - c * 3072]
+    return Base::template store<ReuseTmem>(lp, lps, sp, sps, ap, aps, ps, cs, cc, ts, tm, acc, st);
+  }
+
+ private:
+  float* const* outs_;
+};
+
+// TM x TN MMA tile over a 2-CTA pair; Stages = 0 lets CUTLASS fill shared memory.
+template <int TM, int TN, int Stages>
+struct Tf32Gemm {
+  using MmaTile = Shape<Int<TM>, Int<TN>, _32>;
+  using Cluster = Shape<_2, _1, _1>;
+  using EpiBase = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, MmaTile, Cluster,
+      cutlass::epilogue::collective::EpilogueTileAuto, float, float, float, cutlass::layout::ColumnMajor, 4, float,
+      cutlass::layout::ColumnMajor, 4, cutlass::epilogue::NoSmemWarpSpecialized2Sm,
+      cutlass::epilogue::fusion::LinearCombination<float, float, float, float>>::CollectiveOp;
+  using Epi = ChunkedEpilogue<EpiBase>;
+  using StageSpec = cute::conditional_t<(Stages > 0), cutlass::gemm::collective::StageCount<Stages>,
+                                        cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(
+                                            sizeof(typename EpiBase::SharedStorage))>>;
+  using Mainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, cutlass::tfloat32_t, cutlass::layout::RowMajor, 4,
+      cutlass::tfloat32_t, cutlass::layout::ColumnMajor, 4, float, MmaTile, Cluster, StageSpec,
+      cutlass::gemm::KernelTmaWarpSpecialized2SmSm100>::CollectiveOp;
+  using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int, int, int, int>, Mainloop, Epi, void>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
+};
+
+// fp32 data is read by TMA as tf32 (the tensor core ignores the low 13 mantissa bits); accumulation is fp32 over K.
+template <class G>
+int run_gemm(const float* emb, const float* W, const float* bias, float* const* outs, int B, int device, int sms,
+             cudaStream_t stream) {
+  using Kernel = typename G::Kernel;
+  using Gemm = typename G::Gemm;
+  using SA = typename Kernel::StrideA;
+  using SB = typename Kernel::StrideB;
+  using SC = typename G::EpiBase::StrideC;
+  using SD = typename G::EpiBase::StrideD;
+  typename Gemm::Arguments args;
+  args.mode = cutlass::gemm::GemmUniversalMode::kGemm;
+  args.problem_shape = {kN, B, kD, 1};
+  args.mainloop.ptr_A = reinterpret_cast<const cutlass::tfloat32_t*>(W);
+  args.mainloop.dA = cutlass::make_cute_packed_stride(SA{}, make_shape(kN, kD, 1));
+  args.mainloop.ptr_B = reinterpret_cast<const cutlass::tfloat32_t*>(emb);
+  args.mainloop.dB = cutlass::make_cute_packed_stride(SB{}, make_shape(B, kD, 1));
+  args.epilogue.base.thread.alpha = 1.f;
+  args.epilogue.base.thread.beta = 1.f;
+  args.epilogue.base.ptr_C = bias;   // C[m, n] = bias[m]
+  SC dC{};
+  get<1>(dC) = 0;
+  get<2>(dC) = 0;
+  args.epilogue.base.dC = dC;
+  args.epilogue.base.ptr_D = outs[0];   // replaced per tile by ChunkedEpilogue
+  SD dD{};
+  get<1>(dD) = kD;
+  get<2>(dD) = 0;
+  args.epilogue.base.dD = dD;
+  for (int i = 0; i < 6; ++i) args.epilogue.outs[i] = outs[i];
+  args.hw_info.device_id = device;
+  args.hw_info.sm_count = sms;
+  Gemm gemm;
+  if (Gemm::get_workspace_size(args) != 0) return 900;   // no workspace (and no memset) by construction
+  cutlass::Status s = gemm.can_implement(args);
+  if (s != cutlass::Status::kSuccess) return 100 + (int)s;
+  s = gemm.initialize(args, nullptr, stream);
+  if (s != cutlass::Status::kSuccess) return 200 + (int)s;
+  s = gemm.run(stream);
+  if (s != cutlass::Status::kSuccess) return 300 + (int)s;
+  return (int)cudaGetLastError();
+}
+}  // namespace adamod
+
+
+--- file tile_128x64.cu ---
+#include "adamod_gemm.cuh"
+
+// B <= 64: 64 W rows per CTA, 16 stages (128 KB of W in flight per SM), 144 pair-tiles over 74 pairs.
+extern "C" int adamod_gemm_128x64(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                  int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<128, 64, 16>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tile_256x64.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x64(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                  int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 64, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tile_256x192.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x192(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                   int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 192, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tile_256x256.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x256(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                   int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 256, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file kernel.cu ---
+#include <cuda_runtime.h>
+
+// One CUTLASS TF32 launch per call; the tile shape is chosen from B only (rented B200 sweep, r1).
+// Each variant lives in its own translation unit so the build compiles them in parallel.
+extern "C" int adamod_gemm_128x64(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+extern "C" int adamod_gemm_256x64(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+extern "C" int adamod_gemm_256x192(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+extern "C" int adamod_gemm_256x256(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream) {
+  int device = 0;
+  cudaGetDevice(&device);
+  static int sms = 0;   // device property, queried once
+  if (sms == 0) cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+  if (B <= 64) return adamod_gemm_128x64(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 128) return adamod_gemm_256x64(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 192) return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 256) return adamod_gemm_256x256(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 384) return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 512) return adamod_gemm_256x256(emb, weight, bias, outs, B, device, sms, stream);
+  return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream);
+
+void run(torch::Tensor emb, torch::Tensor weight, torch::Tensor bias,
+         torch::Tensor shift_msa, torch::Tensor scale_msa, torch::Tensor gate_msa,
+         torch::Tensor shift_mlp, torch::Tensor scale_mlp, torch::Tensor gate_mlp) {
+  TORCH_CHECK(emb.is_cuda() && emb.dtype() == torch::kFloat32 && emb.is_contiguous(), "emb must be contiguous fp32 cuda");
+  TORCH_CHECK(weight.is_contiguous() && weight.dtype() == torch::kFloat32, "weight must be contiguous fp32");
+  TORCH_CHECK(bias.is_contiguous() && bias.dtype() == torch::kFloat32, "bias must be contiguous fp32");
+  TORCH_CHECK(emb.dim() == 2 && emb.size(1) == 3072 && emb.size(0) >= 1, "emb must be [B, 3072]");
+  TORCH_CHECK(weight.size(0) == 6 * 3072 && weight.size(1) == 3072, "weight must be [18432, 3072]");
+  TORCH_CHECK(bias.numel() == 6 * 3072, "bias must be [18432]");
+  const int B = (int)emb.size(0);
+  torch::Tensor outs_t[6] = {shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp};
+  float* outs[6];
+  for (int i = 0; i < 6; ++i) {
+    TORCH_CHECK(outs_t[i].is_contiguous() && outs_t[i].dtype() == torch::kFloat32 && outs_t[i].size(0) == B &&
+                outs_t[i].size(1) == 3072, "bad output tensor");
+    outs[i] = outs_t[i].data_ptr<float>();
+  }
+  const c10::cuda::OptionalCUDAGuard guard(emb.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  int st = adamod_launch(emb.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), outs, B, stream);
+  TORCH_CHECK(st == 0, "adamod_launch failed with status ", st);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("run", &run, "AdaLayerNormZero modulation: one CUTLASS TF32 GEMM with bias and six-way split epilogue");
+}
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

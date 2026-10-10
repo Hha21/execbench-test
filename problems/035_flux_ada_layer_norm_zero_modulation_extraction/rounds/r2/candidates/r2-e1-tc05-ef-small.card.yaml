@@ -1,0 +1,156 @@
+id: r2-e1-tc05-ef-small
+parents:
+  - r1-adamod-cutlass-tf32-2sm-chunkepi
+  - r1-ef-bulk-tf32-stream-b16
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  For B <= 256, a hand-written tcgen05 kind::tf32 kernel runs 144 one-SM CTAs, one per 128-row W tile. Each uses
+  one UMMA with N = B rounded up to 16, accumulating in TMEM over the full K, and loads W once through a TMA ring
+  with an L2 evict_first cache hint. The hinted W lines replace each other, so the harness's dirty L2 lines are not
+  written back during the timed run, and the S band plus B = 131-211 fall from 49-61 us to 42-51 us rented.
+  Stages of 2-4 k-blocks (64-72 KB) beat 1-k-block stages by 2-4 us. These paths are DRAM-bound, so the expected
+  portal/rented ratio is about 1.03-1.07. B > 256 keeps the r1 CUTLASS tiles.
+expected_effect:
+  S:
+    pct: -17
+    confidence: medium
+  M:
+    pct: -10
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  ROWS_PER_CTA: 128
+  BK: 32
+  KBS_RULE: "largest of 4/3/2 with >= 3 stages in 224 KB, else 1 (B<=16: 4x3, B=32: 3x3, 96: 2x4, 128/131: 2x3, 192/211: 1x5)"
+  W_HINT: evict_first (createpolicy fractional 1.0, TMA .L2::cache_hint)
+  TMA_DTYPE: TFLOAT32
+  L2_PROMOTION: 256B
+  TC_MAX_B: 256
+dispatch:
+  - max_tokens: 256
+    kernel: tc_small_kernel (hand-written tcgen05, 144 CTAs)
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H17
+  - H10
+  - H4
+findings:
+  - "run_tests: 16/16 pass, one launch. Rented us vs r1 on the same GPU: B=5 42.7 vs 52.1, 16 42.0 vs 48.8, 32 42.4 vs 48.8, 96 43.5 vs 55.6, 128 45.7 vs 55.8, 131 44.1 vs 56.9, 192 49.3 vs 56.2, 211 50.6 vs 60.5; 373-919 unchanged (r1 tiles, within 1%). Band change S -17.1%, M -10.4%, L +0.7%; emulator 0.6265 +- 0.012 [run_tests]"
+  - "H17 mostly supported: B<=32 hit the 42-45 us target; B=128 45.7 and B=211 50.6 miss the 45/50 targets by about 1% [run_tests]"
+  - "probe (kbs=1 kernel, one container, interleaved): evict_first vs no hint on W: 45.5/45.7/45.4/44.6/45.1/45.8/47.2/48.1/56.5 vs 51.7/52.2/51.4/52.6/53.2/55.1/56.0/57.0/63.7 us at B=5/16/32/96/128/131/192/211/256; cuBLAS TF32 addmm (no split) 52.2/50.6/48.4/50.4/51.8/55.7/55.8/56.1/56.2. The hint saves 6-9 us at every B [probe_b200]"
+  - "probe (another container): the hint saved only 1.5 us at B=5 (53.5 vs 55.0), 1.7 at 128 and 6.1 at 211, and every absolute time was 7-10 us higher. Probe containers differ by up to 10 us, so compare only inside one probe [probe_b200]"
+  - "precision: with TMA tensor-map type FLOAT32 the tensor core truncates to tf32 and max |err| vs fp64 is 3.6-4.2e-3, over the 2e-3 atol at the max. With CU_TENSOR_MAP_DATA_TYPE_TFLOAT32 (rounds on load) it is 1.27e-3 (B=5), 1.39 (16), 1.40 (32), 1.46 (96), 1.52-1.62 (128), 1.55 (131), 1.55 (192), 1.50-1.57 (211), 1.53 (256), all <= 1.7e-3, with 0 elements over tolerance. CUTLASS tfloat32_t maps use TFLOAT32 too, which explains r1's 1.3-1.6e-3 [probe_b200]"
+  - "probe: k-blocks per stage (coupled W+emb ring) at B=5: 1x12 46.8, 2x6 44.5, 4x3 42.4 us. B=128: 1x7 48.0, 2x3 44.8, 4x1 79.0. B=211: 1x5 50.6, 2x2 63.3. Bigger stages help while at least 3 stages remain. Without the MMA (reads only): kbs1 43.5, kbs2 41.1 at B=5 [probe_b200]"
+  - "probe: TMA L2 promotion NONE / 128B / 256B makes no difference (within 0.5 us) [probe_b200]"
+  - "dead end: separate W ring (2-4 k-blocks per stage) and emb ring (1 k-block, own producer warp) was 13-16 us slower than the coupled ring in the same probe (B=5 68-70 vs 51-53, B=128 70-71 vs 53-55, B=211 71.6 vs 57). Cause not isolated [probe_b200]"
+  - "step 1 (patching the CUTLASS sm100 mainloop with EVICT_FIRST) skipped: the hand-written kernel tested the mechanism directly, and shipping a patched copy of the 1000-line collective is fragile. M/L CUTLASS tiles are still unhinted [design]"
+  - "build: tcgen05 inline PTX must be guarded with __CUDA_ARCH_FEAT_SM100_ALL, because target LOCAL adds -gencode compute_100,code=sm_100 and ptxas rejects tcgen05 there. Build of 2 CUTLASS tiles + the kernel takes 50 s [run_tests]"
+  - "probe infra: /tmp persists only within one probe container. Successive probes can land on different containers (lost .so files); rebuild inside each probe. nvcc builds a non-CUTLASS .cu in about 1 s [probe_b200]"
+  - "open: B=192/211 run kbs=1 because emb (Bpad x 128 B per k-block) fills shared memory. A cta_group::2 pair (M=256, each CTA holds half the N columns of emb) would halve the emb shared memory and allow 2-k-block stages. A 2-accumulator N<=512 version could take B=373-512 off CUTLASS (estimated about 50-63 us rented vs 68-81, limited by emb L2 traffic of 144 x B x 12 KB) [design]"
+paths:
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM are sm_100a only; the kernel body compiles empty for other targets"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "The S-band gain depends on the dirty-L2 state the harness's zero_ flush leaves behind. The size of the hint's benefit varied 1.5-9 us between rented containers; the portal's locked DRAM clock could change it again"
+  - "Plain TF32 (operator ruling): max |err| 1.27-1.62e-3 vs atol 2e-3 depends on the TFLOAT32 tensor-map type rounding; switching to FLOAT32 would fail"
+  - "B=192/211 sit at kbs=1 (5 stages) because emb fills shared memory; they are the slowest tc paths (49-51 us)"
+  - "144 CTAs on 148 SMs leave 4 SMs idle (about 2.7% of DRAM issue capacity)"
+  - "createpolicy evict_first is applied only to this call's own weight buffer, inside the kernel (constraint list); no applypriority, no persisting window"
+  - "The idle threads of warps 0/1 and warps 2/3 spin on mbarrier try_wait for the whole mainloop; harmless here (1 CTA/SM, DRAM-bound)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

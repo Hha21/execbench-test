@@ -40,3 +40,4 @@ r1-rope-v4nc-s128,0.024059,0.677170,15,1.690,64556,088_rotary_position_embedding
 r1-adamod-cutlass-tf32-2sm-chunkepi,0.083486,0.588448,14,1.322,64563,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64563_r1-adamod-cutlass-tf32-2sm-chunkepi.txt
 r2-e1-tc05-ef-small,0.077720,0.610767,13,1.420,64590,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64590_r2-e1-tc05-ef-small.txt
 r2-rope-pair2-magic-occ10,0.023654,0.682703,15,1.719,64591,088_rotary_position_embedding_application,B200,v1.1,Private,AC,portal_html/64591_r2-rope-pair2-magic-occ10.txt
+r3-e2-tc-pair-kbs2,0.076247,0.616564,13,1.448,64669,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64669_r3-e2-tc-pair-kbs2.txt

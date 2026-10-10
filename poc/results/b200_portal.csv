@@ -35,3 +35,6 @@ c1-oproj-t224-control,0.038847,0.449011,0,0.919,64523,030_attention_output_proje
 r0-geglu-ldg256-2d-stel,0.017381,0.674219,16,1.868,64537,085_geglu_activation,B200,v1.1,Private,AC,portal_html/64537_r0-geglu-ldg256-2d-stel.html
 r0-rope-ldg256-os-stel,0.027114,0.635079,15,1.500,64538,088_rotary_position_embedding_application,B200,v1.1,Private,AC,portal_html/64538_r0-rope-ldg256-os-stel.txt
 r0-adamod-dispatch-skinny-fp32-3xtf32,0.321235,0.234899,1,0.344,64540,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64540_r0-adamod-dispatch-skinny-fp32-3xtf32.txt
+r1-geglu-efld-m,0.017340,0.675474,16,1.873,64549,085_geglu_activation,B200,v1.1,Private,AC,portal_html/64549_r1-geglu-efld-m.txt
+r1-rope-v4nc-s128,0.024059,0.677170,15,1.690,64556,088_rotary_position_embedding_application,B200,v1.1,Private,AC,portal_html/64556_r1-rope-v4nc-s128.txt
+r1-adamod-cutlass-tf32-2sm-chunkepi,0.083486,0.588448,14,1.322,64563,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64563_r1-adamod-cutlass-tf32-2sm-chunkepi.txt

@@ -1,0 +1,555 @@
+=== TASK ===
+Round: r1   Operation: new_design
+Problem: L1/035_flux_ada_layer_norm_zero_modulation_extraction   Target niche: exp:E3:H16   Target band: S
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r1-'.
+Experiment E3 (tests H16): S/M-band memory floor under harness conditions: dirty-L2 write-back cost, cache hints, and the clock-lock ratio. Write a standalone probe that reproduces the harness timing protocol on the rented B200 (before every timed call: zero_ a 252 MB buffer, copy inputs to a shifted address, zero the outputs; time with CUDA events around the kernel only; 10 warm-up, 50 timed, median; 3 interleaved rounds). Measure, for W = 226.5 MB: (a) reads-only kernel, plain LDG.128 from 148 x 8 CTAs with >= 64 KB in flight per SM, result reduced into one float per CTA so it cannot be elided; (b) same with ld.global.L2::cache_hint evict_first via createpolicy; (c) a 1-D cp.async.bulk ring, 148 persistent CTAs, 4 x 32 KB stages, mbarrier; (d) variant (c) with LDG.E.256 (256-bit loads, sm_100 only) in place of bulk copies; (e) each of (a)-(c) after a read-based flush (read 252 MB instead of zero_) to isolate the dirty write-back penalty; (f) reads + the six outputs for B = 128 (9.4 MB) with st default vs evict_last vs evict_first. Also time cuBLAS TF32 at B = 5 and 128 under the same protocol as the reference point (expect about 50 us). Then, if permitted on the rented card, run nvidia-smi -lgc 1500,1500 (and -rgc afterwards) and repeat (a), (c) and cuBLAS TF32 at B = 5 and 919 to measure the portal/rented ratio for DRAM-bound vs tensor-core paths (H15); if the lock is not permitted, say so and estimate the ratio from r0's portal/rented pairs. Finally measure the two-launch gap: cuBLAS TF32 GEMM + scatter vs GEMM alone at B = 32 and 919. Report every number in a table with the implied DRAM bandwidth. Success: A clean quantitative floor: the reads-only time with the harness flush, the clean-L2 time, and their difference. If any reads-only variant reaches <= 45 us with the harness flush, H16's cap is refuted and an S-band custom streaming kernel (TF32 tcgen05 with a single M-tile and a deep TMA ring) becomes a round-2 experiment worth about +0.03. Refuted if: all reads-only variants land at 50-55 us with the harness flush while the clean-L2 variants are >= 8 us faster: the dirty write-back is real and unavoidable, H16 is supported, and the S band is closed at cuBLAS/CUTLASS speed (about 0.65 per workload). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-adamod-dispatch-skinny-fp32-3xtf32 | cpasync/oneshot/dispatch:size | cuda_cpp | 134.1/300.5/475.2 | -/-/- | -/-/- | -/-/- | 155.9/333.4/569.0 | 0.234899 | 128/1024/None; 108/1024/None | passed |
+B200 results so far:
+- r0-adamod-dispatch-skinny-fp32-3xtf32: B200 score 0.235, geomean 321.2 µs, B200 S/M/L 155.9/333.4/569.0 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #35 (035_flux_ada_layer_norm_zero_modulation_extraction). Seeded 2026-10-10 (research round r0); updated r1 2026-10-10.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 / 8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented, plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3 vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
+- '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
+- '#35 TF32 margin (operator, r1): accumulate in fp32 over the full K = 3072 inside one tensor-core accumulator; no split-K whose partials are stored or re-fed below fp32; no rounding of outputs or intermediates. Every candidate records max |err| vs fp64 per B (must stay <= 1.7e-3 against atol 2.0e-3) in its findings.'
+hypotheses:
+- id: H1
+  statement: The reference's cuBLAS SIMT sgemm is within 25-30% of the FFMA peak at M/L, so FFMA-only designs cannot gain more than about 1.3x there; packed fma.f32x2 adds no throughput.
+  status: supported
+  evidence:
+  - 'probe: cutlass3x_sm100_simt_sgemm 55-57 TF/s at B=384/919 vs 74.4 TF/s peak at 1965 MHz [probe_b200]'
+  - 'probe: FFMA 67.6 TF/s vs FFMA2 (fma.rn.f32x2) 73.5 TF/s on 148x8 CTAs: same 128 FMA/clk/SM datapath [probe_b200]'
+  - 'r1: moot since the TF32 ruling and Tb = TF32 speed; FFMA paths cannot score anywhere (B=5 skinny 76.1 us portal vs Tb 82.8)'
+- id: H2
+  statement: 3xTF32 (hi/lo split, three TF32 tensor-core GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster than the reference at L even with a separate split pass and scatter.
+  status: parked
+  evidence:
+  - 'probe: max error vs fp64 4.3e-5 (fp32 cuBLAS 1.6e-5, tolerance atol 2e-3) at B=919; gemms 415 us + split 112 + scatter [probe_b200]'
+  - 'run_tests r0: 575 us at 919 vs 1882 reference, 345 at 384 vs 762, 16/16 pass on 10 random rounds [r0-adamod-dispatch-skinny-fp32-3xtf32]'
+  - 'portal r0: 688.9 us at 919 scores 0.151 against Tb 169.8 (TF32 speed); retired by the 2026-10-10 TF32 ruling'
+- id: H3
+  statement: A fused tcgen05 3xTF32 kernel (TMA load, hi/lo split in shared memory, 3 MMAs per k-block, bias + six-way split in the epilogue, one launch) removes the 107-112 us split pass and the 7-47 us scatter and reaches max(3 x FLOPs / 588 TF/s, memory floor).
+  status: parked
+  evidence:
+  - 'estimate: 531 us at 919 at the lock vs r0 575 rented (~690 at the lock); 76-222 us at M vs 272-345; ~55-75 us at S vs 256'
+  - 'r1: superseded by plain TF32 (ruling); 3 MMAs per k-block can never reach Tb (169.8 us at 919 = 613 TF/s). The fused-epilogue part lives on as H14'
+- id: H4
+  statement: For B <= 128 one M-tile covers all rows, so a tensor-core TF32 kernel streams W exactly once and the S band is memory-bound at the harness floor (about 50 us); cuBLAS TF32 is already there and only the floor itself (H16) can move S further.
+  status: supported
+  evidence:
+  - 'probe: plain cuBLAS TF32 runs 50-51 us at B=5..128 rented, i.e. at the dirty-L2 stream floor (53 us for a plain 227 MB read) [probe_b200]'
+  - 'portal r0: Tb 82.8-90.7 us at B<=128, Tsol about 15 us; t = 50 us scores 0.66, t = 40 us 0.73'
+- id: H5
+  statement: The skinny SIMT kernel (lane = W row, cp.async-staged 128x64 tiles, emb broadcast from smem) is at the copy floor at B=5 but issue/latency bound at B=16 and 32; 2 CTAs/SM and 2-row-per-lane register tiling recover the 32-64 us FFMA floor.
+  status: parked
+  evidence:
+  - 'probe: 54.6 / 88.8 / 145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs, 108-129 KB smem); run_tests 60.6 / 88.3 [probe_b200, r0]'
+  - 'dead end: skinny<32> loses to cuBLASLt fp32 (122 us) so B=32 stays on the library path in r0'
+  - 'portal r0: 76.1 us at B=5 (x1.26 vs rented: it scales with the SM clock, so it is issue-bound, not DRAM-bound); cuBLAS TF32 at 50 us beats it. Parked'
+- id: H6
+  statement: cuBLAS BF16x9 emulation is a legitimate one-call fp32-level path (error 3.4e-6) but is slower than 3xTF32 at L and falls back to SIMT below B~64.
+  status: refuted
+  evidence:
+  - 'probe: 117 / 131 / 177 / 358 / 754 us at B=5/32/128/384/919, maxerr 3.4e-6; r0 3xTF32 path 575 at 919 [probe_b200]'
+  - 'operator ruling 2026-10-10: BF16x9 emulation stays forbidden; and it is 4x slower than Tb at 919 anyway'
+- id: H7
+  statement: SOLAR's Tsol for this problem uses the FP32 CUDA-core peak, so 3xTF32 designs can go below Tsol at M/L (scores above 0.5 come cheaply there and the S band decides the ranking).
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol = (Tb - S t - S Tb)/(1 - 2S) gives 15.0 us at B=5, 23.7 at 373, 57.9 at 919 = FLOPs / 1.8 PF/s (bf16-like dense rate, 2x the TF32 peak), floored at about 15 us for B <= 211'
+  - 'consequence: no TF32 kernel can reach Tsol; the lock-time TF32 peak (909 TF/s, 115 us at 919) scores at most 0.66 there'
+- id: H8
+  statement: The hidden Tb is close to the fp32 reference (~2.4 ms at 919 at the lock), not a TF32-enabled PyTorch solution (~180 us).
+  status: refuted
+  evidence:
+  - 'portal r0: Tb = 82.8 / 83.1 / 84.8 / 90.1 / 90.7 (B=5..128), 93.8-110.5 (M), 119.1-169.8 (L) us; 169.8 at 919 = 613 TF/s: a TF32 PyTorch matmul at the lock, slightly faster than our rented cuBLAS TF32 scaled by 1.31 (177 us)'
+- id: H9
+  statement: The separate scatter (7-47 us) and any tmp[B,18432] round trip are a large fraction of Tb at M/L; a fused epilogue that adds the bias and picks the output tensor by column chunk gains that much before touching the GEMM.
+  status: supported
+  evidence:
+  - 'probe: scatter 47 us at 919 rented = 28% of Tb (169.8); 7 us at 131 = 7% of Tb [probe_b200, r0]'
+  - 'constraint: outputs are six separately allocated tensors, so a plain cuBLAS GEMM cannot write them without a scatter or a batched pointer-array mode (E1 probes it)'
+- id: H10
+  statement: The dirty-L2 flush makes the harness stream floor 4.2-4.8 TB/s (53-64 us) rather than 8 TB/s; evict_first on the W stream and evict_last on outputs recover part of it for the S band.
+  status: open
+  evidence:
+  - 'brief: plain stream floor 53.5 us for 227 MB; #38 gained 8-9% from evict_last at M sizes'
+  - 'r1 model: the flush leaves ~126 MB of dirty zero lines; every W line allocated evicts one, so DRAM traffic is ~227 + 126 MB = 353 MB, i.e. 44 us at 8 TB/s and 50 us at 7 TB/s. Hints change which lines go, not how many; E3 measures a clean-L2 control'
+- id: H11
+  statement: cuBLASLt CUBLAS_COMPUTE_32F_FAST_TF32 with a bias epilogue is a 16/16-correct path at 50-135 us rented (about 55-177 us at the lock) and scores about 0.5-0.55; cuBLAS 13's batched pointer-array mode over the six 3072-wide chunks removes the scatter at no GEMM cost because the tile count is unchanged.
+  status: open
+  evidence:
+  - 'probe r0: cuBLAS TF32 50/51/74/135 us at B=5/128/384/919 rented, maxerr 1.6e-3 vs atol 2e-3 [probe_b200]'
+  - 'emulator: S/M/L = 55/100/171 us portal gives 0.5255 vs 0.2349 now [predict_score]'
+  - 'dead end (r0) was six separate fp32 SIMT launches (298 us at B=5); a batched TF32 launch with six problems has the same 576 tiles at 919 as the big GEMM'
+- id: H12
+  statement: TF32 tcgen05 with fp32 operands is shared-memory-bandwidth bound in 1SM mode (TMA writes 12 KB and the MMA reads 12 KB per 128-clk 128x256x8 MMA = 192 B/clk against 128 B/clk), which caps it at about 67% of the 909 TF/s lock-time peak, exactly cuBLAS's 613 TF/s; cta_group::2 (256x256 tiles) halves the per-SM operand traffic and reaches 85-95% (about 125 us at 919 at the lock).
+  status: open
+  evidence:
+  - 'probe r0: cuBLAS TF32 770 TF/s unlocked at 919 = 65-67% of the 1.15 PF/s TF32 peak at 1965 MHz [probe_b200]'
+  - 'portal r0: Tb 613 TF/s at the lock = 67% of 909 TF/s'
+  - 'E2 tests it: CUTLASS sm100 1SM 128x256 vs 2SM 256x256 at B=919, and the kernel names cuBLAS picks per B (2sm or not)'
+- id: H13
+  statement: Re-reading W from L2 once per 128- or 256-row M-tile (4-8 x 227 MB at 919, 0.9-1.8 GB at 16-21 TB/s = 45-110 us) is the second limiter at L; a cluster of 2-4 CTAs along M with TMA multicast of the W tile cuts it to 1-2 passes.
+  status: open
+  evidence:
+  - 'estimate only; E2 compares cluster (2,1,1) vs (4,1,1) multicast with 2SM tiles at B=919'
+- id: H14
+  statement: 'A one-launch CUTLASS sm100 TF32 kernel with the bias and the six-way split in the epilogue (grouped/ptr-array GEMM over the six chunks, or an epilogue that picks the output pointer by N-tile since 3072 = 12 x 256) removes the scatter (H9) and the tmp round trip and reaches max(FLOPs / 800 TF/s, dirty-L2 floor): about 50 / 55 / 70 / 125 us at B=128/384/449/919 at the lock, score about 0.65.'
+  status: open
+  evidence:
+  - 'emulator: S/M/L = 47/57/102 us portal gives 0.667 [predict_score]'
+  - 'compile-time risk: CUTLASS sm100 kernels take 1-3 min to build; the 300 s per-solution limit applies'
+- id: H15
+  statement: Portal/rented time ratios on #35 are 1.26-1.31 for SM-clock-bound paths (tensor core, issue-bound SIMT) and 1.0-1.15 for DRAM-bound paths; the emulator must use the path's bound, not the language, to predict the portal time.
+  status: open
+  evidence:
+  - 'portal vs rented r0: skinny B=5 76.1/60.6 = 1.26; cuBLASLt fp32 B=32 142.3/123.7 = 1.15; 3xTF32 B=919 688.9/574.6 = 1.20 (= 1.31 on the 415 us of GEMM + ~1.0 on the 160 us of split/scatter)'
+  - 'E3 tries nvidia-smi -lgc 1500 on the rented card to measure the ratio directly for a pure stream and for cuBLAS TF32'
+- id: H16
+  statement: Any kernel that reads W once pays the dirty-L2 write-back (about 126 MB) on top of 227 MB, so the S/M floor under harness conditions is 45-53 us and S scores are capped near 0.65-0.70; only reads with no L2 allocation (none exist) or discard (forbidden) could lower it.
+  status: open
+  evidence:
+  - 'brief: 53.5 us measured stream floor rented for 227 MB (4.2 TB/s); cuBLAS TF32 50 us at B=5'
+  - 'E3 measures reads-only variants (LDG, evict_first, bulk ring) with the harness flush vs a read-based clean flush; a reads-only time <= 45 us refutes the cap and justifies an S-band custom kernel'
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]
+
+=== PARENTS ===
+--- parent r0-adamod-dispatch-skinny-fp32-3xtf32 ---
+design card:
+id: r0-adamod-dispatch-skinny-fp32-3xtf32
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: cpasync
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The op is an fp32 GEMM (M = batch, N = 18432, K = 3072) whose reference is FFMA-bound at 75% of the SIMT peak;
+  tensor-core 3xTF32 (hi/lo split, three TF32 GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster at
+  M/L, while the small-B band is a 227 MB weight stream that a cp.async-staged skinny SIMT kernel serves at the
+  copy floor. First, correctness-first anchor submission for Tb/Tsol.
+expected_effect:
+  S: {pct: -20, confidence: medium}
+  M: {pct: -45, confidence: medium}
+  L: {pct: -68, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 116736
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 69632
+  launches_per_call: 1
+knobs: {ROWS: 128, KC: 64, STAGES: 3, NB: [8, 16], TF32_MIN_B: 65, WS_MB: 32}
+dispatch:
+  - {max_tokens: 8, kernel: skinny_kernel<8>, meta: {launches: 1}}
+  - {max_tokens: 16, kernel: skinny_kernel<16>, meta: {launches: 1}}
+  - {max_tokens: 64, kernel: cublasLt_fp32_bias + scatter6_kernel, meta: {launches: 2}}
+  - {max_tokens: null, kernel: split_tf32 x2 + cublasLt_tf32 x3 + scatter6_kernel, meta: {launches: 6}}
+tests: [H1, H2, H5, H9]
+findings:
+  - "probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]"
+  - "probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]"
+  - "probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]"
+  - "dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]"
+  - "probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]"
+  - "probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]"
+  - "probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]"
+  - "probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]"
+  - "run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]"
+  - "run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]"
+  - "static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]"
+paths:
+  - {max_tokens: 8, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: cpasync, launches: 1, x: none, w: none, st: none}
+  - {max_tokens: 16, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: cpasync, launches: 1, x: none, w: none, st: none}
+  - {max_tokens: 64, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: ldg, launches: 2, x: none, w: none, st: none}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: tma, launches: 6, x: ef, w: none, st: none}
+runs_on:
+  H200: {runs: true, representative: false, note: "cuBLASLt TF32 uses wgmma kernels on sm_90 (different rate); cp.async path representative"}
+  A100: {runs: true, representative: false, note: "TF32 mma.sync rate and 2 TB/s HBM; correctness check only"}
+  L40S: {runs: true, representative: false}
+risks:
+  - "3xTF32 path allocates 453 MB of hi/lo scratch per call through the caching allocator and launches 6 kernels; the W split pass (107 us) is 40% of the M-band time"
+  - "cuBLASLt heuristic choice per B is deterministic but unverified at the 1500 MHz lock; a split-K pick would add a reduce kernel (constant per shape)"
+  - "skinny kernels run 1 CTA/SM on 144 of 148 SMs and are issue-bound at B=16 (88 us vs 54 floor)"
+  - "precision rule may change: if plain TF32 or BF16x9 is later allowed, the M/L paths are superseded"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 134.1/300.5/475.2
+B200 portal: score 0.234899, geomean 321.235 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=5 | 76.1 | 82.8 | 0.526 |
+| batch_size=16 | 113.5 | 83.1 | 0.409 |
+| batch_size=32 | 142.3 | 84.8 | 0.354 |
+| batch_size=96 | 274.0 | 90.1 | 0.224 |
+| batch_size=128 | 273.3 | 90.7 | 0.225 |
+| batch_size=131 | 296.4 | 93.8 | 0.218 |
+| batch_size=192 | 303.4 | 98.4 | 0.223 |
+| batch_size=211 | 304.0 | 100.8 | 0.227 |
+| batch_size=373 | 387.6 | 110.2 | 0.192 |
+| batch_size=384 | 388.6 | 110.5 | 0.191 |
+| batch_size=449 | 432.4 | 119.1 | 0.183 |
+| batch_size=512 | 440.0 | 123.0 | 0.182 |
+| batch_size=691 | 563.7 | 145.0 | 0.163 |
+| batch_size=773 | 673.4 | 151.7 | 0.142 |
+| batch_size=853 | 681.9 | 164.3 | 0.150 |
+| batch_size=919 | 688.9 | 169.8 | 0.151 |
+sm_100a static features: [{"kernel": "_ZN41_GLOBAL__N__7de2e7cc_9_kernel_cu_fb22888d13skinny_kernelILi16EEEvPKfS2_S2_NS_7OutPtrsEi", "num_warps": null, "regs": 128, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"LDGSTS.128": 54, "LDGDEPBAR": 6, "LDG.CONSTANT": 2, "LDG.EF.128": 2, "STG.128": 2}}, {"kernel": "_ZN41_GLOBAL__N__7de2e7cc_9_kernel_cu_fb22888d13skinny_kernelILi8EEEvPKfS2_S2_NS_7OutPtrsEi", "num_warps": null, "regs": 108, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"LDGSTS.128": 54, "LDGDEPBAR": 6, "LDG.CONSTANT": 2, "LDG.EF.128": 2, "STG.128": 2}}, {"kernel": "_ZN41_GLOBAL__N__7de2e7cc_9_kernel_cu_fb22888d17split_tf32_kernelEPK6float4PS0_S3_m", "num_warps": null, "regs": 17, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"LDGSTS.128": 54, "LDGDEPBAR": 6, "LDG.CONSTANT": 2, "LDG.EF.128": 2, "STG.128": 2}}, {"kernel": "_ZN41_GLOBAL__N__7de2e7cc_9_kernel_cu_fb22888d15scatter6_kernelEPK6float4NS_7OutPtrsEi", "num_warps": null, "regs": 20, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"LDGSTS.128": 54, "LDGDEPBAR": 6, "LDG.CONSTANT": 2, "LDG.EF.128": 2, "STG.128": 2}}]
+source:
+--- file kernel.cu ---
+#include <cuda_runtime.h>
+#include <cublasLt.h>
+#include <cstdint>
+#include <map>
+#include <mutex>
+
+// AdaLayerNormZero modulation extraction: out_c[b, j] = sum_k emb[b,k] * W[c*3072+j, k] + bias[c*3072+j], c = 0..5.
+// Shape-only dispatch on B:
+//   B <= 8   : skinny<8>   custom SIMT kernel, W streamed once through shared memory (memory-bound band)
+//   B <= 16  : skinny<16>
+//   B <= 64  : cuBLASLt CUBLAS_COMPUTE_32F (FFMA) GEMM with bias epilogue into tmp[B,18432], then scatter to 6 outputs
+//   B >  64  : 3xTF32: W = Whi + Wlo, emb = ehi + elo (hi = round-to-tf32, lo = exact remainder), then
+//              tmp = Whi*ehi + bias; tmp += Whi*elo; tmp += Wlo*ehi  (cuBLASLt TF32 tensor-core GEMMs, fp32 accumulate)
+//              The dropped Wlo*elo term is ~2^-22 relative: fp32-level error (measured 4e-5 max vs 1.6e-5 for FFMA).
+
+namespace {
+constexpr int kD = 3072;        // inner_dim
+constexpr int kN = 6 * kD;      // output_dim = 18432
+constexpr int kTf32MinB = 65;   // first B served by the 3xTF32 path
+
+// ------------------------------------------------------------------ cuBLASLt plans (shape-keyed)
+struct Plan {
+  cublasLtMatmulDesc_t desc = nullptr;
+  cublasLtMatrixLayout_t la = nullptr, lb = nullptr, lc = nullptr;
+  cublasLtMatmulAlgo_t algo;
+  bool have_algo = false;
+};
+
+cublasLtHandle_t g_handle = nullptr;
+std::mutex g_mu;
+std::map<long, Plan> g_plans;   // key = B * 4 + kind
+
+// kind 0: fp32 FFMA + bias epilogue; kind 1: TF32 + bias epilogue; kind 2: TF32, plain (used with beta = 1)
+Plan& get_plan(int B, int kind, size_t ws_bytes) {
+  if (!g_handle) cublasLtCreate(&g_handle);
+  const long key = (long)B * 4 + kind;
+  auto it = g_plans.find(key);
+  if (it != g_plans.end()) return it->second;
+  Plan p;
+  cublasLtMatmulDescCreate(&p.desc, kind == 0 ? CUBLAS_COMPUTE_32F : CUBLAS_COMPUTE_32F_FAST_TF32, CUDA_R_32F);
+  cublasOperation_t ta = CUBLAS_OP_T, tb = CUBLAS_OP_N;
+  cublasLtMatmulDescSetAttribute(p.desc, CUBLASLT_MATMUL_DESC_TRANSA, &ta, sizeof(ta));
+  cublasLtMatmulDescSetAttribute(p.desc, CUBLASLT_MATMUL_DESC_TRANSB, &tb, sizeof(tb));
+  cublasLtEpilogue_t epi = (kind == 2) ? CUBLASLT_EPILOGUE_DEFAULT : CUBLASLT_EPILOGUE_BIAS;
+  cublasLtMatmulDescSetAttribute(p.desc, CUBLASLT_MATMUL_DESC_EPILOGUE, &epi, sizeof(epi));
+  // Column-major view: A = W as K x N (ld K), op T; B = emb as K x B (ld K); D = N x B (ld N) == row-major [B, N].
+  cublasLtMatrixLayoutCreate(&p.la, CUDA_R_32F, kD, kN, kD);
+  cublasLtMatrixLayoutCreate(&p.lb, CUDA_R_32F, kD, B, kD);
+  cublasLtMatrixLayoutCreate(&p.lc, CUDA_R_32F, kN, B, kN);
+  cublasLtMatmulPreference_t pref;
+  cublasLtMatmulPreferenceCreate(&pref);
+  cublasLtMatmulPreferenceSetAttribute(pref, CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES, &ws_bytes, sizeof(ws_bytes));
+  cublasLtMatmulHeuristicResult_t res[1];
+  int n = 0;
+  if (cublasLtMatmulAlgoGetHeuristic(g_handle, p.desc, p.la, p.lb, p.lc, p.lc, pref, 1, res, &n) == CUBLAS_STATUS_SUCCESS && n > 0) {
+    p.algo = res[0].algo;
+    p.have_algo = true;
+  }
+  cublasLtMatmulPreferenceDestroy(pref);
+  return g_plans.emplace(key, p).first->second;
+}
+
+cublasStatus_t lt_gemm(Plan& p, const float* A, const float* Bm, const float* bias, float beta, float* D,
+                       void* ws, size_t ws_bytes, cudaStream_t stream) {
+  const float alpha = 1.f;
+  if (bias) cublasLtMatmulDescSetAttribute(p.desc, CUBLASLT_MATMUL_DESC_BIAS_POINTER, &bias, sizeof(bias));
+  return cublasLtMatmul(g_handle, p.desc, &alpha, A, p.la, Bm, p.lb, &beta, D, p.lc, D, p.lc,
+                        p.have_algo ? &p.algo : nullptr, ws, ws_bytes, stream);
+}
+
+// ------------------------------------------------------------------ kernels
+struct OutPtrs { float* p[6]; };
+
+// tmp[B, 18432] -> six [B, 3072] outputs, 16 B per thread.
+__global__ void __launch_bounds__(256) scatter6_kernel(const float4* __restrict__ src, OutPtrs outs, int B) {
+  constexpr int kN4 = kN / 4;    // 4608 float4 per row
+  constexpr int kD4 = kD / 4;    // 768 float4 per chunk row
+  const size_t total = (size_t)B * kN4;
+  const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= total) return;
+  const int b = (int)(i / kN4);
+  const int n4 = (int)(i - (size_t)b * kN4);
+  const int c = n4 / kD4;
+  const int j = n4 - c * kD4;
+  const float4 v = __ldcs(src + i);
+  reinterpret_cast<float4*>(outs.p[c])[(size_t)b * kD4 + j] = v;
+}
+
+// x = hi + lo with hi = tf32(x) (round to nearest, 10 explicit mantissa bits), lo = x - hi (exact in fp32).
+__device__ __forceinline__ void tf32_split(float x, float& hi, float& lo) {
+  unsigned u;
+  asm("cvt.rna.tf32.f32 %0, %1;" : "=r"(u) : "f"(x));
+  hi = __uint_as_float(u);
+  lo = x - hi;
+}
+
+__global__ void __launch_bounds__(256) split_tf32_kernel(const float4* __restrict__ src, float4* __restrict__ hi,
+                                                         float4* __restrict__ lo, size_t n4) {
+  const size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= n4) return;
+  const float4 v = __ldcs(src + i);
+  float4 h, l;
+  tf32_split(v.x, h.x, l.x);
+  tf32_split(v.y, h.y, l.y);
+  tf32_split(v.z, h.z, l.z);
+  tf32_split(v.w, h.w, l.w);
+  hi[i] = h;
+  lo[i] = l;
+}
+
+// Skinny GEMM for B <= NB. CTA = 128 W rows x all of K; 8 warps = 4 row groups (32 rows, lane = row) x 2 K halves.
+// W tile [128 rows x 64 k] (padded rows, 272 B) and emb chunk [NB x 64 k] staged by cp.async, 3 stages.
+constexpr int kRows = 128, kKC = 64, kStages = 3, kRowBytes = kKC * 4 + 16;
+constexpr size_t kWStage = (size_t)kRows * kRowBytes;
+
+__device__ __forceinline__ void cp_async16(void* smem, const void* g) {
+  const unsigned s = (unsigned)__cvta_generic_to_shared(smem);
+  asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(s), "l"(g));
+}
+
+template <int NB>
+__global__ void __launch_bounds__(256, 1) skinny_kernel(const float* __restrict__ W, const float* __restrict__ emb,
+                                                        const float* __restrict__ bias, OutPtrs outs, int B) {
+  extern __shared__ __align__(16) unsigned char smem[];
+  unsigned char* wbuf = smem;
+  float* ebuf = reinterpret_cast<float*>(smem + kStages * kWStage);   // [stage][NB][kKC]
+  float* red = ebuf;                                                  // reused after the main loop: [NB][kRows]
+  const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+  const int rg = warp & 3, kh = warp >> 2;
+  const int n0 = blockIdx.x * kRows;
+  const float* Wb = W + (size_t)n0 * kD;
+  const int bmax = B - 1;
+  float acc[NB];
+#pragma unroll
+  for (int b = 0; b < NB; b++) acc[b] = 0.f;
+  constexpr int NKC = kD / kKC;   // 48
+
+  auto load_stage = [&](int s, int kc) {
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+      const int c = tid + i * 256;
+      const int r = c >> 4, q = c & 15;
+      cp_async16(wbuf + s * kWStage + (size_t)r * kRowBytes + q * 16, Wb + (size_t)r * kD + kc + q * 4);
+    }
+    for (int c = tid; c < NB * 16; c += 256) {
+      const int b = c >> 4, q = c & 15;
+      const int bsrc = b < bmax ? b : bmax;   // rows >= B read a valid row; their results are discarded
+      cp_async16(ebuf + (s * NB + b) * kKC + q * 4, emb + (size_t)bsrc * kD + kc + q * 4);
+    }
+  };
+
+#pragma unroll
+  for (int s = 0; s < kStages - 1; s++) {
+    load_stage(s, s * kKC);
+    asm volatile("cp.async.commit_group;");
+  }
+  for (int it = 0; it < NKC; it++) {
+    asm volatile("cp.async.wait_group %0;" ::"n"(kStages - 2));
+    __syncthreads();
+    const int nxt = it + kStages - 1;
+    if (nxt < NKC) load_stage(nxt % kStages, nxt * kKC);
+    asm volatile("cp.async.commit_group;");
+    const int s = it % kStages;
+    const float4* wrow = reinterpret_cast<const float4*>(wbuf + s * kWStage + (size_t)(rg * 32 + lane) * kRowBytes) + kh * 8;
+    const float4* eb = reinterpret_cast<const float4*>(ebuf + s * NB * kKC) + kh * 8;
+#pragma unroll
+    for (int q = 0; q < 8; q++) {
+      const float4 w = wrow[q];
+#pragma unroll
+      for (int b = 0; b < NB; b++) {
+        const float4 e = eb[b * 16 + q];
+        acc[b] = fmaf(w.x, e.x, acc[b]);
+        acc[b] = fmaf(w.y, e.y, acc[b]);
+        acc[b] = fmaf(w.z, e.z, acc[b]);
+        acc[b] = fmaf(w.w, e.w, acc[b]);
+      }
+    }
+  }
+  asm volatile("cp.async.wait_group 0;");
+  __syncthreads();
+  const int r = rg * 32 + lane;
+  if (kh == 1) {
+#pragma unroll
+    for (int b = 0; b < NB; b++) red[b * kRows + r] = acc[b];
+  }
+  __syncthreads();
+  if (kh == 0) {
+    const int n = n0 + r;
+    const int c = n / kD, j = n - c * kD;   // kD % kRows == 0, so c is uniform per CTA
+    float* o = outs.p[c];
+    const float bv = bias[n];
+#pragma unroll
+    for (int b = 0; b < NB; b++)
+      if (b < B) o[(size_t)b * kD + j] = acc[b] + red[b * kRows + r] + bv;
+  }
+}
+
+template <int NB>
+int launch_skinny(const float* W, const float* emb, const float* bias, const OutPtrs& outs, int B, cudaStream_t stream) {
+  const int smem = (int)(kStages * kWStage + (size_t)kStages * NB * kKC * sizeof(float));
+  static bool attr_set = false;   // host-side function attribute, set once per instantiation
+  if (!attr_set) {
+    cudaFuncSetAttribute(skinny_kernel<NB>, cudaFuncAttributeMaxDynamicSharedMemorySize, smem);
+    attr_set = true;
+  }
+  skinny_kernel<NB><<<kN / kRows, 256, smem, stream>>>(W, emb, bias, outs, B);
+  return (int)cudaGetLastError();
+}
+}  // namespace
+
+extern "C" int adamod_uses_tf32(int B) { return B >= kTf32MinB; }
+
+// Scratch buffers (allocated by the caller through the PyTorch allocator; no kernels):
+//   tmp [B, 18432] and ws when B > 16; whi/wlo [18432, 3072] and ehi/elo [B, 3072] only when adamod_uses_tf32(B).
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             float* tmp, float* whi, float* wlo, float* ehi, float* elo,
+                             void* ws, size_t ws_bytes, cudaStream_t stream) {
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  if (B <= 8) return launch_skinny<8>(weight, emb, bias, op, B, stream);
+  if (B <= 16) return launch_skinny<16>(weight, emb, bias, op, B, stream);
+
+  std::lock_guard<std::mutex> lk(g_mu);
+  cublasStatus_t st;
+  if (B < kTf32MinB) {
+    Plan& p = get_plan(B, 0, ws_bytes);
+    st = lt_gemm(p, weight, emb, bias, 0.f, tmp, ws, ws_bytes, stream);
+    if (st != CUBLAS_STATUS_SUCCESS) return 1000 + (int)st;
+  } else {
+    const size_t w4 = (size_t)kN * kD / 4, e4 = (size_t)B * kD / 4;
+    split_tf32_kernel<<<(unsigned)((w4 + 255) / 256), 256, 0, stream>>>(
+        reinterpret_cast<const float4*>(weight), reinterpret_cast<float4*>(whi), reinterpret_cast<float4*>(wlo), w4);
+    split_tf32_kernel<<<(unsigned)((e4 + 255) / 256), 256, 0, stream>>>(
+        reinterpret_cast<const float4*>(emb), reinterpret_cast<float4*>(ehi), reinterpret_cast<float4*>(elo), e4);
+    Plan& p1 = get_plan(B, 1, ws_bytes);
+    Plan& p2 = get_plan(B, 2, ws_bytes);
+    st = lt_gemm(p1, whi, ehi, bias, 0.f, tmp, ws, ws_bytes, stream);
+    if (st != CUBLAS_STATUS_SUCCESS) return 2000 + (int)st;
+    st = lt_gemm(p2, whi, elo, nullptr, 1.f, tmp, ws, ws_bytes, stream);
+    if (st != CUBLAS_STATUS_SUCCESS) return 3000 + (int)st;
+    st = lt_gemm(p2, wlo, ehi, nullptr, 1.f, tmp, ws, ws_bytes, stream);
+    if (st != CUBLAS_STATUS_SUCCESS) return 4000 + (int)st;
+  }
+  const size_t total = (size_t)B * (kN / 4);
+  scatter6_kernel<<<(unsigned)((total + 255) / 256), 256, 0, stream>>>(reinterpret_cast<const float4*>(tmp), op, B);
+  return (int)cudaGetLastError();
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" int adamod_uses_tf32(int B);
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             float* tmp, float* whi, float* wlo, float* ehi, float* elo,
+                             void* ws, size_t ws_bytes, cudaStream_t stream);
+
+void run(torch::Tensor emb, torch::Tensor weight, torch::Tensor bias,
+         torch::Tensor shift_msa, torch::Tensor scale_msa, torch::Tensor gate_msa,
+         torch::Tensor shift_mlp, torch::Tensor scale_mlp, torch::Tensor gate_mlp) {
+  TORCH_CHECK(emb.is_cuda() && emb.dtype() == torch::kFloat32 && emb.is_contiguous(), "emb must be contiguous fp32 cuda");
+  TORCH_CHECK(weight.is_contiguous() && weight.dtype() == torch::kFloat32, "weight must be contiguous fp32");
+  TORCH_CHECK(bias.is_contiguous() && bias.dtype() == torch::kFloat32, "bias must be contiguous fp32");
+  TORCH_CHECK(emb.dim() == 2 && emb.size(1) == 3072 && emb.size(0) >= 1, "emb must be [B, 3072]");
+  TORCH_CHECK(weight.size(0) == 6 * 3072 && weight.size(1) == 3072, "weight must be [18432, 3072]");
+  TORCH_CHECK(bias.numel() == 6 * 3072, "bias must be [18432]");
+  const int B = (int)emb.size(0);
+  torch::Tensor outs_t[6] = {shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp};
+  float* outs[6];
+  for (int i = 0; i < 6; ++i) {
+    TORCH_CHECK(outs_t[i].is_contiguous() && outs_t[i].dtype() == torch::kFloat32 && outs_t[i].size(0) == B &&
+                outs_t[i].size(1) == 3072, "bad output tensor");
+    outs[i] = outs_t[i].data_ptr<float>();
+  }
+  const c10::cuda::OptionalCUDAGuard guard(emb.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+  // Scratch through the caching allocator (torch::empty launches no kernel). Which buffers exist depends on B only.
+  torch::Tensor tmp, ws, whi, wlo, ehi, elo;
+  float *ptmp = nullptr, *pwhi = nullptr, *pwlo = nullptr, *pehi = nullptr, *pelo = nullptr;
+  void* pws = nullptr;
+  const size_t ws_bytes = size_t(32) << 20;
+  if (B > 16) {
+    tmp = torch::empty({(long)B, 6 * 3072}, emb.options());
+    ws = torch::empty({(long)ws_bytes}, emb.options().dtype(torch::kUInt8));
+    ptmp = tmp.data_ptr<float>();
+    pws = ws.data_ptr();
+  }
+  if (adamod_uses_tf32(B)) {
+    whi = torch::empty_like(weight);
+    wlo = torch::empty_like(weight);
+    ehi = torch::empty_like(emb);
+    elo = torch::empty_like(emb);
+    pwhi = whi.data_ptr<float>();
+    pwlo = wlo.data_ptr<float>();
+    pehi = ehi.data_ptr<float>();
+    pelo = elo.data_ptr<float>();
+  }
+  int st = adamod_launch(emb.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), outs, B,
+                         ptmp, pwhi, pwlo, pehi, pelo, pws, ws_bytes, stream);
+  TORCH_CHECK(st == 0, "adamod_launch failed with status ", st);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("run", &run, "AdaLayerNormZero modulation extraction (skinny SIMT / cuBLASLt fp32 / 3xTF32 by batch size)");
+}
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

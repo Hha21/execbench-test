@@ -1,0 +1,99 @@
+{
+ "duration_api_ms": 644519,
+ "stop_reason": "end_turn",
+ "session_id": "c7ee57b4-0f76-460b-b328-93365066ab2e",
+ "total_cost_usd": 3.0468272,
+ "usage": {
+  "input_tokens": 40,
+  "cache_creation_input_tokens": 145300,
+  "cache_read_input_tokens": 1928136,
+  "output_tokens": 74932,
+  "output_tokens_details": {
+   "thinking_tokens": 37146
+  },
+  "server_tool_use": {
+   "web_search_requests": 0,
+   "web_fetch_requests": 0
+  },
+  "service_tier": "standard",
+  "cache_creation": {
+   "ephemeral_1h_input_tokens": 145300,
+   "ephemeral_5m_input_tokens": 0
+  },
+  "inference_geo": "global",
+  "iterations": [
+   {
+    "input_tokens": 2,
+    "output_tokens": 13049,
+    "cache_read_input_tokens": 143982,
+    "cache_creation_input_tokens": 3852,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 3852
+    },
+    "type": "message"
+   }
+  ],
+  "speed": "standard",
+  "fallback_credit": null
+ },
+ "modelUsage": {
+  "claude-opus-5-5": {
+   "inputTokens": 40,
+   "outputTokens": 74932,
+   "cacheReadInputTokens": 1928136,
+   "cacheCreationInputTokens": 145300,
+   "webSearchRequests": 0,
+   "costUSD": 3.0468272,
+   "contextWindow": 1000000,
+   "maxOutputTokens": 128000,
+   "thinkingTokens": 37146,
+   "canonicalModel": "claude-opus-5-5",
+   "provider": "firstParty",
+   "costBasis": "list"
+  }
+ },
+ "permission_denials": [],
+ "terminal_reason": "completed",
+ "fast_mode_state": "off",
+ "fast_mode_disabled_reason": "sdk_opt_in_required",
+ "subagent_stats": {
+  "spawned": 0,
+  "requested": {
+   "background": 0,
+   "foreground": 0,
+   "unset": 0
+  },
+  "started_in_background": 0,
+  "max_depth": 0,
+  "spawned_by_subagents": 0,
+  "completed": 0,
+  "failed": 0,
+  "killed": {
+   "parent": 0,
+   "user": 0,
+   "system": 0
+  },
+  "refused": {
+   "depth_limit": 0,
+   "concurrency_limit": 0,
+   "budget": 0
+  },
+  "by_type": {}
+ },
+ "safety_stops": 0,
+ "is_error": false,
+ "num_turns": 21,
+ "subtype": "success",
+ "api_error_status": null,
+ "ttft_ms": 59845,
+ "type": "result",
+ "duration_ms": 993766,
+ "uuid": "25022ba6-824b-4ee6-b933-6d5818ae2b4d",
+ "ttft_stream_ms": 1003,
+ "time_to_request_ms": 70,
+ "first_content_frame_ms": 1003,
+ "queued_turn_count": 0,
+ "result_index": 0,
+ "seconds": 996.0
+}

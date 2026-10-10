@@ -1,0 +1,203 @@
+id: r1-adamod-cutlass-tf32-2sm-chunkepi
+parents:
+  - r0-adamod-dispatch-skinny-fp32-3xtf32
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  One CUTLASS 4.4 sm100 TF32 tcgen05 GEMM per call (2SM MMA, cluster 2x1, persistent CLC scheduler) with operands
+  swapped so W is the M side (as cuBLAS tnn). The no-smem epilogue adds bias (C = bias with stride 0 along the batch
+  mode). A wrapper re-points D to outs[c] - c*3072 per tile, so the six outputs are written directly: no tmp, no
+  scatter, one launch. This matches cuBLAS TF32 GEMM-only time and removes the 3-47 us scatter Tb pays. The tile is
+  chosen from B (memory-bound 128x64x16-stage tile at B<=64; 256x192/256x256 at M/L). Error is identical to cuBLAS
+  TF32 (same tf32 truncation, fp32 accumulate over the full K).
+expected_effect:
+  S:
+    pct: -63
+    confidence: high
+  M:
+    pct: -78
+    confidence: high
+  L:
+    pct: -75
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 229888
+  threads_per_cta: 192
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  CLUSTER: "2x1x1"
+  TILE_K: 32
+  S_TILE: "128x64, 16 stages"
+  M_TILE_65_128: "256x64, auto stages (11)"
+  TILE_129_192_257_384_513plus: "256x192, auto stages (8)"
+  TILE_193_256_385_512: "256x256, auto stages (7)"
+  RASTER: heuristic (= AlongN: batch tiles of one W tile run together)
+dispatch:
+  - max_tokens: 64
+    kernel: Tf32Gemm<128,64,16>
+    meta:
+      launches: 1
+  - max_tokens: 128
+    kernel: Tf32Gemm<256,64,0>
+    meta:
+      launches: 1
+  - max_tokens: 192
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H12
+  - H13
+  - H14
+findings:
+  - "run_tests: 16/16 pass, one launch; rented us B=5/16/32/96/128: 51.0/48.8/49.0/55.5/56.0; 131/192/211/373/384: 57.0/57.1/60.8/68.5/68.5; 449/512/691/773/853/919: 79.6/81.3/112.0/131.4/132.7/133.6 (-61/-79/-77% S/M/L vs r0); emulator 0.603 +- 0.012 [run_tests]"
+  - "build: each CUTLASS sm100 variant compiles in 31-39 s with nvcc 13.1 (8 cores, parallel TUs); whole run_tests incl. 4-variant build and all tests 53 s, far under 300 s [probe_b200, run_tests]"
+  - "probe: max |err| vs fp64 (weight/sqrt(3072) scale) 1.3e-3 at B=5, 1.4e-3 at 131, 1.54-1.6e-3 at 919 for every CUTLASS variant, bit-identical max to cuBLAS TF32 (both read fp32 as tf32 by truncation); no cvt.rna transform needed [probe_b200]"
+  - "probe: with unscaled randn weights both cuBLAS TF32 and this kernel fail 88% of elements (max err 7e-2), so the harness inputs are not unscaled randn W; correctness only from run_tests [probe_b200]"
+  - "H12 probe (non-swapped, M=batch): 2SM 256x256 146 us vs 1SM 128x256 173 us at B=919 (1.19x); swapped: 2SM 256x256 142, 256x192 135.5, 1SM 128x256 161 (1.13-1.19x). The best core reaches about 780 TF/s rented (68% of the TF32 peak), the same as cuBLAS, which already uses 2SM 256x256: 2SM alone does not beat Tb's GEMM rate [probe_b200]"
+  - "H13 refuted: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]"
+  - "probe: operand order matters: non-swapped (M=batch, N=W) 2SM tiles are 7-10% slower than swapped at M/L and 10-20% slower at S (256x128 non-swapped gives 144 tiles on 74 pairs = 2 waves at B=5) [probe_b200]"
+  - "probe: raster order AlongM on the swapped layout re-reads W from DRAM per batch tile: 306 vs 148 us (256x128) and 204 vs 135.5 (256x192) at 919; heuristic = AlongN is right [probe_b200]"
+  - "probe: S band: 2SM 128x64 with 16 stages (197 KB smem, 128 KB of W in flight per SM) runs 48.9-52.1 us at B<=32, as fast as or faster than cuBLAS TF32 without scatter (48.4-52.3); 8 stages at 2 CTAs/SM 54.3-54.7; 256x64 auto 53.8; 1SM 128x128 55-62 [probe_b200]"
+  - "probe: cuBLAS TF32 picks cutlass3x_sm100 tnn 2sm kernels: 128x64 at B=32, 256x128 at 128/384, 256x256 at 131/919, all with a bias epilogue [probe_b200]"
+  - "dead end: 2SM 128xN tiles with N>=128 (64 W rows per CTA) trip a CUTLASS device assertion in the no-smem epilogue TMEM load (warp/TMEM lane-quadrant mismatch); 128x64 is fine; 128x96 does not build [probe_b200]"
+  - "probe: CUPTI harness_time occasionally returns 'No timing results' on single calls of these cluster launches in probes (about 1 in 30); run_tests timed all 16 workloads without error [probe_b200]"
+  - "open: B=96-211 sits 6-12 us above the 49 us S-band floor; no tested tile closes it (256x64/256x128/256x192 all 55-61 us) [probe_b200]"
+paths:
+  - max_tokens: 64
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 64
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 128
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 192
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM and sm100a-only CUTLASS collectives; does not build for sm_90"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Plain TF32 (operator ruling for #35): max error 1.3-1.6e-3 vs atol 2.0e-3, identical to cuBLAS TF32 and to Tb's own precision; passed 16/16 x 10 rounds rented"
+  - "The epilogue wrapper re-points CUTLASS's no-smem epilogue Params per tile through a held copy; it relies on that epilogue keeping a const reference to its Params (CUTLASS 4.4.1 layout)"
+  - "D base pointer outs[c] - c*3072 points before the allocation for c > 0; only in-range addresses are dereferenced"
+  - "L band is compute-bound at about 68% of the TF32 peak, the same rate as Tb's cuBLAS GEMM: the L gain on the portal comes from the removed scatter/bias pass, about 1.25-1.3x vs Tb"
+  - "CUTLASS device asserts are compiled in (no NDEBUG); the four shipped tiles never tripped them in about 30 probe runs and the 16x10 test"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

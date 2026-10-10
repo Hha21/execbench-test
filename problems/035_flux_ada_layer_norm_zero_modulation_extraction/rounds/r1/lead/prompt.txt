@@ -1,0 +1,162 @@
+=== TASK ===
+Round r1: update the hypothesis ledger and design 3 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+Operator ruling today: plain TF32 tensor-core compute (fp32 accumulate, fp32 in/out) is now allowed on #35. See the constraint and the sol.yaml note. r0's portal anchors refute two ledger beliefs. First, Tb is not near the fp32 reference: it runs at TF32 speed (82.8 us at B=5, 90.7 at 128, 123 at 512, 169.8 at 919 = 613 TFLOP/s). Second, Tsol is not at the FP32 CUDA-core peak: it is about 15 us at B<=211 and rises to 57.9 us at 919, which is about 1.8 PFLOP/s, a bf16-like rate. Exact-fp32 paths therefore cannot score at M/L. Retire the 3xTF32 / BF16x9 lines, and plan the round around plain TF32. Two ends of the range matter. At small B, stream the 226 MB weight at about 7 TB/s (Tb is about 83 us there, so the copy floor of about 32 us at the lock scores about 0.75). At large B, TF32 tcgen05 GEMMs near peak (cuBLASLt FAST_TF32 measured 50-135 us rented; a fused CUTLASS/CuTe tcgen05 TF32 kernel with the bias and six-way split in the epilogue). Watch the tolerance margin (TF32 max error 1.6e-3 vs atol 2e-3): K is fixed at 3072, so keep fp32 accumulation over the full K and do not split K into low-precision partials.
+
+=== PROBLEM ===
+L1/035_flux_ada_layer_norm_zero_modulation_extraction: 16 workloads, variable axes ['batch_size']; bands by size: S <= 237.6 MB < M <= 259.6 MB < L
+                 5     227.00 MB  band S
+                16     227.94 MB  band S
+                32     229.32 MB  band S
+                96     234.82 MB  band S
+               128     237.58 MB  band S
+               131     237.83 MB  band M
+               192     243.08 MB  band M
+               211     244.72 MB  band M
+               373     258.65 MB  band M
+               384     259.60 MB  band M
+               449     265.19 MB  band L
+               512     270.61 MB  band L
+               691     286.00 MB  band L
+               773     293.06 MB  band L
+               853     299.94 MB  band L
+               919     305.61 MB  band L
+note: Precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation IS allowed on this problem: inputs and outputs stay fp32, the tolerance is met, the paper permits downcasting when input and output dtypes match, and the portal's own scoring baseline runs at TF32 speed (613 TFLOP/s at B=919). bf16/fp16 operands stay forbidden (they also fail the tolerance), and so does BF16x9 emulation. Keep a margin: TF32's max error is 1.6e-3 against atol 2e-3, so accumulate in fp32 and never round outputs or intermediates. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 would pass it (measured max error 1.6e-3, typical ~3e-4) and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match and the tolerance is met.
+
+=== HYPOTHESIS LEDGER (problems/035_flux_ada_layer_norm_zero_modulation_extraction/ledger.yaml) ===
+# Hypothesis ledger for #35 (035_flux_ada_layer_norm_zero_modulation_extraction). Seeded 2026-10-10 (research round r0).
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids
+  lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the
+  same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the
+  operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 /
+  8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a
+  real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs
+  which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented,
+  plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed
+  (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and
+  no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3
+  vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
+- '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
+hypotheses:
+- id: H1
+  statement: The reference's cuBLAS SIMT sgemm is within 25-30% of the FFMA peak at M/L, so FFMA-only designs cannot gain more than
+    about 1.3x there; packed fma.f32x2 adds no throughput.
+  status: supported
+  evidence:
+  - 'probe: cutlass3x_sm100_simt_sgemm 55-57 TF/s at B=384/919 vs 74.4 TF/s peak at 1965 MHz [probe_b200]'
+  - 'probe: FFMA 67.6 TF/s vs FFMA2 (fma.rn.f32x2) 73.5 TF/s on 148x8 CTAs: same 128 FMA/clk/SM datapath [probe_b200]'
+- id: H2
+  statement: 3xTF32 (hi/lo split, three TF32 tensor-core GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster than the
+    reference at L even with a separate split pass and scatter.
+  status: supported
+  evidence:
+  - 'probe: max error vs fp64 4.3e-5 (fp32 cuBLAS 1.6e-5, tolerance atol 2e-3) at B=919; gemms 415 us + split 112 + scatter [probe_b200]'
+  - 'run_tests r0: 575 us at 919 vs 1882 reference, 345 at 384 vs 762, 16/16 pass on 10 random rounds [r0-adamod-dispatch-skinny-fp32-3xtf32]'
+- id: H3
+  statement: A fused tcgen05 3xTF32 kernel (TMA load, hi/lo split in shared memory, 3 MMAs per k-block, bias + six-way split in the
+    epilogue, one launch) removes the 107-112 us split pass and the 7-47 us scatter and reaches max(3 x FLOPs / 588 TF/s, memory floor).
+  status: open
+  evidence:
+  - 'estimate: 531 us at 919 at the lock vs r0 575 rented (~690 at the lock); 76-222 us at M vs 272-345; ~55-75 us at S vs 256'
+  - 'probe: tcgen05 TF32 770 TF/s (cuBLAS) vs mma.sync TF32 276 TF/s: the kernel must use tcgen05, not sm80-style mma.sync [probe_b200]'
+- id: H4
+  statement: For B <= 128 one M-tile covers all rows, so a fused tensor-core kernel streams W exactly once and the S band becomes
+    memory-bound at ~55 us (4.6x on B=96/128).
+  status: open
+  evidence:
+  - 'probe: plain cuBLAS TF32 (not allowed) already runs 50-51 us at B=5..128, i.e. at the stream floor [probe_b200]'
+- id: H5
+  statement: The skinny SIMT kernel (lane = W row, cp.async-staged 128x64 tiles, emb broadcast from smem) is at the copy floor at B=5
+    but issue/latency bound at B=16 and 32; 2 CTAs/SM and 2-row-per-lane register tiling recover the 32-64 us FFMA floor.
+  status: open
+  evidence:
+  - 'probe: 54.6 / 88.8 / 145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs, 108-129 KB smem); run_tests 60.6 / 88.3 [probe_b200, r0]'
+  - 'dead end: skinny<32> loses to cuBLASLt fp32 (122 us) so B=32 stays on the library path in r0'
+- id: H6
+  statement: cuBLAS BF16x9 emulation is a legitimate one-call fp32-level path (error 3.4e-6) but is slower than 3xTF32 at L and falls
+    back to SIMT below B~64.
+  status: parked
+  evidence:
+  - 'probe: 117 / 131 / 177 / 358 / 754 us at B=5/32/128/384/919, maxerr 3.4e-6; r0 3xTF32 path 575 at 919 [probe_b200]'
+  - 'parked until the operator rules on bf16-operand emulation'
+- id: H7
+  statement: SOLAR's Tsol for this problem uses the FP32 CUDA-core peak, so 3xTF32 designs can go below Tsol at M/L (scores above
+    0.5 come cheaply there and the S band decides the ranking).
+  status: open
+  evidence:
+  - 'to be read off the first portal page: Tsol = (Tb - S t - S Tb)/(1 - 2S)'
+- id: H8
+  statement: The hidden Tb is close to the fp32 reference (~2.4 ms at 919 at the lock), not a TF32-enabled PyTorch solution (~180 us).
+  status: open
+  evidence:
+  - 'probe: torch.matmul with allow_tf32=True takes 135 us at 919 vs 1836 fp32 (rented); if NVIDIA''s agent used it, L scores stay <0.3'
+- id: H9
+  statement: The split pass (107-112 us, fixed per call) and scatter (7-47 us) are 40% of the M-band time in r0; any kernel with a
+    fused epilogue and in-smem split gains that much before touching the GEMM.
+  status: supported
+  evidence:
+  - 'probe: split only 107-112 us; gemms only 137-415 us; run_tests r0 272-345 us at M [probe_b200, r0]'
+- id: H10
+  statement: The dirty-L2 flush makes the harness stream floor 4.2-4.8 TB/s (53-64 us) rather than 8 TB/s; evict_first on the W stream
+    and evict_last on outputs recover part of it for the S band.
+  status: open
+  evidence:
+  - 'brief: plain stream floor 53.5 us for 227 MB; #38 gained 8-9% from evict_last at M sizes'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]
+
+=== PORTAL RESULTS (best first) ===
+- r0-adamod-dispatch-skinny-fp32-3xtf32: portal 0.2349, S/M/L 155.9/333.4/569.0 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (5) | middle (373) | largest (919) |
+|---|---|---|---|
+| x: ef | +0.0% ± 5.0 | +0.0% ± 5.0 | +0.0% ± 5.0 |
+| w: nc | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| w: el | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| st: ef | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| st: none (vs el) | +0.0% ± 5.0 | +0.0% ± 5.0 | +0.0% ± 5.0 |
+| width 128 | +0.0% ± 5.0 | +0.0% ± 5.0 | +0.0% ± 5.0 |
+| threads 512, rows 32 | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| threads 128, rows 8 | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| grid persistent | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| prefetch L2 | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| mem tma | +0.0% ± 5.0 | +0.0% ± 5.0 | +0.0% ± 5.0 |
+| lang triton | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+| lang cute | +0.1% ± 5.0 | +0.1% ± 5.0 | +0.1% ± 5.0 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-adamod-dispatch-skinny-fp32-3xtf32 | cpasync/oneshot/dispatch:size | cuda_cpp | 134.1/300.5/475.2 | -/-/- | -/-/- | -/-/- | 155.9/333.4/569.0 | 0.234899 | 128/1024/None; 108/1024/None | passed |

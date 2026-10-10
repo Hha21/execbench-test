@@ -35,7 +35,7 @@ ap.add_argument("--name", required=True)
 ap.add_argument("--round", required=True)
 ap.add_argument("--dir", type=Path, required=True)
 ap.add_argument("--gpu-calls", type=int, default=6)
-ap.add_argument("--probes", type=int, default=12)
+ap.add_argument("--probes", type=int, default=30)
 ap.add_argument("--b200-minutes", type=float, default=10)
 ap.add_argument("--no-gpu", action="store_true", help="research lead: archive and score-model tools only")
 ap.add_argument("--check", action="store_true", help="load everything the server needs, then exit (start-up test)")
@@ -85,7 +85,7 @@ def describe(name):
     return next(t["function"]["description"] for t in designer.TOOLS if t["function"]["name"] == name)
 
 
-server = MCPServer("solx", instructions="Tools for designing #38 kernels: archive, score model, and (in design "
+server = MCPServer("solx", instructions="Tools for designing SOL-ExecBench kernels: archive, score model, and (in design "
                                         "sessions) a rented NVIDIA B200 for compiling, testing and probing.")
 
 

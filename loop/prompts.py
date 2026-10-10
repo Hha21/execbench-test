@@ -22,6 +22,8 @@ Optional "### Rationale" (<=150 words). Then, per candidate:
 No other fenced code blocks. Never use a forbidden behaviour; if the task needs one, return no candidate and explain."""
 
 
+MEMORY_ONLY_DOCS = ("b200_sota.md", "playbook_membound.md")
+
 # Fresh-eyes sessions get the rules, the harness and the hardware, but none of the project's own design history
 # (problem card, playbook, SOTA notes with our results, ledger, notebook, archive kernels): every normal session reads
 # that history and tends to refine the existing design instead of looking for a different, possibly simpler one.
@@ -40,7 +42,10 @@ def static_prompt(fresh=False):
              "leaderboard. The documents below are your briefing; follow the output contract exactly."]
     import problem
     p = problem.current()
-    for name in (FRESH_DOCS if fresh else STATIC_DOCS):
+    docs = FRESH_DOCS if fresh else STATIC_DOCS
+    if p.kind == "compute":                         # the playbook and SOTA notes are about memory-bound norms (#38)
+        docs = [d for d in docs if d not in MEMORY_ONLY_DOCS]
+    for name in docs:
         if name == "OUTPUT_FORMAT":
             parts.append(f"=== output format (generation_protocol.md section 3) ===\n{protocol_section(3)}")
             continue
@@ -82,7 +87,7 @@ def parent_block(rec):
             f"source:\n{src}\n")
 
 
-def lab_notebook(arc, limit=40):
+def lab_notebook(arc, limit=160, per_round=12):
     """What earlier rounds learned: portal outcomes against the bench, and findings recorded in design cards."""
     import math
     import planner
@@ -107,14 +112,31 @@ def lab_notebook(arc, limit=40):
     if out:
         lines.append("Portal outcomes vs the bench (change vs the current best, same kernel pair):")
         lines.extend(sorted(out))
-    notes = []
+    # Findings grouped by round, newest round first. Rounds are ordered by when their kernels entered the archive
+    # (registration order), not by name: "r9" > "r14" as strings, and c/d/x operator rounds sit between r-rounds.
+    # The two newest rounds are shown in full, older ones keep their last `per_round` findings, up to `limit` lines.
+    order, groups = {}, {}
     for r in arc.values():
+        rnd = str(r.get("round", ""))
         card = parse_card(r.get("card", "")) if r.get("card") else {}
-        for f in card.get("findings") or []:
-            notes.append((str(r.get("round", "")), f"- [{r['id']}] {str(f).strip()}"))
-    if notes:
-        lines.append("Findings recorded by earlier design sessions (most recent first):")
-        lines.extend(n for _, n in sorted(notes, key=lambda x: x[0], reverse=True)[:limit])
+        found = [f"- [{r['id']}] {str(f).strip()}" for f in card.get("findings") or []]
+        if found:
+            order[rnd] = len(order) if rnd not in order else order[rnd]
+            groups.setdefault(rnd, []).extend(found)
+    if groups:
+        lines.append("Findings recorded by design sessions, newest round first:")
+        shown = omitted = 0
+        for i, rnd in enumerate(sorted(groups, key=lambda x: order[x], reverse=True)):
+            take = groups[rnd] if i < 2 else groups[rnd][-per_round:]
+            take = take[:max(0, limit - shown)]
+            if take:
+                lines.append(f"Round {rnd}:")
+                lines.extend(take)
+            shown += len(take)
+            omitted += len(groups[rnd]) - len(take)
+        if omitted:
+            lines.append(f"({omitted} older findings not shown; the hypothesis ledger summarises them, and get_kernel "
+                         f"returns any kernel's full card)")
     return "\n".join(lines) or "empty"
 
 

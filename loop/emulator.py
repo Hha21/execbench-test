@@ -149,6 +149,11 @@ class Emulator:
         self.r = self.y - B @ self.beta
         self.same = (self.ids[:, None] == self.ids[None, :]).astype(float)
         self.hp, self.lml = max(((hp, self._lml(hp)) for hp in self._grid()), key=lambda t: t[1])
+        # The kernel-to-kernel spread of log(portal/rented) cannot be learned from a handful of kernels: with 2-3
+        # portal kernels the fit puts it at 0.5-1%, while real misses on new problems were 2-6 sd (review
+        # 2026-10-10). Leave-one-kernel-out on #38 (23 kernels) still has rms z ~1.5. Floor it accordingly.
+        self.n_kernels = len(self.kernels)
+        self.sk_floor = 0.03 if self.n_kernels < 5 else 0.015
         K = self._K(self.X, self.X, self.hp) + self.hp["sk"] ** 2 * self.same + self.hp["sn"] ** 2 * np.eye(len(self.y))
         self.L = np.linalg.cholesky(K)
         self.alpha = np.linalg.solve(self.L.T, np.linalg.solve(self.L, self.r))
@@ -186,7 +191,8 @@ class Emulator:
         Ks = self._K(Xs, self.X, self.hp)
         mean = mean_basis(Xs) @ self.beta + Ks @ self.alpha
         v = np.linalg.solve(self.L, Ks.T)
-        cov = self._K(Xs, Xs, self.hp) - v.T @ v + self.hp["sk"] ** 2 + self.hp["sn"] ** 2 * np.eye(len(keys))
+        sk = max(self.hp["sk"], self.sk_floor)     # a new kernel's own offset: shared by all its workloads
+        cov = self._K(Xs, Xs, self.hp) - v.T @ v + sk ** 2 + self.hp["sn"] ** 2 * np.eye(len(keys))
         return mean, cov
 
     def predict(self, paths, rented, n=2000, best_score=None, seed=0):
@@ -201,7 +207,7 @@ class Emulator:
         for draw in z @ L.T + mean:
             scores.append(planner.score({k: rented[k] * math.exp(v) for k, v in zip(keys, draw)}, anc))
         scores = np.array(scores)
-        out = dict(score=float(scores.mean()), sd=float(scores.std()), times=t_mean,
+        out = dict(score=float(scores.mean()), sd=float(scores.std()), times=t_mean, n_train=self.n_kernels,
                    band_sd={b: float(np.sqrt(np.mean([cov[i, i] for i, k in enumerate(keys)
                                                       if planner.band_of(k) == b]))) for b in "SML"})
         if best_score is not None:

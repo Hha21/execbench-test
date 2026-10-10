@@ -84,7 +84,7 @@ get_kernel, read_example). No other tools are available. When you are done, your
 candidate in the OUTPUT CONTRACT format (fenced blocks), with its design card including paths and findings."""
 
 
-def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout_s, resume=None):
+def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout_s, resume=None, max_turns=None):
     """One headless `claude -p` run with our MCP tools only. Returns the parsed JSON result (or an error dict)."""
     cfg = sdir / f"{name}.mcp.json"
     cfg.write_text(json.dumps({"mcpServers": {"solx": {"command": str(ROOT / ".venv" / "bin" / "python"),
@@ -99,6 +99,8 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
            "--tools", "", "--allowedTools", "mcp__solx", "--output-format", "stream-json", "--verbose"]
     if system_file:
         cmd += ["--append-system-prompt-file", str(system_file)]
+    if max_turns:
+        cmd += ["--max-turns", str(max_turns)]
     if resume:
         cmd += ["--resume", resume]
     # stream-json: every event (model text, tool calls, tool results) is appended to <name>.stream.jsonl as it
@@ -157,7 +159,8 @@ def claude_sessions(round_id, jobs, static, a, sdir):
                     "--probes", str(a.probes), "--b200-minutes", str(minutes)] + (["--fresh"] if t.get("fresh") else [])
         model = t.get("model") or a.session_model
         brief = sdir / "briefing_fresh.txt" if t.get("fresh") else system_file
-        out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60)
+        out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60,
+                         max_turns=a.max_turns)
         text = out.get("result") or ""
         if not reply.candidates(text) and out.get("session_id"):          # one nudge for the contract
             more = run_claude("Reply now with exactly one candidate in the OUTPUT CONTRACT format.", None,
@@ -191,7 +194,8 @@ You are the research lead of this project. You do not write kernels. Each round 
 2. Update the ledger: change a status only on evidence; add hypotheses that findings suggest; cite evidence (kernel
    ids, portal numbers, probe findings); keep each entry short. Keep the constraints.
 3. Design the next round: {n} experiments for design sessions. Each session is a Claude agent with a rented B200
-   (probes take seconds, full tests 10-20 s, and run_tests predicts the portal score with about +-0.01 error;
+   (probes take seconds, full tests 10-20 s; run_tests predicts the portal score with the emulator, whose error bars
+   are only realistic once a problem has ~5 portal results, and it misranks effects under ~3%;
    bench noise is about 1% per size, so small effects need repeated, interleaved probes). Each experiment tests one
    hypothesis (or a new idea you add to the ledger) and states what to build or measure, the success criterion, and
    what result would refute it. Prefer experiments that could move the portal score by 0.005 or more, or that
@@ -233,7 +237,7 @@ def cmd_lead(a):
         f"=== PROBLEM ===\n{problem.current().summary()}",
         f"=== HYPOTHESIS LEDGER ({problem.current().ledger.relative_to(ROOT)}) ===\n"
         f"{problem.current().ledger.read_text() if problem.current().ledger.exists() else '(none yet)'}",
-        f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=80)}",
+        f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=260)}",
         f"=== PORTAL RESULTS (best first) ===\n{calib}",
         f"=== EMULATOR: portal minus bench, by design feature ===\n{effects}",
         f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}",
@@ -244,7 +248,7 @@ def cmd_lead(a):
     else:
         out = run_claude(prompt, system_file, a.lead_model, a.effort,
                          ["--name", "lead", "--round", a.round, "--dir", str(sdir), "--no-gpu"], sdir, "lead",
-                         a.session_timeout * 60)
+                         a.session_timeout * 60, max_turns=25)
         text = out.get("result") or ""
         (sdir / "reply.md").write_text(text)
         (sdir / "lead.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
@@ -266,7 +270,7 @@ def cmd_lead(a):
                           niche=f"exp:{e.get('id', '?')}:{e.get('hypothesis', '-')}", model=e.get("model"),
                           instructions=(f"Experiment {e.get('id')} (tests {e.get('hypothesis')}): {e.get('title', '')}. "
                                         f"{e.get('instructions', '')} Success: {e.get('success', '')} Refuted if: "
-                                        f"{e.get('refuted_if', '')}" + planner.EXPLORE_COMMON +
+                                        f"{e.get('refuted_if', '')}" + planner.explore_common() +
                                         " Set the card's tests: field to the hypothesis id(s).")))
     best = planner.best_kernel(arc) or {"id": None, "b200": {"score": None}}
     (d / "plan.json").write_text(json.dumps(dict(best=best["id"], best_score=best["b200"]["score"], tasks=tasks,
@@ -379,7 +383,7 @@ def cmd_research(a):
     out = run_claude(prompt, system_file, a.lead_model, a.effort,
                      ["--name", "research", "--round", "r0", "--dir", str(d), "--gpu-calls", str(a.gpu_calls),
                       "--probes", str(a.probes), "--b200-minutes", str(a.b200_minutes)], d, "research",
-                     a.session_timeout * 60)
+                     a.session_timeout * 60, max_turns=a.max_turns)
     text = out.get("result") or ""
     (d / "reply.md").write_text(text)
     (d / "research.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
@@ -658,7 +662,9 @@ def main():
                           "Modal B200 minutes per round (about $6.25 an hour)")
     llm_args.add_argument("--gpu-wait", type=int, default=180, help="interactive: minutes to wait for the tool server")
     llm_args.add_argument("--turns", type=int, default=12, help="interactive: max LLM turns per session")
-    llm_args.add_argument("--probes", type=int, default=10, help="interactive with --tool-gpu B200: max probe_b200 "
+    llm_args.add_argument("--max-turns", type=int, default=40, help="claude backend: turn cap per design/research "
+                          "session (the lead gets 25)")
+    llm_args.add_argument("--probes", type=int, default=30, help="interactive with --tool-gpu B200: max probe_b200 "
                           "experiments per session")
     llm_args.add_argument("--gpu-calls", type=int, default=6, help="interactive: max compile/test calls per session")
     llm_args.add_argument("--turn-effort", default="medium", help="interactive: reasoning effort after the first turn")

@@ -32,6 +32,18 @@ LINT = [
     (r"os\.environ\[[^]]+\]\s*=|os\.environ\.(update|setdefault)|os\.putenv", "environment mutation"),
     (r"load_inline|cpp_extension\.load\b|cuModuleLoadData|\bbase64\b|ctypes\.(CDLL|cdll)", "runtime binary loading"),
     (r"\.half\(\)|\.bfloat16\(\)|float16|bfloat16|allow_tf32|round_f32_to_tf32\s*=\s*True", "reduced precision"),
+    # Project rules (ledger constraints), checked in code as well as stated in prompts:
+    (r"discard\.global|discard\.L2|createpolicy\.[\w.]*evict_unchanged|\binvalidate\b", "cache-line discard/invalidate"),
+    (r"applypriority|accessPolicyWindow|cudaStreamAttrValue|cudaLimitPersistingL2CacheSize", "L2 priority/persistence change"),
+    (r"cudaCtxResetPersistingL2Cache|cudaDeviceSetLimit", "device/context state change"),
+    (r"griddepcontrol|ProgrammaticStreamSerialization|ProgrammaticEvent|launch_pdl|cudaGridDependencySynchronize",
+     "programmatic dependent launch (overlap with the harness's kernels)"),
+    (r"cudaStreamCreate|cudaStreamCreateWithFlags|cudaStreamCreateWithPriority|getStreamFromPool|cudaStreamPerThread",
+     "extra CUDA stream"),
+    (r"\bnanosleep\b|__nanosleep|usleep|this_thread::sleep|time\.sleep|std::chrono::[\w:]*sleep",
+     "deliberate delay (launch timing)"),
+    (r"while\s*\([^)]*(clock64|clock\(\)|globaltimer)", "spin-wait on a clock (deliberate delay)"),
+    (r"(b?float)\s*##\s*(16|8)|half\s*##", "token-pasted precision type name (looks like lint evasion)"),
     (r"lru_cache|functools\.cache", "caching keyed on tensors or pointers"),
     (r"data_ptr\(\)", "data_ptr() in Python (possible pointer-keyed cache)"),
     (r"\.copy_\(|\.fill_\(|\.zero_\(|torch\.(zeros|ones|full|cat|stack)\(|\.clone\(\)", "torch op inside run()"),
@@ -80,15 +92,37 @@ def build(c, round_id, taken):
     return cid, sol, c["card"], problems
 
 
+def low_precision_problem():
+    """True if the current problem's own inputs/outputs are fp16/bf16 (then those types are not a precision cut)."""
+    try:
+        import problem
+        d = problem.current().definition
+        return any(t.get("dtype") in ("float16", "bfloat16")
+                   for sect in ("inputs", "outputs") for t in d[sect].values())
+    except Exception:
+        return False
+
+
+def strip_comments(code, path):
+    """Code without comments, so a rule named in a comment ("no applypriority here") is not a hit."""
+    if path.endswith(".py"):
+        return re.sub(r"(?m)#(?!include|define|pragma|if|endif|else).*$", "", code)
+    code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+    return re.sub(r"//.*$", "", code, flags=re.M)
+
+
 def lint(sol):
     hits = []
+    low = low_precision_problem()
     for s in sol["sources"]:
-        code = s["content"]
+        code = strip_comments(s["content"], s["path"])
         # Only look inside run() for torch ops; elsewhere (e.g. module-level setup) they are not timed.
         run_body = code.split("def run(", 1)[1] if "def run(" in code else ""
         for pat, why in LINT:
             if why.startswith("data_ptr()") and not s["path"].endswith(".py"):
                 continue  # data_ptr<T>() is how C++/CUDA extensions pass tensors to kernels
+            if why == "reduced precision" and low:
+                pat = r"allow_tf32|round_f32_to_tf32\s*=\s*True"   # fp16/bf16 is this problem's own dtype
             target = run_body if why == "torch op inside run()" else code
             if re.search(pat, target):
                 hits.append(f"{s['path']}: {why} ({pat})")

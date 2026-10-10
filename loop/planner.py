@@ -169,9 +169,14 @@ EXPLORE_COMMON = (
     "portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for "
     "reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan "
     "out, still return your best version of it as the candidate and record what you learned in the card's findings: "
-    "negative results are valuable and go into the lab notebook for later rounds. Keep the kernel copy-like "
-    "(memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte "
-    "(the problem card). CUDA C++ uses the two-file layout.")
+    "negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout.")
+MEMORY_NOTE = (" Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and "
+               "penalises extra SM work per byte (the problem card).")
+
+
+def explore_common():
+    """EXPLORE_COMMON plus, for memory-bound problems only, the copy-like advice."""
+    return EXPLORE_COMMON + (MEMORY_NOTE if P().kind == "memory" else "")
 
 EXPLORE_IDEAS = [
     ("explore:one-wave-fat", "One wave of fat CTAs. Launching and retiring CTAs is not free on B200: an empty grid of "
@@ -206,7 +211,7 @@ def plan_explore(arc, max_tasks=5):
     tried = {str((r.get("task") or {}).get("niche", "")) for r in arc.values()}
     ideas = [i for i in EXPLORE_IDEAS if i[0] not in tried or i[0] == "explore:wildcard"]
     return [dict(operation="new_design", parents=[best["id"]], band="all", niche=tag, gain=None,
-                 instructions=text + EXPLORE_COMMON) for tag, text in ideas[:max_tasks]]
+                 instructions=text + explore_common()) for tag, text in ideas[:max_tasks]]
 
 
 def plan(arc, max_tasks=3, last_round=None, mode="exploit"):
@@ -324,7 +329,8 @@ def shortlist(arc, round_id, k_predicted=3, k_explore=2):
             pred = emu.predict(paths or emu.feats.get(parent) or [{}], emulator.rented_times(r),
                                best_score=best["b200"]["score"])
             rel = {k: v / ref[k] for k, v in r["timings"]["B200r"].items() if v and ref.get(k)}
-            ranked.append(dict(id=r["id"], gpu="B200r (emulator)" + ("" if paths else ", parent's features"),
+            ranked.append(dict(id=r["id"], gpu=f"B200r (emulator, {pred['n_train']} kernels)"
+                               + ("" if paths else ", parent's features"),
                                predicted_score=pred["score"], sd=pred["sd"], p_better=pred["p_better"],
                                rel="/".join(fmt_rel(rel, b) for b in "SML")))
             continue

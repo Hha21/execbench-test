@@ -135,6 +135,11 @@ class Problem:
                 total += n * DTYPE_BYTES.get(t["dtype"], 4)
         return total / 1e6
 
+    @property
+    def kind(self):
+        """'compute' for problems with a FLOP formula in sol.yaml (GEMM-like), else 'memory' (elementwise/norm)."""
+        return "compute" if self.sol.get("flops") else "memory"
+
     def gflop(self, key):
         """GFLOP of the workload from sol.yaml's `flops` expression; 0 when the problem has none."""
         return _eval(self.sol["flops"], self.axes(key)) / 1e9 if self.sol.get("flops") else 0.0

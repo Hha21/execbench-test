@@ -25,8 +25,9 @@ Maximise the **portal SOL score** for the problem, not the speed on any GPU we c
   inputs to a new address (shifted by a random 256 B–2 KB) and zero-fills the outputs. [PAPER: timing.py, io.py]
 - t is measured by CUPTI: **start of your first GPU activity to end of your last** (kernels, memcpys and memsets) in
   that call. CPU time is not counted, but gaps between your kernels are. [PAPER: timing.py]
-- Clocks are locked: SM 1500 MHz, DRAM 3996 MHz. Expect about 5% noise between runs, and up to 10% for many small
-  kernels. [PAPER: device_config.py, README]
+- Clocks are locked: SM 1500 MHz, DRAM 3996 MHz. Our portal measurements: memory-bound workloads repeat within
+  ~0.3% (times are shown in 0.1 us steps); compute-bound workloads drift 2-3% between submissions; the scoring
+  baseline Tb is a stored constant, not re-measured. [MEASURED: our submissions; PAPER: device_config.py]
 - So: use **one kernel launch**, and launch nothing else from `run()` (no torch fills, copies or allocations that
   launch kernels). The sequence of kernels must be identical on every call with the same shapes. [INFERRED: timing.py]
 

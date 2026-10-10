@@ -297,7 +297,9 @@ def emulator_line(emu, paths, wl, ref, best):
     guessed = not paths
     p = emu.predict(paths or emu.feats.get(best["id"]) or [{}], rented, best_score=best["b200"]["score"])
     sd = math.sqrt(p["sd"] ** 2 + (0.004 ** 2 if guessed else 0))
-    return (f"predicted portal score {p['score']:.4f} ± {sd:.4f} (current best {best['b200']['score']:.4f} on the portal; "
+    return (f"predicted portal score {p['score']:.4f} ± {sd:.4f} (emulator trained on {p['n_train']} portal kernel(s) of "
+            f"this problem{': treat as a rough guide' if p['n_train'] < 5 else ''}; current best "
+            f"{best['b200']['score']:.4f} on the portal; "
             f"P(beats it) = {p['p_better']:.0%}). From the multi-fidelity emulator: portal = this B200's time x a "
             f"correction learned from {len(emu.kernels)} kernels measured on both, by size and by design features; "
             f"the ± grows for designs unlike those." + (" No `paths` given, so the parent's features were assumed; "

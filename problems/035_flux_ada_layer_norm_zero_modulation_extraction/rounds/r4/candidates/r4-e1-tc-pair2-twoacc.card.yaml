@@ -1,0 +1,158 @@
+id: r4-e1-tc-pair2-twoacc
+parents:
+  - r3-e2-tc-pair-kbs2
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E1/H19: one cta_group::2 pair per 256 W rows computes the whole batch (N = Bpad <= 512) in one pass as two UMMAs
+  (N1 = 256, N2 = Bpad - 256) into two TMEM accumulators, fed by a kbs=1 ring with an evict_first W stream. This removes
+  the CUTLASS batch tiling and padding at 373-512. Measured: 449/512 run at 93-100% of the MMA ideal per stage, but at
+  Bpad 384 every 1-k-block stage is held at a fixed ~575 ns floor (950-1200 clk, depending on container), 26-30% above
+  the 768-clk ideal. Rented: -14.1% at 449, -9.2% at 512, -2.3% at 373/384 vs the CUTLASS tiles (about -11/-6/0% net of
+  the -2.5% drift seen on unchanged paths in the same run). Portal by the operator rule (cycles / 1.55 GHz + 11%):
+  about 78-79 us at 373/384 (vs 83.0), 80 at 449 (vs 101.4), 83 at 512 (vs 101.9).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: low
+  L:
+    pct: -6
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 231424
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 204800
+  launches_per_call: 1
+knobs:
+  KBS: 1
+  STAGES_RULE: "(226 KB - 1 KB) / (16 KB + Bpad/2 * 128 B): Bpad 384 -> 5, 464 -> 5, 512 -> 4"
+  WAIT_GROUP: 2
+  N_SPLIT: "N1 = 256, N2 = Bpad - 256 (TMEM cols [0,256) and [256,Bpad), 512 allocated)"
+  EPILOGUE_WARPS: 8
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+  PAIR2_B_RANGE: "256 < B <= 512"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel (unchanged r2 path)
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel (unchanged r3 path)
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: tc_pair2_kernel
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H19
+  - H23
+  - H24
+findings:
+  - "run_tests 16/16 PASS (10 rounds each), one launch. Rented us vs r2-e1-tc05-ef-small on the same GPU: 373 67.3 vs 69.0 (-2.4%), 384 67.3 vs 68.9 (-2.3%), 449 70.0 vs 81.5 (-14.1%), 512 74.2 vs 81.8 (-9.2%); 192/211 45.7/48.2 (r3 pair, unchanged); unchanged CUTLASS L paths 691-919 moved -2.2..-3.0% (drift), so the net tc_pair2 gain is about 0/-11/-6% at 384/449/512. Band change S -1.1% M -3.5% L -5.9%; emulator 0.6270 +- 0.012 (no paths were passed to it) [run_tests]"
+  - "precision, max |err| vs fp64 (W/sqrt(3072), bias randn, one draw per B): B=257 1.54e-3, 373 1.56e-3, 384 1.54e-3, 449 1.51-1.56e-3, 512 1.63e-3, 0 elements outside atol+rtol; all <= 1.75e-3. The n1 = 192 split gives 1.58e-3 at 373 [probe_b200]"
+  - "first build correct: two accumulators at TMEM cols 0 and 256, 512-col cta_group::2 alloc, emb per CTA as 128 rows (rank*128) then N2/2 rows (256 + rank*N2/2) via two TMA maps, second B desc = first + 16 KB, idescs differ only in N, (i|j|k) zero-init for both [probe_b200]"
+  - "cycles per k-block (kbs=1, real W from DRAM after a 252 MB zero flush, evict_first, clock64 + globaltimer, rented SM 1.64-1.72 GHz), container 1: Bpad 384 st3/4/5 = 1004/954/956 (ideal 768: 76-80%); 464 st3/4/5 = 1072/954/955 (ideal 928: 97%); 512 st3/4 = 1107/1028 (ideal 1024: 100%). kbs=2 st2: 1127/1216/1265 (exposed latency with 2 stages). Span per CTA: 106.7k (384), 108.2k (449), 116.4k (512) cycles [probe_b200]"
+  - "classification (H23/H24): resident operands (no TMA after warm-up), kbs1: 950 (384), 952-955 (449), 1027 (512); resident kbs2 st2: 771 (384) = ideal, 931 (449), 1027 (512). Feed only (no MMA, clock rises to 1.96 GHz): kbs1 st5 767 (384), 795 (449), 870 (512, st4) = 53-58 B/clk/SM, i.e. about 6 TB/s DRAM, not an L2 ingest ceiling. So 384 is chain/floor-bound, 449 is floor and MMA almost equal, 512 is MMA-bound; ingest (H24) is not binding anywhere [probe_b200]"
+  - "H23 floor at N >= 384: the kbs=1 per-stage floor is 950-1200 clk depending on the container (990/970/1200 in three later probes), constant at about 575 ns. It is larger than the 551-674 clk seen for 4-UMMA resident groups in r3. It is the same with 4 UMMAs per stage (UMMA2 skipped: 994 vs 995), with N1/N2 = 192/192 vs 256/128 (999 vs 995), and with interleaved or sequential UMMA order (1005). So it does not depend on MMA work or UMMA count [probe_b200]"
+  - "dead ends on the floor (Bpad 384, kbs1 st4, clk/k-block in one container): test_wait spin instead of try_wait 971 vs 970; commit every 2nd stage 1060 (worse, coarser refill; resident 970: no gain); idle warps nanosleep on accum 978; epilogue 2 tcgen05.ld per wait 971; removing tcgen05.fence::after_thread_sync 1198 vs 1197; waiting for 3 stages at a time 1161-1241. Only waiting for 2 stages per 16 UMMAs (shipped) helps: 1167 vs 1197 (-2.5%) in the 1200-clk container [probe_b200]"
+  - "CUTLASS comparison, interleaved harness_time, same probe (wall us; CUTLASS clock not measured: pynvml missing, nvidia-smi run aborted): 373 mine 68.3 vs 256x192 68.2 / 256x256 79.2; 384 68.4 vs 68.1 / 79.3; 449 70.9 vs 87.2 / 79.7; 512 74.2 vs 87.9 / 80.0. The best CUTLASS tile per B is the r1 table. My kernel ran at 1.64-1.72 GHz (globaltimer), so CUTLASS's 68.1 us at 384 is about 116k cycles at the same clock: about -5% cycles at 384, -11% at 449, -7% at 512 under the same-clock assumption. Success criterion (>= 20% fewer cycles) not shown [probe_b200]"
+  - "fixed costs per CTA outside the K loop: first full barrier at 5.8-6.8k clk (cold DRAM W plus setup), epilogue 6.9k (384) / 8.3k (449) / 9.1k (512) clk, about 12-14% of the span. The 8-warp epilogue stores 28-38 MB in about 4-5 us (about 7 TB/s); a TMA-store epilogue is the next lever there [probe_b200]"
+  - "targets: <= 100k cycles at 384 missed (106.7-111k); <= 125k at 512 met (116k); per-stage within 15% of MMA ideal met at 449/512, missed at 384 (+26-30%). Refutation clause half-true: the 384 ring is pinned at the floor at every stage count (3-5), 449/512 are not [probe_b200]"
+  - "portal prediction (operator rule max(1.05 x DRAM, cycles/1.55 GHz) + 11%): 373/384 108-111k -> 78-79 us (vs 83.0 portal CUTLASS, -5%), 449 112k -> 80 us (vs 101.4, -21%), 512 116k -> 83 us (vs 101.9, -18%). If the floor is in ns (about 575 ns per stage, as the cross-container numbers suggest) and not in clocks, 373/384 do better at the 1.5 GHz lock (about 64-70 us). The tensor-heavy kernel throttles to 1.64-1.75 GHz on the rented card, so its portal/rented ratio should be about 1.1-1.15, not 1.31 [analysis]"
+  - "probe infra: probe containers change between calls (/tmp kept in about half the calls); each measurement probe must rebuild CUTLASS (18-39 s for 2 TUs on 8 cores) and the kernel (1.5 s). Once (after 2 CUTLASS rebuilds) harness_time raised 'No timing results for methodology: cupti' [probe_b200]"
+  - "open: at Bpad 384 the only way past the floor is more MMA work per wait group with >= 3 stages of refill: a 48-wide k stage (SW128 32 + SW64 16 boxes, 60 KB per CTA, 3 stages, 1152 clk MMA per stage) or a 3-CTA-per-cluster split. The floor source (not commit count, wait count, fence, spin vs suspend, idle warps or UMMA count) is still unknown; it is about 575 ns per 1-k-block stage in this kernel [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "373/384 gain over CUTLASS 256x192 is about 0% rented; the portal gain depends on whether the ~575 ns per-stage floor is time- or clock-bound. If clock-bound and the kernel is fully clock-scaled, 373/384 could land at or slightly above 83 us"
+  - "The per-stage floor varied 950-1200 clk between probe containers; the portal card may sit anywhere in that range (449 is floor/MMA-balanced and would lose up to 20% on a 1200-clk card)"
+  - "Uses all 227 KB of shared memory at Bpad 400-464 (5 stages of 46 KB + 1 KB alignment slack + static barriers); a toolchain change in static smem could make the launch fail (status 431/launch error, not a wrong result)"
+  - "512-column TMEM allocation per CTA requires 1 CTA per SM (guaranteed by shared memory); co-residency with another TMEM user would block in tcgen05.alloc"
+  - "No compile_b200 static check was run on the final file set (registers/spills estimated); run_tests built and passed it"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,0 +1,172 @@
+id: r4-e3-ingest-probe-pair-parent
+parents:
+  - r3-e2-tc-pair-kbs2
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E3 probe session (H23 at large stages, H24 ingest ceiling and its clock scaling). Verdict: H24 is refuted on both
+  clauses. A hot-L2-fed 2SM ring shows no 50-70 B/clk ceiling: feed-only B/clk scales with stage size and reaches
+  93-100 B/clk, and the per-stage time is flat at 640-705 clk (a per-stage chain cost, not bytes). The fed MMA ring costs
+  the same as the resident one (time = max, not sum), and all cycle counts are identical at 1.14 GHz and 1.8-1.96 GHz, so
+  the portal clock lock does not loosen any of these paths per clock. H23 is refined: the commit-chain floor at kbs=1 is
+  about 940 clk in this container and is hidden only when the MMA work per stage is at least about 950 clk (N >= 464);
+  N=384 needs kbs=2 (91-95% of the UMMA rate). The shipped code is the r3-e2-tc-pair-kbs2 kernel, unchanged apart from a
+  comment in kernel.cu, and was not re-tested (identical to the 16/16 r3 run). Its dispatch is unchanged.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 172032
+  launches_per_call: 1
+knobs:
+  KBS: 2
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+  PAIR_B_THRESHOLD: "131 < B <= 256"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H23
+  - H24
+  - H19
+  - H22
+findings:
+  - "VERDICT: Step 1 passes for N >= 464 (98-99.8% of MMA-ideal, floor hidden) and fails for N = 384 at kbs=1 (81%, chain-bound at 948 clk vs ideal 768). Step 2 is refuted: feed-only B/clk scales with stage size and reaches 93-100 B/clk (> 90), so H24's 50-70 B/clk ceiling does not exist for L2-hot pair rings. Step 3 is refuted: clk per k-block is identical at 1.14 GHz and 1.8-1.96 GHz (<= 0.2%), so there is no bytes-per-second ceiling that loosens per clock. H24 is refuted; H23 is refined [probe_b200]"
+  - "method: 2SM cta_group::2 ring, grid 148 (74 pairs), cluster 2, 128 threads, tcgen05.mma kind::tf32, TFLOAT32 maps, 128B swizzle, nk = 384 k-blocks (4 passes over K), clk = clock64 delta of the leader's issue thread, MHz = clock64/globaltimer. W from 16 distinct hot 128-row tiles (evict_first), emb from the same hot rows for every pair, 2 launches per config (first warms L2), 3 interleaved rounds, spread < 0.5% unless noted. Per CTA two accumulators: UMMA1 N1 = 256 (128 emb rows per CTA) + UMMA2 N2 = 2 x e2 (e2 rows per CTA), TMEM 512 columns [probe_b200]"
+  - "STEP 1 resident operands (no TMA), kbs=1 (4 K-steps x two UMMAs, one commit per stage), burst clock 1.75-1.82 GHz, clk per k-block / ideal(2N) / eff: floor N=192 single accumulator 943 / 384 / 40.7%; N=384 (256+128) 948 / 768 / 81.0% at 3, 4 and 5 stages (947.2-948.2); N=464 (256+208) 947 / 928 / 98.0% at 3/4/5 stages; N=512 (256+256) 1025.6 / 1024 / 99.8% at 3 and 4 stages (5 does not fit). Stage count has no effect [probe_b200]"
+  - "STEP 1 bound per config: N=192 and N=384 at kbs=1 hit the commit chain (about 940-948 clk per stage in this container, the same for 4 and 8 UMMAs and for N=192 to 384); N=464 and N=512 hit the MMA (ideal 928 / 1024). The floor is hidden only when MMA work per stage is >= about 950 clk, i.e. N >= about 475; N=464 is at the crossover. The floor is container-dependent (551-674 clk in r3 probes with fixed stages, 840 rotating, 938-948 here with a ring), so compare only inside one probe [probe_b200]"
+  - "STEP 2a feed-only (TMA ring, L2-hot, no UMMA, release by commit-only multicast to both CTAs), kbs=1, 4 stages (3 at 64 KB), clk per stage / B/clk per SM: 24 KB 642 / 38; 32 KB 642 / 51; 40 KB 705 / 58; 48 KB 705 / 70; 64 KB 707 / 93. At the 1.95 GHz idle clock. Per-stage time is flat at 642-707 clk across 24-64 KB: B/clk scales with stage size, it is not a ceiling [probe_b200]"
+  - "STEP 2b feed-only kbs=2: 48 KB (4 stages) 709 clk/stage = 69 B/clk; 64 KB (3 stages) 715 = 92; 96 KB (2 stages) 1006 (+-5%) = 98 (about 28 TB/s aggregate at 1.95 GHz; every pair reads the same 16 W tiles and the same emb rows, so the L2 pattern is friendlier than a real kernel's, caveat). Ring depth at 40 KB kbs=1: 2 stages 863 clk (47.5 B/clk), 3 stages 706, 5 stages 705: saturates at 3 stages [probe_b200]"
+  - "dead end: releasing the ring with two remote mbarrier.arrive.release.cluster (mapa to both CTAs) instead of the tcgen05 commit costs 1880-2050 clk per stage (12-35 B/clk): a cluster-scope remote arrive round trip of about 1000 clk. That made the first feed-only numbers look like a 13-35 B/clk ceiling; it is an artefact of the release path, not ingest [probe_b200]"
+  - "STEP 2c fed + MMA (same TMA ring, UMMAs on), burst clock, clk per k-block / eff / B/clk: kbs1 E=64 (N=128) 924 / 27.7% / 27; E=128 (N=256) 928 / 55.2% / 35; E=192 (N=384) 931 / 82.5% / 44; E=256 (N=512) 1029 / 99.5% / 48; kbs2 E=64 671 / 38.2%; E=128 698 / 73.4% / 47; E=256 1030 / 99.4% / 48; kbs2 N=384 2 stages (80 KB) 843 / 91.1% (811 / 94.7% capped). Fed equals resident to within 2% (N=384 931 vs 943, N=512 1029 vs 1026): time is max(MMA, chain), with feed (642-705 clk per stage) fully hidden, not the sum [probe_b200]"
+  - "STEP 3 clock scaling: the card is power-capped to 1.11-1.19 GHz as soon as a bf16 8192^3 matmul loop runs (first sample 1145 MHz) and stays there; idle bursts run 1.66-1.96 GHz (the clock sags to 1.66 GHz under a fed N=512 ring). Same configs, burst vs capped (200 matmuls queued before every run): resident N=192 937.9 vs 937.9 clk/kb; resident N=384 942.8 vs 942.8; fed N=384 kbs1 927.0 vs 926.1; fed N=512 kbs1 1029.4 vs 1028.5; feed-only E=128/192/256 kbs1 642.4/705.0/704.7 vs 641.8/704.2/704.7; feed-only kbs2 E=128 357.6 vs 355.0. B/clk is the same at both clocks, i.e. GB/s per SM scales with the clock (feed-only 40 KB: 114 vs 70 GB/s/SM). Only the 2-stage rings gain: fed N=384 kbs2 st2 843 -> 811 (-3.8%) and feed-only 96 KB kbs2 529 -> 492 (-7%), L2 latency exposure. No >= 15% rise at the low clock: the success criterion for H24 is not met [probe_b200]"
+  - "CUTLASS 256x192 (r1 tile, W cold via the 252 MB flush, events around one launch, includes about 3 us of event/launch gap) at B=384: 72.0 us at 1962 MHz = 141k clk (50.8% of the 71.7k-clk MMA ideal per 148 SMs); 94.2 us at 1215-1241 MHz = 114-117k clk (61-63%); 93.2 us at 1275 MHz (60%). So CUTLASS cycles fall 19% at the low clock (partly ns-bound: DRAM W and flush interaction) but stay at 62-65% at best; the portal clock (1.5 GHz) interpolates to about 128k clk = 85 us, matching the portal's ~83 us at B=373/384. The hand-written ring at N=384 kbs2 needs 81k clk (843 x 96) at 91-95%: about 35% fewer cycles than CUTLASS at the same clock [probe_b200]"
+  - "consequence for H19: one-pass pair kernel for 256 < B <= 512 with two accumulators is MMA/chain-bound, not ingest-bound. Per-k-block cycles from the probe: Bpad 384 kbs2 2 stages 811-843; Bpad 464 kbs1 4 stages 947 (kbs2 2 stages = 90 KB x 2 not probed); Bpad 512 kbs1 or kbs2 1029-1030. Times 96 k-blocks plus about 8k clk for ramp and epilogue, at 1.5 GHz: about 59 / 66 / 71 us for Bpad 384 / 464 / 512 against portal CUTLASS 83 (373/384) and 103-104 (449/512): about -29% / -36% / -31%. Not yet built; E1 (r4) builds it, with real W from DRAM (hot-L2 W here) so the DRAM floor (about 42 us rented) must be rechecked [analysis from probe]"
+  - "consequence for H22: if the same ring holds for nb = 2 batch tiles of N <= 464 the L band is also MMA-bound (947 clk x 96 x 2 passes = 182k clk = 121 us at 1.5 GHz at 919 vs CUTLASS portal 168 us), but the probe did not test the W re-read from L2 by the sibling pair or wave quantisation [analysis]"
+  - "open: why CUTLASS 256x192 K-tile 32 sits at 51-65%. Its stage is 4 UMMAs of N=192 (384 clk), the same cadence as the 943-clk floor config here, so the same commit-chain floor is a candidate; this probe cannot separate it from DRAM/epilogue effects. The earlier ingest attribution (73 B/clk needed vs 50-65 'ceiling') is not supported: feed-only reaches 93-100 B/clk [analysis]"
+  - "open: kbs=2 at Bpad 464 and 512 is untested with the extra variant matrix (resident kbs2 N=384 and N=464 were queued but the e3.so did not persist between probes: /tmp is wiped per probe container, builds take 1.4 s for the ring and 17-28 s for the CUTLASS TU, so each probe must rebuild)"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Not re-tested this round: the shipped sources are the r3-e2-tc-pair-kbs2 files with one comment added to kernel.cu; the portal result for r3 is still pending"
+  - "The ring probe feeds every pair from the same 16 hot W tiles and the same emb rows; a real kernel streams W from DRAM, so the feed numbers (93-100 B/clk) are an L2-hot upper bound, and the DRAM floor (about 42 us rented) still applies to a real B > 256 kernel"
+  - "Probe containers differ by 10-70% in the commit-chain floor (551 vs 674 vs 840 vs 940 clk); all cycle comparisons here are inside one probe container"
+  - "Only burst (idle, 1.66-1.96 GHz) and power-capped (1.14-1.24 GHz) clocks were measured; the portal lock is 1.5 GHz, so the CUTLASS cycle count at 1.5 GHz is interpolated (about 128k clk)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

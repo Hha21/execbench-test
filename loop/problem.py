@@ -156,6 +156,8 @@ class Problem:
                  f"bands by size: S <= {self.s_max:.1f} MB < M <= {self.m_max:.1f} MB < L"]
         for k in sorted(self.keys(), key=self.mbytes):
             lines.append(f"  {k:>16}  {self.mbytes(k):9.2f} MB  band {self.band(k)}")
+        if self.sol.get("note"):                    # problem-specific rulings (e.g. which precision the tolerance allows)
+            lines.append(f"note: {self.sol['note']}")
         return "\n".join(lines)
 
 

@@ -363,7 +363,8 @@ def cmd_research(a):
     print(table, flush=True)
     d = rdir("r0") / "research"
     d.mkdir(parents=True, exist_ok=True)
-    example = problem.get("L1/038_flux_multi_head_rmsnorm_qk")
+    example = problem.get("L1/030_attention_output_projection_with_residual" if p.kind == "compute"
+                          else "L1/038_flux_multi_head_rmsnorm_qk")      # a finished card of the same kind
     example_card = example.card.read_text() if example.card.exists() else ""
     example_ledger = example.ledger.read_text() if example.ledger.exists() else ""
     system_file = d / "briefing.txt"

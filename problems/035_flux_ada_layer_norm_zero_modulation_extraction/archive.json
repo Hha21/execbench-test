@@ -1,0 +1,29 @@
+{
+ "r0-adamod-dispatch-skinny-fp32-3xtf32": {
+  "card": "id: r0-adamod-dispatch-skinny-fp32-3xtf32\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: cpasync\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows128\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  The op is an fp32 GEMM (M = batch, N = 18432, K = 3072) whose reference is FFMA-bound at 75% of the SIMT peak;\n  tensor-core 3xTF32 (hi/lo split, three TF32 GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster at\n  M/L, while the small-B band is a 227 MB weight stream that a cp.async-staged skinny SIMT kernel serves at the\n  copy floor. First, correctness-first anchor submission for Tb/Tsol.\nexpected_effect:\n  S: {pct: -20, confidence: medium}\n  M: {pct: -45, confidence: medium}\n  L: {pct: -68, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 128\n  smem_per_cta_bytes: 116736\n  threads_per_cta: 256\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 69632\n  launches_per_call: 1\nknobs: {ROWS: 128, KC: 64, STAGES: 3, NB: [8, 16], TF32_MIN_B: 65, WS_MB: 32}\ndispatch:\n  - {max_tokens: 8, kernel: skinny_kernel<8>, meta: {launches: 1}}\n  - {max_tokens: 16, kernel: skinny_kernel<16>, meta: {launches: 1}}\n  - {max_tokens: 64, kernel: cublasLt_fp32_bias + scatter6_kernel, meta: {launches: 2}}\n  - {max_tokens: null, kernel: split_tf32 x2 + cublasLt_tf32 x3 + scatter6_kernel, meta: {launches: 6}}\ntests: [H1, H2, H5, H9]\nfindings:\n  - \"probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]\"\n  - \"probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]\"\n  - \"probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]\"\n  - \"dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]\"\n  - \"probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]\"\n  - \"probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]\"\n  - \"probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]\"\n  - \"probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]\"\n  - \"run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]\"\n  - \"run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]\"\n  - \"static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]\"\npaths:\n  - {max_tokens: 8, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: cpasync, launches: 1, x: none, w: none, st: none}\n  - {max_tokens: 16, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: cpasync, launches: 1, x: none, w: none, st: none}\n  - {max_tokens: 64, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: ldg, launches: 2, x: none, w: none, st: none}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: oneshot, mem: tma, launches: 6, x: ef, w: none, st: none}\nruns_on:\n  H200: {runs: true, representative: false, note: \"cuBLASLt TF32 uses wgmma kernels on sm_90 (different rate); cp.async path representative\"}\n  A100: {runs: true, representative: false, note: \"TF32 mma.sync rate and 2 TB/s HBM; correctness check only\"}\n  L40S: {runs: true, representative: false}\nrisks:\n  - \"3xTF32 path allocates 453 MB of hi/lo scratch per call through the caching allocator and launches 6 kernels; the W split pass (107 us) is 40% of the M-band time\"\n  - \"cuBLASLt heuristic choice per B is deterministic but unverified at the 1500 MHz lock; a split-K pick would add a reduce kernel (constant per shape)\"\n  - \"skinny kernels run 1 CTA/SM on 144 of 148 SMs and are issue-bound at B=16 (88 us vs 54 floor)\"\n  - \"precision rule may change: if plain TF32 or BF16x9 is later allowed, the M/L paths are superseded\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r0-adamod-dispatch-skinny-fp32-3xtf32",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "cpasync",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows128"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r0",
+  "solution": "problems/035_flux_ada_layer_norm_zero_modulation_extraction/rounds/r0/candidates/r0-adamod-dispatch-skinny-fp32-3xtf32.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "niche": "research:first-kernel",
+   "operation": "new_design",
+   "parents": []
+  },
+  "timings": {}
+ }
+}

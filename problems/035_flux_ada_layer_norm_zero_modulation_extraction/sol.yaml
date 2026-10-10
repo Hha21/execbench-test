@@ -2,6 +2,6 @@ flops: "2 * batch_size * inner_dim * output_dim"     # fp32 GEMM emb @ weight.T 
 note: >-
   Precision is exact fp32 for now: FP32 FMA on CUDA cores, or a 3xTF32 split with fp32-level error. Plain TF32 is not
   allowed until the operator rules on it. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give
-  outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 (error ~3e-4)
-  would pass it and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match
+  outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 would pass it
+  (measured max error 1.6e-3, typical ~3e-4) and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match
   and the tolerance is met.

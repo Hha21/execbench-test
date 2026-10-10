@@ -1,0 +1,377 @@
+=== TASK ===
+Research phase for L1/035_flux_ada_layer_norm_zero_modulation_extraction.
+
+=== PROBLEM ===
+L1/035_flux_ada_layer_norm_zero_modulation_extraction: 16 workloads, variable axes ['batch_size']; bands by size: S <= 237.6 MB < M <= 259.6 MB < L
+                 5     227.00 MB  band S
+                16     227.94 MB  band S
+                32     229.32 MB  band S
+                96     234.82 MB  band S
+               128     237.58 MB  band S
+               131     237.83 MB  band M
+               192     243.08 MB  band M
+               211     244.72 MB  band M
+               373     258.65 MB  band M
+               384     259.60 MB  band M
+               449     265.19 MB  band L
+               512     270.61 MB  band L
+               691     286.00 MB  band L
+               773     293.06 MB  band L
+               853     299.94 MB  band L
+               919     305.61 MB  band L
+note: Precision is exact fp32 for now: FP32 FMA on CUDA cores, or a 3xTF32 split with fp32-level error. Plain TF32 is not allowed until the operator rules on it. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 (error ~3e-4) would pass it and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match and the tolerance is met.
+
+=== definition.json ===
+{
+    "name": "035_flux_ada_layer_norm_zero_modulation_extraction",
+    "hf_id": "black-forest-labs/FLUX.1-Kontext-dev",
+    "description": "AdaLayerNormZero modulation parameter extraction for Flux dual-stream transformer. Projects timestep embeddings through a linear layer and chunks into 6 modulation parameters (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) that control attention and MLP paths.",
+    "axes": {
+        "batch_size": {
+            "type": "var",
+            "description": "Batch size"
+        },
+        "inner_dim": {
+            "type": "const",
+            "value": 3072,
+            "description": "Hidden dimension size"
+        },
+        "output_dim": {
+            "type": "expr",
+            "expression": "inner_dim * 6",
+            "description": "Output dimension of linear projection (6 * inner_dim)"
+        }
+    },
+    "custom_inputs_entrypoint": null,
+    "inputs": {
+        "emb": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Timestep embeddings"
+        },
+        "weight": {
+            "shape": [
+                "output_dim",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Linear projection weight matrix"
+        },
+        "bias": {
+            "shape": [
+                "output_dim"
+            ],
+            "dtype": "float32",
+            "description": "Linear projection bias"
+        }
+    },
+    "outputs": {
+        "shift_msa": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Shift parameter for attention path"
+        },
+        "scale_msa": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Scale parameter for attention path"
+        },
+        "gate_msa": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Gate parameter for attention path"
+        },
+        "shift_mlp": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Shift parameter for MLP path"
+        },
+        "scale_mlp": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Scale parameter for MLP path"
+        },
+        "gate_mlp": {
+            "shape": [
+                "batch_size",
+                "inner_dim"
+            ],
+            "dtype": "float32",
+            "description": "Gate parameter for MLP path"
+        }
+    },
+    "reference": "import torch\n\n@torch.no_grad()\ndef run(emb: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor):\n    \"\"\"\n    AdaLayerNormZero modulation parameter extraction.\n    \n    Performs a linear projection followed by chunking into 6 modulation parameters.\n    \n    Args:\n        emb: Timestep embeddings of shape [batch_size, inner_dim]\n        weight: Linear weight matrix of shape [6 * inner_dim, inner_dim]\n        bias: Linear bias of shape [6 * inner_dim]\n        \n    Returns:\n        Tuple of 6 tensors, each of shape [batch_size, inner_dim]:\n        - shift_msa, scale_msa, gate_msa: for attention path\n        - shift_mlp, scale_mlp, gate_mlp: for MLP path\n    \"\"\"\n    # Linear projection: [batch_size, inner_dim] @ [inner_dim, 6*inner_dim] + bias\n    # = [batch_size, 6*inner_dim]\n    emb_out = torch.matmul(emb, weight.t()) + bias\n    \n    # Chunk into 6 equal parts along the last dimension\n    # Each chunk has shape [batch_size, inner_dim]\n    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb_out.chunk(6, dim=1)\n    \n    return shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp\n"
+}
+
+
+=== reference.py ===
+import torch
+
+@torch.no_grad()
+def run(emb: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor):
+    """
+    AdaLayerNormZero modulation parameter extraction.
+    
+    Performs a linear projection followed by chunking into 6 modulation parameters.
+    
+    Args:
+        emb: Timestep embeddings of shape [batch_size, inner_dim]
+        weight: Linear weight matrix of shape [6 * inner_dim, inner_dim]
+        bias: Linear bias of shape [6 * inner_dim]
+        
+    Returns:
+        Tuple of 6 tensors, each of shape [batch_size, inner_dim]:
+        - shift_msa, scale_msa, gate_msa: for attention path
+        - shift_mlp, scale_mlp, gate_mlp: for MLP path
+    """
+    # Linear projection: [batch_size, inner_dim] @ [inner_dim, 6*inner_dim] + bias
+    # = [batch_size, 6*inner_dim]
+    emb_out = torch.matmul(emb, weight.t()) + bias
+    
+    # Chunk into 6 equal parts along the last dimension
+    # Each chunk has shape [batch_size, inner_dim]
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb_out.chunk(6, dim=1)
+    
+    return shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+
+=== workload.jsonl (first 3 lines) ===
+{"uuid": "81f42cda-3676-5969-8578-1958725007c7", "axes": {"batch_size": 512}, "inputs": {"emb": {"type": "random"}, "weight": {"type": "random"}, "bias": {"type": "random"}}, "tolerance": {"max_atol": 0.0023, "max_rtol": 1e-05}}
+{"uuid": "2879d7a9-620f-55c0-b280-6be3da8441c2", "axes": {"batch_size": 211}, "inputs": {"emb": {"type": "random"}, "weight": {"type": "random"}, "bias": {"type": "random"}}, "tolerance": {"max_atol": 0.0021000000000000003, "max_rtol": 1e-05}}
+{"uuid": "8e261dd1-e3f4-5108-891f-756e3699dc0e", "axes": {"batch_size": 449}, "inputs": {"emb": {"type": "random"}, "weight": {"type": "random"}, "bias": {"type": "random"}}, "tolerance": {"max_atol": 0.0023, "max_rtol": 1e-05}}
+
+=== MEASUREMENTS ON THE RENTED B200 (unlocked clocks; the portal locks SM 1500 MHz) ===
+| workload | band | traffic MB (in + out) | plain stream floor µs (rented B200) | PyTorch reference µs | reference / floor |
+|---|---|---|---|---|---|
+| 5 | S | 226.63 + 0.37 | 53.51 | 114.37 | 2.1x |
+| 16 | S | 226.76 + 1.18 | 53.71 | 117.49 | 2.2x |
+| 32 | S | 226.96 + 2.36 | 53.75 | 118.29 | 2.2x |
+| 96 | S | 227.75 + 7.08 | 54.74 | 250.22 | 4.6x |
+| 128 | S | 228.14 + 9.44 | 55.01 | 251.45 | 4.6x |
+| 131 | M | 228.18 + 9.66 | 53.12 | 407.37 | 7.7x |
+| 192 | M | 228.93 + 14.16 | 55.53 | 437.05 | 7.9x |
+| 211 | M | 229.16 + 15.56 | 55.66 | 479.89 | 8.6x |
+| 373 | M | 231.15 + 27.50 | 57.53 | 762.20 | 13.2x |
+| 384 | M | 231.28 + 28.31 | 57.52 | 762.37 | 13.3x |
+| 449 | L | 232.08 + 33.10 | 57.76 | 946.00 | 16.4x |
+| 512 | L | 232.86 + 37.75 | 59.04 | 949.63 | 16.1x |
+| 691 | L | 235.06 + 50.95 | 60.94 | 1386.41 | 22.7x |
+| 773 | L | 236.06 + 56.99 | 61.82 | 1631.72 | 26.4x |
+| 853 | L | 237.05 + 62.89 | 62.83 | 1879.46 | 29.9x |
+| 919 | L | 237.86 + 67.76 | 63.58 | 1882.37 | 29.6x |
+
+=== EXAMPLE: the finished problem card of another problem (format and depth to aim for) ===
+# Problem card: L1 #30 `030_attention_output_projection_with_residual`
+
+Definition from `definition.json` (Jamba-Reasoning-3B o_proj). Measurements from the rented B200 (unlocked, SM 1965 MHz;
+the portal locks 1500 MHz) on 2026-10-09. No portal result yet, so Tb and Tsol are unknown.
+
+## 1. Semantics
+
+Reference (verbatim):
+
+```python
+@torch.no_grad()
+def run(attn_output, residual, o_proj_weight):
+    projected = torch.matmul(attn_output, o_proj_weight.t())
+    return projected + residual
+```
+
+- DPS signature: `run(attn_output, residual, o_proj_weight, output)`.
+- `attn_output`, `residual`, `output`: `[B, S, 2560]` bf16 contiguous. `o_proj_weight`: `[2560, 2560]` bf16.
+- View the activations as `[M, 2560]` with `M = B·S` tokens. `D = A · Wᵀ + R`, a "TN" GEMM with M×N×K = M×2560×2560
+  plus an elementwise residual: exactly `cublasLt`'s `D = α·op(A)·op(B) + β·C` with `C = residual`, `D = output`,
+  α = β = 1, or CUTLASS's linear-combination epilogue with a TMA-loaded C.
+- Only `M` varies; the three `M = 4096` and four `M = 8192` shapes time identically. 16 workloads = 10 sizes.
+- N = 2560 = 10 × 256 = 20 × 128; K = 2560 = 40 × 64. M is a multiple of 128 except 586 (2×293), 1571, 4106 (2×2053)
+  and 7976 (8×997), so M-tiles need a residue mask (TMA zero-fills out-of-bounds rows for free).
+
+## 2. Numerics and tolerance
+
+- Tolerances per workload: `max_rtol = 0.05`, `max_atol = 0.02` (0.0093 for 4×128), matched ratio 0.99 [workload.jsonl].
+- Inputs are N(0,1) bf16, so the dot product over K = 2560 has std ≈ 50.6 and |D| reaches ≈ 250. The bf16 output
+  rounding is 2⁻⁸ relative (≈ 0.2 at |D| = 50), inside rtol 0.05 by a factor of 25. fp32 accumulation in any order,
+  then one bf16 rounding, is the correct precision: bf16 tensor-core MMA with fp32 accumulate is what the reference does.
+- Fused residual: adding `R` in fp32 before the single bf16 rounding is slightly more accurate than the reference's
+  two roundings; both pass.
+- What would fail: fp16 accumulate, or bf16 accumulation across K (error ≈ 2⁻⁸·√K·|D|); reduced-precision reductions
+  (`allow_bf16_reduced_precision_reduction` style split-K accumulating in bf16) are to be avoided.
+- The loop's lint regex flags the literal bf16 type name in CUTLASS sources; the dtype is bf16 by problem definition
+  (the cuBLASLt source avoids the literal by using `CUDA_R_16BF`).
+
+## 3. The 16 workloads (sorted by size)
+
+Bytes = W (13.11 MB, read once) + 3 × M × 5120 B (A, R read; D written). FLOPs = 2·M·2560². `cmp2.25` = FLOPs at the
+datasheet dense bf16 peak of 2.25 PFLOP/s; `cmp1.47` = at the practical peak measured here scaled to the 1500 MHz lock
+(1.93 PFLOP/s at 1965 MHz × 1500/1965) [INFERRED]. `mem8` = bytes at 8 TB/s. Floor/ref columns are the rented-B200
+measurements from the task brief; `lt` is our first kernel (cuBLASLt fused, run_tests).
+
+| M = B·S | shapes | MB | GFLOP | cmp2.25 µs | cmp1.47 µs | mem8 µs | stream floor µs | reference µs | lt µs | band |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 256 | 1×256 | 17.0 | 3.36 | 1.5 | 2.3 | 2.1 | 6.05 | 12.3 | 8.7 | S |
+| 512 | 4×128 | 21.0 | 6.71 | 3.0 | 4.6 | 2.6 | 6.91 | 14.8 | 10.4 | S |
+| 586 | 2×293 | 22.1 | 7.68 | 3.4 | 5.2 | 2.8 | 6.98 | 17.1 | 12.2 | S |
+| 1024 | 1×1024 | 28.8 | 13.4 | 6.0 | 9.1 | 3.6 | 8.22 | 17.8 | 13.4 | S |
+| 1571 | 1×1571 | 37.2 | 20.6 | 9.2 | 14.0 | 4.7 | 9.68 | 25.4 | 19.6 | S |
+| 2048 | 16×128, 1×2048 | 44.6 | 26.8 | 11.9 | 18.2 | 5.6 | 11.0 | 28.2 | 23.3 | M |
+| 4096 | 4×1024, 16×256, 8×512 | 76.0 | 53.7 | 23.9 | 36.5 | 9.5 | 17.7 | 48.1 | 39.3 | M |
+| 4106 | 2×2053 | 76.2 | 53.8 | 23.9 | 36.6 | 9.5 | 17.9 | 48.4 | 39.1 | L |
+| 7976 | 8×997 | 135.6 | 104.5 | 46.4 | 71.1 | 17.0 | 29.8 | 89.8 | 76.9 | L |
+| 8192 | 16×512, 8×1024, 64×128, 32×256 | 138.9 | 107.4 | 47.7 | 73.0 | 17.4 | 30.3 | 90.2 | 77.5 | L |
+
+## 4. Bounds and what dominates per band
+
+- Arithmetic intensity grows with M: FLOPs/bytes = 197 at M = 256, 773 at 8192. The B200 ridge at the datasheet peak is
+  281 FLOP/B, so on paper only M = 256 is memory-bound. In practice the tensor pipe reaches ≈ 1.93 PFLOP/s at
+  1965 MHz (cuBLAS, 5 full waves) and the SM clock lock costs another 24%, so **every size from M ≈ 400 up is
+  compute-bound** at the portal, and the L band is pure tensor-core throughput plus wave quantisation.
+- S band (M ≤ 1571): the harness floor is 6–10 µs even for a plain copy (17 MB copy = 8.2 µs under cold-L2 CUPTI
+  timing here, versus 2.1 µs at 8 TB/s), and cuBLAS sits at 1.4–2.0× that. The GEMM here has few output tiles
+  (2–13 M-tiles × 10–20 N-tiles) and 40 serial K-steps per tile, so it is a latency chain: cuBLAS at M = 256 takes
+  4.9/6.2/8.1 µs for K = 640/1280/2560. Lever: split the K loop across all 148 SMs.
+- M band (2048–4096): 2048 → 80 pair-tiles of 256×256 (1.1 waves of 74 pairs), 4096 → 160 (2.2 waves). Wave
+  quantisation and the fixed cost both matter.
+- L band (7976–8192): 320 pair-tiles / 74 pairs = 4.32 waves, so a plain 256×256 tiling runs 5 waves at 86% use.
+  Measured: cuBLAS 1.64 PFLOP/s at M = 8192 versus 1.88 at M = 9472 (exactly 5 waves) and 1.93 at 18944. **About 13%
+  is on the table from stream-K or a tile that divides the work evenly.** Memory traffic (139 MB, 17 µs) is fully
+  hidden by compute.
+- SOLAR guess: Tsol = max(FLOPs/2.25 PF, bytes/8 TB/s) → 2.1 µs at M = 256, 47.7 µs at 8192. If so, L-band scores are
+  capped by the unreachable datasheet peak, as #38's were by the 0.53× floor. Confirmed only by the first portal result.
+
+## 5. Where the reference loses and what a fast kernel must do
+
+- The reference is two kernels: a cuBLAS `nvjet` GEMM (65–72 µs at L, 8.2 at S) and a separate add that reads
+  `projected` and `residual` and writes `output` (3 × M × 5 KB): 4 µs at S, 12–18 µs at L. `torch.addmm(..., out=)`
+  is no better: a DtoD memcpy of the residual and then the `badd` GEMM variant (same time as the reference).
+- A fast kernel: one launch; the residual read in the epilogue (TMA-loaded C tile) and the fp32 accumulator + C rounded
+  once to bf16; per-size tiling (small tiles or split-K at S, 2SM 256×256 at L); a scheduler without a partial last
+  wave at L; 2-CTA `tcgen05.mma` (cta_group::2) so each SM pair shares B-tile loads.
+- Measured with CUTLASS 4.4.1 collective builders (fused residual, persistent scheduler, correct 16/16):
+  1SM 128×256×64 → 25 µs at S, 95 at L; 2SM 256×256×64 cluster 2×1 → 18.9 at S, 73.7 at L. The 2SM kernel beats
+  cuBLASLt by 5% at L and loses 2.2× at S (20 clusters of 40 serial K-steps). cuBLASLt wins S and M.
+
+## 6. Design priorities
+
+1. **S band: split/stream-K across all SMs.** cuBLAS already uses 80×64 tiles with 2-CTA at M = 256 yet takes 8.7 µs
+   against a 6 µs copy floor. A custom kernel with K split 4–8 ways and an in-cluster (DSMEM) or fp32-atomic reduction
+   into a single epilogue could reach ≈ 6.5–7 µs. Worth ≈ 20% on 5 workloads.
+2. **L band: fix wave quantisation.** Stream-K (CUTLASS `StreamKScheduler`, needs a workspace memset in the window) or
+   a 2SM tile whose count divides 74 pairs (e.g. 256×128 → 640 tiles = 8.65 waves, 96% use; 256×160 → 512 tiles,
+   6.9 waves) on top of the 2SM 256×256 kernel: target 65 µs here (≈ 85 at the lock) versus 77.5 for cuBLASLt.
+3. **M band:** dispatch by M between the S and L specialists; 2048 tokens (1.08 waves) is the worst quantisation case
+   and wants stream-K most.
+4. Cache hints: `evict_last` on D stores gained 8–9% at M sizes in #38 because of the dirty-L2 flush; try the same on
+   the TMA store (`CUTLASS` epilogue has a cache-hint hook) once a custom kernel exists.
+5. Keep cuBLASLt as the fallback path in any dispatcher; it is the strongest S/M kernel we have.
+
+## 7. Results so far (rented B200, run_tests, µs)
+
+| kernel | 256 | 512 | 586 | 1024 | 1571 | 2048 | 4096 | 4106 | 7976 | 8192 | pass |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| reference (matmul + add) | 12.3 | 14.8 | 17.1 | 17.8 | 25.4 | 28.2 | 48.1 | 48.4 | 89.8 | 90.2 | – |
+| **oproj-cublaslt-fused (this submission)** | 8.7 | 10.4 | 12.2 | 13.4 | 19.6 | 23.3 | 39.3 | 39.1 | 76.9 | 77.5 | 16/16 |
+| CUTLASS 1SM 128×256×64 persistent | 25.1 | 25.2 | 25.9 | 26.0 | 26.2 | 43.0 | 61.0 | 61.6 | 94.6 | 95.0 | 16/16 |
+| CUTLASS 2SM 256×256×64, cluster 2×1 | 18.9 | 19.0 | 19.2 | 19.9 | 21.3 | 32.9 | 48.0 | 48.0 | 73.1 | 73.7 | 16/16 |
+
+## 8. Open questions
+
+- Hidden Tb per workload: is it the reference (no PyTorch-only way to fuse the residual), or something smarter (e.g.
+  torch.compile)? The first portal result answers this.
+- Does SOLAR use 2.25 PFLOP/s dense bf16 for the compute term? If so the L band is capped near 0.6 even at the
+  practical peak.
+- How do cuBLAS's heuristics behave at the 1500 MHz lock (same algorithms, compute terms 1.31× slower)?
+- Can a split-K kernel at S reduce inside one launch without a second kernel (cluster DSMEM reduction versus fp32
+  atomics into a workspace plus an ordered final epilogue)?
+- Does the dirty-L2 flush (126 MB) cost the same ≈ 6 µs fixed here as the 17 MB copy suggests, and does `evict_last`
+  on D stores recover part of it?
+- Is there a CUTLASS stream-K configuration for sm100 2SM kernels that does not add a memset or reduce kernel to the
+  timed window?
+
+
+=== EXAMPLE: that problem's ledger (copy its constraints; write your own hypotheses) ===
+# Hypothesis ledger for #30 (030_attention_output_projection_with_residual). Seeded 2026-10-09; updated r2 2026-10-10.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids
+  lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the
+  same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the
+  operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 /
+  8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a
+  real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs
+  which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented,
+  plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+hypotheses:
+- id: H1
+  statement: Fusing the residual as the GEMM's C operand (C != D) removes the reference's separate add kernel at no cost.
+  status: refuted
+  evidence:
+  - 'run_tests: cublasLt fused 8.7..77.5 us vs reference 12.3..90.2 us (matmul alone 8.2..72 us), 16/16 pass'
+  - 'probe: torch.addmm(out=) launches a DtoD memcpy of the residual plus the badd nvjet kernel; same time as the reference'
+  - 'r0 rented: fused cublasLt 77.5 us at 8192 vs plain nvjet matmul 65-72 us: the add is removed but not for free (see H10)'
+  - 'r0 portal: 106 us at 8192 vs Tb 86 and eager ~107; on the portal the fused call is no faster than matmul+add'
+  - 'r1 attribution (rented, interleaved): plain matmul 20.6/35.7/70.6 us, fused C!=D 23.2/38.5/76.5, diagnostic C=D 21.2/36.4/71.5
+    at 2048/4096/8192: the cost is reading the residual as a separate C tensor, not the algorithm [r1-oproj-cublaslt-forced-algo]'
+- id: H2
+  statement: The L band is tensor-core bound and loses about 13% to wave quantisation (320 pair tiles of 256x256 over 74 SM pairs
+    = 4.32 waves); stream-K or a tile count that divides evenly recovers most of it.
+  status: supported
+  evidence:
+  - 'probe: cuBLAS 1.64 PFLOP/s at M=8192 vs 1.88 at M=9472 (5 full waves) and 1.93 at M=18944 (rented B200, 1965 MHz)'
+  - 'probe: M=9472 (exactly 5 waves of 256x256) takes 78.4 us vs 76.1 at 8192: 16% more FLOPs for +3% time [r1-oproj-cutlass-t224-dispatch]'
+  - 'r1: transposed 2SM 256x224x64 (370 tiles = 5.00 waves at 8192), epi 128x32, 6 stages, AlongM: rented 64.6-65.0 vs cublasLt
+    75.5-76.2 (-14%); portal L 80.5 vs 94.8 (-15%), 8192 at 88.5 vs Tb 86.0, S 0.477 [r1-oproj-cutlass-t224-dispatch, portal r1]'
+  - 'dead end: CUTLASS StreamKScheduler 2SM 256x256 84-85 us at 8192 (25 MB workspace), SplitK=2 185 us, 256x128 stream-K 79-82 us;
+    untransposed 256x128/256x160 tiles divide better but lose per-tile efficiency [r1-oproj-cutlass-t224-dispatch]'
+  - 'remaining L gap is the residual epilogue (H14/H15) and the portal ratio (H17), not quantisation'
+- id: H3
+  statement: The S band (M <= 1571) is a latency chain of 40 serial K-steps on few tiles; splitting K over all 148 SMs with an
+    in-kernel reduction approaches the 6-8 us harness copy floor.
+  status: parked
+  evidence:
+  - 'probe: cuBLAS at M=256 takes 4.9/6.2/8.1 us for K=640/1280/2560; a 17 MB copy takes 6.1-8.2 us under harness timing'
+  - 'run_tests: CUTLASS 128x256 (20 CTAs) 25 us and 2SM 256x256 (20 clusters) 18.9 us at M=256 vs cublasLt 8.7 us'
+  - 'r1 portal: S band t/Tb = 1.07 (10.6 vs 9.9 at 256 tokens), S 0.47-0.48; a 10% S cut is worth +0.013 (predict_score r2)'
+  - 'parked r2: cublasLt split-K is refuted (H12) and a custom split-K kernel is a full session for the smallest lever; revisit
+    after the residual epilogue is fixed (the fix applies to S too)'
+- id: H4
+  statement: 2-CTA tcgen05 MMA (cta_group::2, 256x256x64 tiles) beats 1SM 128x256x64 at every size.
+  status: supported
+  evidence:
+  - 'run_tests: CUTLASS 2SM 18.9/32.9/48.0/73.7 us vs 1SM 25.1/43.0/61.0/95.0 us at M=256/2048/4096/8192'
+  - 'cluster 4x1 (untransposed) and 2x2 (transposed 224) are slower: 76.3/84.6 and 76.8 us at 8192 [r1-oproj-cutlass-t224-dispatch]'
+- id: H5
+  statement: A per-size dispatcher (cublasLt or split-K specialist at S/M, CUTLASS 2SM stream-K at L) beats cublasLt alone.
+  status: supported
+  evidence:
+  - 'r1 portal: dispatcher (cublasLt below 6144 tokens, CUTLASS transpos

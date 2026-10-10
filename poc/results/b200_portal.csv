@@ -30,3 +30,4 @@ r0-silu-bw-cuda-ldg128-os-efel,0.006142,0.494149,7,0.978,63899,084_silu_activati
 r0-oproj-cublaslt-fused-v0,0.042053,0.402363,0,0.849,63900,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/63900_r0-oproj-cublaslt-fused-v0.html
 r1-silu-bw-cluster2-small,0.005681,0.516640,12,1.057,63929,084_silu_activation_backward,B200,v1.1,Private,AC,portal_html/63929_r1-silu-bw-cluster2-small.html
 r1-oproj-cutlass-t224-dispatch,0.038618,0.452935,0,0.924,63930,030_attention_output_projection_with_residual,B200,v1.1,Private,AC,portal_html/63930_r1-oproj-cutlass-t224-dispatch.html
+r2-silu-bw-c16coop-c1coop,0.005600,0.521903,13,1.073,64157,084_silu_activation_backward,B200,v1.1,Private,AC,portal_html/64157_r2-silu-bw-c16coop-c1coop.html

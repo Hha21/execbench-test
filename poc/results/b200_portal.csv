@@ -38,3 +38,5 @@ r0-adamod-dispatch-skinny-fp32-3xtf32,0.321235,0.234899,1,0.344,64540,035_flux_a
 r1-geglu-efld-m,0.017340,0.675474,16,1.873,64549,085_geglu_activation,B200,v1.1,Private,AC,portal_html/64549_r1-geglu-efld-m.txt
 r1-rope-v4nc-s128,0.024059,0.677170,15,1.690,64556,088_rotary_position_embedding_application,B200,v1.1,Private,AC,portal_html/64556_r1-rope-v4nc-s128.txt
 r1-adamod-cutlass-tf32-2sm-chunkepi,0.083486,0.588448,14,1.322,64563,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64563_r1-adamod-cutlass-tf32-2sm-chunkepi.txt
+r2-e1-tc05-ef-small,0.077720,0.610767,13,1.420,64590,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64590_r2-e1-tc05-ef-small.txt
+r2-rope-pair2-magic-occ10,0.023654,0.682703,15,1.719,64591,088_rotary_position_embedding_application,B200,v1.1,Private,AC,portal_html/64591_r2-rope-pair2-magic-occ10.txt

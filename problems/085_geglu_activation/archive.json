@@ -118,7 +118,54 @@
   ],
   "round": "r1",
   "solution": "problems/085_geglu_activation/rounds/r1/candidates/r1-geglu-bulkring-s3k8-l.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z20geglu_generic_kernelPKfPfxi",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2,
+     "UBLKCP": 16
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z17geglu_ring_kernelPKfPfi",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2,
+     "UBLKCP": 16
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z17geglu_5120_kernelPKfPf",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2,
+     "UBLKCP": 16
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "L",
    "instructions": "Experiment E2 (tests H12): Read-side throughput at L: persistent 1-D bulk ring vs plain 256-bit one-shot. 1) First measure read-only ladders under the harness flush at 252 and 503 MB: r0's loads (1 chunk per thread, one-shot), 2 and 4 chunks per thread with every load issued before the first use and __launch_bounds__(128, 8) to keep <=64 regs, and a persistent grid of 148 x k CTAs looping over (row, x) tiles with the next tile's loads issued before the current compute. 2) Build the bulk-ring kernel (mem:bulk1d, st:direct): persistent 148 x k CTAs (k 4-8 by smem), each stage one 4 KB gate segment plus the matching 4 KB linear segment copied with cp.async.bulk.shared::cta.global.mbarrier::complete_tx::bytes (optionally .L2::cache_hint EF), STAGES 4-8 so >=128 KB per SM is in flight, consumers read smem, compute GEGLU, and store 8 floats per thread with the existing st.global.L2::cache_hint EL 256-bit store; dynamic smem above 48 KB. Keep the 2-D one-shot r0 kernel for rows <= 2164 via dispatch on rows only (the ring is for L). 3) Compare full kernels at 126, 252 and 503 MB, interleaved, >=5 repeats; also check that the dispatch keeps S/M at r0's times. 4) run_tests on the best variant; record regs, smem, CTAs/SM and bytes in flight per SM in the card. Success: >=3% faster than r0 at 252-503 MB on the bench with 16/16 pass and no S/M regression. Refuted if: Every read-side variant (fat threads with loads issued first, pipelined persistent, bulk ring with >=128 KB/SM in flight) ties r0 within 1% at L: then in-flight bytes do not limit reads and H12 is refuted; L headroom rests on H11. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -129,9 +176,51 @@
     "r0-geglu-ldg256-2d-stel"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 11.07,
+    "1,128": 3.58,
+    "1,131": 3.68,
+    "1,2048": 18.62,
+    "1,512": 7.03,
+    "16,256": 38.2,
+    "16,449": 67.84,
+    "2,211": 6.21,
+    "2,512": 10.91,
+    "32,128": 38.1,
+    "4,1024": 38.11,
+    "4,128": 6.78,
+    "4,541": 19.56,
+    "8,1024": 77.18,
+    "8,256": 18.72,
+    "8,613": 45.8
+   }
+  }
  },
  "r1-geglu-efld-m": {
+  "b200": {
+   "geomean_us": 17.34,
+   "score": 0.675474,
+   "submission": "64549",
+   "timings": {
+    "1,1024": 11.4,
+    "1,128": 4.2,
+    "1,131": 4.3,
+    "1,2048": 19.3,
+    "1,512": 7.7,
+    "16,256": 36.1,
+    "16,449": 63.5,
+    "2,211": 6.8999999999999995,
+    "2,512": 11.4,
+    "32,128": 36.0,
+    "4,1024": 36.0,
+    "4,128": 7.7,
+    "4,541": 20.2,
+    "8,1024": 72.4,
+    "8,256": 19.2,
+    "8,613": 43.2
+   }
+  },
   "card": "id: r1-geglu-efld-m\nparents: [r0-geglu-ldg256-2d-stel]\noperation: knob_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows1\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  The harness's zero-fill flush leaves about 64 MB of dirty lines in L2. With default-priority loads,\n  read misses evict those dirty lines and force write-backs inside the timed window. L2::evict_first on\n  the input loads makes read misses evict our own clean input lines instead. ncu at 63 MB: write-back\n  20 -> 11 MB; at 126 MB: 35 -> 24 MB. That saves 3-7% at M. At >= 252 MB the outputs exceed L2's\n  dirty capacity (about 80 MB) whatever the policy, so L keeps r0's loads. Shape-only dispatch at\n  3072 rows; one kernel per call.\nexpected_effect:\n  S:\n    pct: -1\n    confidence: low\n  M:\n    pct: -5\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 128\n  CTAS_PER_ROW: 5\n  FLOATS_PER_THREAD: 8\n  EF_MAX_ROWS: 3072\n  LOAD_HINT_SMALL: \"ld.global.nc.L1::no_allocate.L2::evict_first.v8.f32\"\n  LOAD_HINT_LARGE: \"ld.global.nc.v8.f32\"\n  STORE_HINT: evict_last\ndispatch:\n  - {max_tokens: 3072, kernel: geglu_5120_kernel<true>, meta: {x: ef, st: el}}\n  - {max_tokens: null, kernel: geglu_5120_kernel<false>, meta: {x: none, st: el}}\ntests: [H11, H8, H7]\nfindings:\n  - \"run_tests 16/16 vs r0 on the same B200: M -5.6% (1,1024 -7.5%, 2,512 -7.2%, 8,256 -6.8%, 1,2048 -3.5%, 4,541 -3.1%), S -1.2%, L -0.1% [run_tests]\"\n  - \"bench reproducing timing.py exactly (input copy, output zero, cudaCtxResetPersistingL2Cache, 252 MB zero_), 21 interleaved reps, CUPTI kernel span: EF loads vs r0 at 7.9/8.0/26/31/63/126/133/252/301/441/503 MB = +0.9/-1.8/-1.0/-3.6/-6.9/-5.2/-3.6/+1.3/+1.0/-0.4/-0.3%; EF+L1::no_allocate and the direct .L2::evict_first qualifier (no createpolicy) are within 1% of each other [probe_b200]\"\n  - \"DIRTY (harness flush) vs CLEAN (same flush + a read-only sum over another 252 MB, so L2 holds clean lines) for r0: 3.87/3.04, 6.62/5.82, 10.91/8.99, 18.72/15.87, 35.17/31.26, 71.52/62.37 us at 7.9/31/63/126/252/503 MB: the dirty flush costs 0.8-9.2 us (13-27%) at every size, including S [probe_b200]\"\n  - \"ncu is permitted on the rented B200 (no ERR_NVGPUCTRPERM; --cache-control none --clock-control none). In-window DRAM reads always equal the input bytes exactly; the whole dirty-flush penalty is writes [probe_b200 ncu]\"\n  - \"ncu in-window DRAM writes (MB) at 7.9/31/63/126/252/503 MB: r0 DIRTY 1.9/9.5/20.2/34.9/69.1/155.5, r0 CLEAN 0.1/0.2/0.2/7.3/39.4/100.9; EF-load DIRTY 4.6/7.2/10.8/24.4/65.4/149.1, EF-load CLEAN 0.1/0.2/0.2/0.3/6.7/86.6 [probe_b200 ncu, single sample each]\"\n  - \"flush write-back D per size (read-only kernel, DIRTY, all writes are flush lines): 3.3/7.1/14.4/30.3/58.4/63.7 MB; for r0 (DIRTY minus CLEAN writes) 1.8/9.3/20.0/27.6/29.7/54.6 MB; single ncu samples, uncertainty unmeasured (estimate +-3 MB) [probe_b200 ncu]\"\n  - \"traffic model that fits: in-window writes ~= max(0, our outputs + ~64 MB flush-dirty - ~80 MB L2 dirty retention); CLEAN retention plateaus at 77-81 MB of our outputs, so L has no policy headroom left (r0 at 503 MB already 491 MB in 71.5 us = 6.9 TB/s) [probe_b200 ncu; INFERRED]\"\n  - \"read-only kernel: EF loads cut flush write-back 63.7 -> 12.1 MB at 503 MB and time 63.8 -> 56.0 us (-11%); -11% at 252 MB, -11% at 126 MB, -4% at 63 MB: H11 mechanism confirmed for reads [probe_b200]\"\n  - \"dead end: without the harness's cudaCtxResetPersistingL2Cache, evict_last store lines survive the 252 MB zero_ flush across calls and evict_last becomes slower than plain stores (503 MB 74.4 vs 71.4 us); with the reset, H1 reproduces (71.5 vs 75.9). Benches must call the reset [probe_b200]\"\n  - \"dead end: stores createpolicy.fractional evict_last/evict_unchanged 0.5 with EF loads: +0..+3.6% vs r0 [probe_b200]\"\n  - \"dead end: EF or plain stores lose to EL at every M/L size under the harness sequence (+5..+15%); EF loads do not rescue them [probe_b200]\"\n  - \"write-only kernel (168 MB EL stores) 23.4 us DIRTY vs 22.8 CLEAN: stores barely feel the dirty flush; reads do [probe_b200]\"\n  - \"S band: DIRTY-CLEAN gap 0.8 us at 7.9 MB with only 2-5 MB of flush write-back; EF loads do not shrink it (<=1.8%); any remaining S lever must avoid the flush lines, which no legitimate in-kernel policy does [probe_b200; INFERRED]\"\npaths:\n  - {max_tokens: 3072, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100\"\n  A100:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\n  L40S:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\nrisks:\n  - \"The M gain depends on the portal's L2 dirty state after the flush matching the rented B200's; the mechanism is clock-independent, but there is no portal pair yet\"\n  - \"EF_MAX_ROWS=3072 sits between 2164 (gain 3%) and 4096 (loss 1%); the crossover was not mapped finely\"\n  - \"S-band change (-1%) is within noise\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r1-geglu-efld-m",
   "language": "cuda_cpp",
@@ -151,7 +240,54 @@
   ],
   "round": "r1",
   "solution": "problems/085_geglu_activation/rounds/r1/candidates/r1-geglu-efld-m.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z17geglu_5120_kernelILb0EEvPKfPf",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "LDG.NA.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z17geglu_5120_kernelILb1EEvPKfPf",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "LDG.NA.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z20geglu_generic_kernelPKfPfxi",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 2,
+     "LDG.NA.CONSTANT.256": 2,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (tests H11): Dirty-L2 traffic accounting and the load/store policy matrix. 1) Write a bench probe that reproduces timing.py's pre-call sequence (cudaCtxResetPersistingL2Cache, zero_() of a 252 MB buffer, shifted input copy, output zero) and times only our kernel. Add two alternative pre-conditions: CLEAN flush (the same zero_() followed by a read-only reduction over a different 252 MB buffer, so L2 holds clean lines) and NONE (no flush, warm L2 with unrelated data). 2) Build r0 variants as compile-time switches: loads in {ld.global.nc (current), EF via createpolicy.fractional.L2::evict_first + ld.global.L2::cache_hint.v8.f32, EF + L1::no_allocate}; stores in {EL (current), plain, EF}; plus read-only and write-only kernels. 3) Time every variant at 7.9, 31, 63, 126, 252 and 503 MB under DIRTY and CLEAN, interleaved, at least 5 repeats, report medians. 4) If ncu is installed and counters are permitted, collect dram__bytes_read.sum and dram__bytes_write.sum for r0 and for the EF-load variant under the DIRTY flush (--cache-control none --clock-control none --replay-mode application); report ERR_NVGPUCTRPERM if blocked. 5) Fit in-window DRAM bytes = reads + output write-back + flush write-back per size and state the flush write-back D in MB per size with its uncertainty. 6) For any policy that beats r0 by >=3% at M or L (and >=0 at S) run run_tests (16/16) and archive it as a candidate with its findings. Success: A load/store policy beating r0 by >=3% at 126-503 MB on the bench with 16/16 pass, or a traffic model giving D per size to within 10 MB together with the DIRTY-vs-CLEAN time delta. Refuted if: DIRTY and CLEAN times differ by <2% at every size and every load policy ties r0 within 1%: then H11 is refuted, H8 is supported, and the read cap is not the flush's write-backs. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -162,7 +298,26 @@
     "r0-geglu-ldg256-2d-stel"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,1024": 10.26,
+    "1,128": 3.62,
+    "1,131": 3.65,
+    "1,2048": 17.97,
+    "1,512": 6.82,
+    "16,256": 35.22,
+    "16,449": 62.68,
+    "2,211": 6.15,
+    "2,512": 10.11,
+    "32,128": 35.05,
+    "4,1024": 35.14,
+    "4,128": 6.72,
+    "4,541": 19.06,
+    "8,1024": 71.52,
+    "8,256": 17.5,
+    "8,613": 42.34
+   }
+  }
  },
  "r1-geglu-s-lean32": {
   "card": "id: r1-geglu-s-lean32\nparents: [r0-geglu-ldg256-2d-stel]\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows1\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  A lean S-band path (rows <= 512) could cut the roughly 2.7 us fixed cost above the byte floor. The bench showed no\n  variant helps: the S time is the empty-kernel span plus one DRAM round trip plus streaming plus the harness's\n  dirty-L2 write-backs. The returned S path only drops 64-bit address math and is a tie with r0. H6 is refuted on\n  the bench; the portal could still differ by the H10 clock-bound cost, but a 32-bit offset saves only a few\n  instructions.\nexpected_effect:\n  S: {pct: 0, confidence: medium}\n  M: {pct: 0, confidence: high}\n  L: {pct: 0, confidence: high}\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs: {THREADS: 128, CTAS_PER_ROW: 5, S_MAX_ROWS: 512, STORE_HINT: evict_last}\ntests: [H6]\nfindings:\n  - \"ladder, 7.9 MB (128 rows), empty kernel span: 1 CTA 1.46, 640 CTAs 1.46, 1280 x 64-thread CTAs 1.57 us. CTA count barely matters [probe_b200]\"\n  - \"ladder: one thread, one 32 B load, conditional store: 2.05 us (round trip +0.5 over empty); store alone 1.63 (+0.15); load then store 2.08 [probe_b200]\"\n  - \"ladder: 148 CTAs x 4 KB read-only 2.34 us; r0 read-only (5.2 MB read) 3.4 us; r0 full 3.7-3.8 us [probe_b200]\"\n  - \"ladder, 7.9 MB: launch/exit ~1.5, first DRAM round trip ~0.5, CTA ramp for 640 CTAs ~0.3, streaming 5.2 MB read ~1.1-1.4 (byte floor 0.65, so reads cost about 2x floor, consistent with write-back of the flush's dirty lines evicted by our read allocations), compute+store drain ~0.35 [probe_b200]\"\n  - \"ladder at 512 rows: empty 1.46, r0 6.91, read-only 6.46, copy+EL 6.85, copy+plain store 7.23, math+plain store 7.33; at 1024 rows: r0 10.95, read-only 10.24, copy+plain 11.86 [probe_b200]\"\n  - \"variants, medians of 9 interleaved repeats, us at 128/422/512 rows: r0 3.71/6.30/6.80; (a) 64-thread CTAs 3.74/6.27/6.77; (b) 512-thread 1-D 3.78/6.30/6.82; (c) 148x4 CTAs of 256 threads, 2 chunks per thread, all loads first 3.94/6.63/7.07; (d) cp.async.bulk.prefetch.L2 in 20 KB pieces 3.71/6.34/6.98, in 64 KB pieces 3.78/6.32/7.01, in 16 KB pieces 3.73/6.34/6.85; (e) 32-bit math plus plain stores 3.79/6.63/7.13; 32-bit math plus evict_last 3.68/6.32/6.77 [probe_b200]\"\n  - \"evict_last stores are not free at S either: plain stores cost +0.3 us at 422 and 512 rows (about 5%); the earlier 'EL gains 0 at S' held only at 128 rows [probe_b200]\"\n  - \"dead end: L2 prefetch of the whole input by the first-wave CTAs does not help, so DRAM request issue is not limited by CTA ramp [probe_b200]\"\n  - \"dead end: fatter threads (2 chunks, 256-thread CTAs, one wave) are 3-5% slower at S [probe_b200]\"\n  - \"run_tests: 16/16 pass; vs r0 on the same GPU S +0.1%, M +0.0%, L +0.1% (noise); predicted portal 0.6749 vs 0.6742 [run_tests]\"\n  - \"portal prediction under H10 (+0.5 us clock-bound cost): every variant has the same launch/exit and address chain length to within a few instructions, so none is expected to move the portal S times by more than noise; S-band effort should stop [INFERRED]\"\npaths:\n  - {max_tokens: 512, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\nruns_on:\n  H200: {runs: false, representative: false, note: \"256-bit ld/st and L2::cache_hint on st need sm_100\"}\n  A100: {runs: false, representative: false, note: \"sm_100-only PTX\"}\n  L40S: {runs: false, representative: false, note: \"sm_100-only PTX\"}\nrisks:\n  - \"No expected gain: it is r0 within noise, so no portal slot is worth spending on it\"\n  - \"Prefetch variant (d) uses cp.async.bulk.prefetch.L2 on our own input only; it is not in the returned kernel\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -184,7 +339,51 @@
   ],
   "round": "r1",
   "solution": "problems/085_geglu_activation/rounds/r1/candidates/r1-geglu-s-lean32.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z20geglu_generic_kernelPKfPfxi",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 4,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z23geglu_5120_small_kernelPKfPf",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 4,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 31,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z17geglu_5120_kernelPKfPf",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 10,
+     "LDG.CONSTANT.256": 4,
+     "STG": 5,
+     "STG.256": 2
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "S",
    "instructions": "Experiment E3 (tests H6): S-band cost ladder and a lean one-wave small-size path. 1) Under the harness flush at 7.9 MB (and 31 MB), measure CUPTI spans for: an empty kernel with 1, 640 and 1280 CTAs; one CTA issuing a single 32 B load then a store (DRAM round trip as seen in the span); 148 CTAs each loading 4 KB; r0 read-only; r0 full. Write the ladder (launch/exit, CTA dispatch, first DRAM round trip, streaming, store drain) in the findings. 2) Build S-path variants selected by rows <= 512 only: (a) 64-thread CTAs (1280 CTAs); (b) 512-thread CTAs with 1 chunk per thread; (c) a one-wave grid of 148 x 4 CTAs (256 threads) where each thread issues ALL its loads (2 chunks, <=48 regs) before any compute; (d) the first-wave CTAs issue cp.async.bulk.prefetch.L2 for the whole input in 16-64 KB pieces (our own input only) before their normal loads, to test whether DRAM request issue is limited by CTA ramp; (e) a minimal-prologue variant: 32-bit address math, no createpolicy (plain stores) at S since EL gains 0 there. 3) Interleave >=7 repeats per variant, report medians; keep r0 for rows > 512; run_tests for 16/16. 4) State, for each variant, the predicted portal effect given H10 (the portal adds ~0.5 us of SM-clock-bound cost). Success: An S path >=5% (>=0.2 us) faster than r0 at 7.9-31 MB on the bench with 16/16 pass and no M/L change. Refuted if: No variant beats r0 by >2% at any S size: then the S time is the empty-kernel span plus one DRAM round trip plus streaming, H6 is parked, and S-band effort stops. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -193,6 +392,124 @@
    "operation": "specialisation",
    "parents": [
     "r0-geglu-ldg256-2d-stel"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,1024": 11.11,
+    "1,128": 3.62,
+    "1,131": 3.65,
+    "1,2048": 18.59,
+    "1,512": 7.01,
+    "16,256": 35.35,
+    "16,449": 62.74,
+    "2,211": 6.21,
+    "2,512": 10.91,
+    "32,128": 35.22,
+    "4,1024": 35.2,
+    "4,128": 6.88,
+    "4,541": 19.59,
+    "8,1024": 71.66,
+    "8,256": 18.69,
+    "8,613": 42.49
+   }
+  }
+ },
+ "r2-geglu-cpol": {
+  "card": "id: r2-geglu-cpol\nparents: [r1-geglu-efld-m]\noperation: knob_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows1\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E3 asked whether the portal's extra time scales with the SM clock and whether an\n  instruction-lean kernel recovers it. The clock lock was not available on the rented B200, so the\n  direct measurement was not possible. Instead I measured how much SM-side slack the kernel has by\n  adding dummy FMA and MUFU work. At the unlocked clock there are at least 60% spare FP32 ops per\n  element at every size, and the extra MUFU cost is at most 1.5% at S/M. A 24% lower SM clock\n  therefore cannot expose the maths. The SM-clock part of H15 is refuted. This candidate is r1\n  with the evict_last policy as an immediate constant. It ties r1 on the bench.\nexpected_effect:\n  S: {pct: 0, confidence: medium}\n  M: {pct: 0, confidence: medium}\n  L: {pct: 0, confidence: high}\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 128\n  CTAS_PER_ROW: 5\n  FLOATS_PER_THREAD: 8\n  EF_MAX_ROWS: 3072\n  STORE_POLICY: \"immediate 0x14F0000000000000 (evict_last)\"\ndispatch:\n  - {max_tokens: 3072, kernel: geglu_5120_kernel<true>, meta: {x: ef, st: el}}\n  - {max_tokens: null, kernel: geglu_5120_kernel<false>, meta: {x: none, st: el}}\ntests: [H15, H5]\nfindings:\n  - \"nvidia-smi -lgc 1500,1500 is not permitted on the rented B200, and ncu --clock-control base fails with 'Failed to lock GPU clock frequencies'. The base-clock arm of E3 and the 21-rep locked comparison could not be run [probe_b200]\"\n  - \"ncu --clock-control none, application replay, --cache-control none, 5 samples per cell, medians (r1 kernel): SM clock 1.91-1.94 GHz, DRAM 3.97-3.99 GHz effective, in-window DRAM reads equal input bytes, writes 3.2/6.0/10.0/23.6/68.6/154.9 MB at 7.9/31/63/126/252/503 MB, lts sectors 0.39/1.52/3.0/5.9/11.9/23.6 M (about 3 sectors per output byte-pair, linear in traffic) [probe_b200 ncu]\"\n  - \"ncu gpu__time_duration medians for r1: 5.7/9.3/12.1/20.6/37.3/73.8 us at 7.9/31/63/126/252/503 MB. These run 2-4% above the harness numbers (3.7/6.8/10.1/18.0/35.1/71.4) because of profiling and replay, so fit constants are not portal-comparable [probe_b200 ncu]\"\n  - \"SM-slack ladder (harness_time, 7 interleaved reps, medians, us, rows 128/512/2048/8192): r1 3.70/6.69/18.02/71.47; +4 or +8 dependent FMAs per element (about +30% or +60% of r1's ~13 FP32 ops) 3.71/6.69/18.04/71.51 and 3.72/6.75/18.08/71.56, i.e. free; +16 FMA 3.78/6.94/18.15/71.49 (+2% at S, +0.7% at M, 0 at L); +32 FMA 4.00/7.62/19.49/71.53 (+8%/+14%/+8%/0) [probe_b200]\"\n  - \"MUFU ladder, same sizes: +1 extra ex2 per element (+50% MUFU) 3.71/6.79/18.06/71.45 (+0.4..1.5% at S/M, 0 at L); +2 ex2 3.78/7.01/18.20/71.43; +4 ex2 4.03/7.71/18.92/71.36. L is flat in every case: the 503 MB stream hides any SM work up to +250% FMA / +300% MUFU [probe_b200]\"\n  - \"consequence: a 1500 MHz SM clock is equivalent to +31% SM cycles. For L that is invisible (flat to +250%). For S/M the worst case is the MUFU slope: +31% of MUFU time costs under 1% (about 0.05 us at 128 rows). So the SM-clock share of H15/H5 is below the portal noise, and the portal's +0.5-1.0 us is fixed launch/exit cost (H10) plus any L2-clock effect, which this bench cannot reach [probe_b200; INFERRED]\"\n  - \"one-MUFU GEGLU (e = ex2(k*(a+0.044715a^3)) with k folded into one FMA chain, clamp t<=126, reciprocal from integer seed 0x7EF477D1 then a Halley step and a Newton step): max abs error 9.5e-7 at 128 rows and 1.9e-6 at 2048 rows (identical to r1), 0 elements out of tolerance, no NaN for inputs scaled x6. A pure two-Newton reciprocal from the 9% seed is not enough (1e-4 relative) [probe_b200]\"\n  - \"the one-MUFU variant is not instruction-lean: MUFU 16 -> 8 per thread but FFMA 8 -> 48 and IADD3/FMNMX added, SASS 136 -> 152 instructions. Harness bench, rows 128/512/1024/2048/4096/8192 (r1 vs v1): 3.70/3.76, 6.76/6.86, 10.08/10.16, 18.03/18.06, 35.11/35.19, 71.42/71.42 us. run_tests: S +1.9%, M +0.5%, L +0.1% vs r1 (16/16 pass, predicted portal 0.6759) [probe_b200, run_tests]\"\n  - \"constant evict_last policy (no createpolicy): SASS keeps the two LDG.256 as the first memory instructions in both versions; 136 instructions either way. Bench 3.71/6.79/10.08/18.00/35.14/71.39 vs r1 3.70/6.76/10.08/18.03/35.11/71.42; run_tests S +0.1%, M 0.0%, L 0.0%, 16/16 pass, predicted portal 0.6768 vs 0.6755 (P 54%) [probe_b200, run_tests]\"\n  - \"dead end: instruction-count reduction does not help while compute is hidden. The test of 'lean maths at the lock' is the slack ladder above, and it shows nothing to recover\"\npaths:\n  - {max_tokens: 3072, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\nruns_on:\n  H200: {runs: false, representative: false, note: \"256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100\"}\n  A100: {runs: false, representative: false, note: \"sm_100-only PTX\"}\n  L40S: {runs: false, representative: false, note: \"sm_100-only PTX\"}\nrisks:\n  - \"No expected gain: not worth a portal slot on its own\"\n  - \"The clock lock could not be applied, so a possible L2/crossbar clock effect (the per-byte part of H15) is still untested\"\n  - \"The immediate policy 0x14F0000000000000 relies on the CUTLASS encoding of evict_last; the bench shows it behaves like createpolicy\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-geglu-cpol",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows1"
+  },
+  "operation": "knob_mutation",
+  "parents": [
+   "r1-geglu-efld-m"
+  ],
+  "round": "r2",
+  "solution": "problems/085_geglu_activation/rounds/r2/candidates/r2-geglu-cpol.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E3 (tests H15): Clock dependence at base clock: is the portal's extra time fixed or per-byte, and does an instruction-lean variant recover it?. Use ncu on the rented B200 (permitted in r1 with --cache-control none). For r1-geglu-efld-m at 7.9/31/63/126/252/503 MB, run the harness-exact sequence (reset, 252 MB zero_, then the kernel) under ncu with --cache-control none and (a) --clock-control none, (b) --clock-control base. Collect gpu__time_duration.sum, sm__cycles_elapsed.avg, gpc__cycles_elapsed.avg.per_second, dram__cycles_elapsed.avg.per_second, dram__bytes_read.sum, dram__bytes_write.sum, lts__t_sectors.sum; 5 samples per cell, medians. Report the SM and DRAM clocks in each mode. Compute delta = t(base) - t(none) per size and fit delta = fixed + per_MB * traffic. If the DRAM clock also dropped under base, normalise by the achieved DRAM-clock ratio and state the assumption. Second, build two instruction-lean variants of the same structure and run them under the same two clock modes: (1) one-MUFU GEGLU: e = ex2.approx(k*(a + 0.044715 a^3)) with k = -2*sqrt(2/pi)*log2(e) folded into one FMA chain, r = 1/(1+e) by an integer-seed reciprocal plus two Newton FMA steps (no MUFU.RCP), out = a*b*r; verify max abs error < 3e-6 against the fp32 reference at 128 and 2048 rows; (2) same maths as r1 but the createpolicy hoisted so the kernel has the minimum instruction count before the first load and after the last store (check SASS: loads must be the first two memory instructions). Third, if nvidia-smi -lgc 1500,1500 is permitted, repeat the r1 vs variant (1) comparison at the lock with the harness-exact bench, 21 interleaved reps. Report per-size numbers, the fit, and run run_tests on variant (1). Success: At base clock the delta has a per-byte component >= 3% of t at 126-503 MB, and variant (1) or (2) recovers >= 2% of t at base clock while being within noise at unlocked clock: then it is a portal candidate (expected +0.005 to +0.01). Refuted if: The base-clock delta is a constant offset within 0.15 us across sizes (per_MB consistent with zero) and the lean variants change base-clock time by < 1%: H15 refuted, H5 stays refuted, and clock-lean work stops. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "sonnet",
+   "niche": "exp:E3:H15",
+   "operation": "knob_mutation",
+   "parents": [
+    "r1-geglu-efld-m"
+   ]
+  },
+  "timings": {}
+ },
+ "r2-geglu-die-probe-ctl": {
+  "card": "id: r2-geglu-die-probe-ctl\nparents: [r1-geglu-efld-m]\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows1\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E2/H16 asked whether the B200's two dies make the home partition of an address usable from %smid.\n  Probes found a real latency split: remote DRAM reads take about 994 cycles against 585 local, and\n  the home changes every 4 KB. But the home depends on a physical 2 MB-page bit that the kernel cannot\n  compute. With a perfect host-measured map, locality still gives nothing when the stream saturates\n  bandwidth or at S, and any die-aware dynamic assignment costs about 1 us or more. The build gate\n  failed, so this candidate is r1's kernel unchanged (a control). It is not worth a portal slot.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs:\n  THREADS: 128\n  CTAS_PER_ROW: 5\n  FLOATS_PER_THREAD: 8\n  EF_MAX_ROWS: 3072\n  STORE_HINT: evict_last\ndispatch:\n  - {max_tokens: 3072, kernel: geglu_5120_kernel<true>, meta: {x: ef, st: el}}\n  - {max_tokens: null, kernel: geglu_5120_kernel<false>, meta: {x: none, st: el}}\ntests: [H16, H6]\nfindings:\n  - \"probe 1 (dispatch, H6): r1's grids use all 148 SMs at every size. At 128 rows, 640 CTAs land 4-5 per SM, and 338 of them run on SMs 0-73 vs 302 on SMs 74-147. Dispatch spans 256 ns at 640 CTAs and 576 ns at 2110 CTAs. CTAs start in TPC pairs (2k, 2k+1), striding over GPCs. Small grids do NOT land on one die [probe_b200]\"\n  - \"die map (warm L2 by SM0, re-read from each SM): the dies are interleaved in TPC pairs, not split at smid 74. Die of SM0 has 70 SMs; the other die has 78: SMs 6,7,10-15,22,23,26-31,38,39,42-47,54,55,58-63,70,71,74-79,84,85,88-93,98,99,102-107,112,113,116-121,126,127,130-141 [probe_b200]\"\n  - \"probe 2 (latency, single-thread dependent ld.cg, SM cycles at about 1.9 GHz): cold DRAM is bimodal, 585 local vs 994 remote (+70%). L2 hit on the SM's own die is 255-310. A line cached only in the other die's L2 takes about 657. A reading SM gets a near-die copy in its own L2, so a second read is local [probe_b200]\"\n  - \"home mapping: constant per 4 KB chunk. Within a 2 MB page, the home is the XOR of VA bits 12,13,14,15,17,18,19,20 (100% fit over 256 MB), XORed with one per-page constant. That constant is a physical-address bit: the best fit from VA bits 21-30 is only 81-91% and varies between allocations, so a kernel cannot compute the home from the pointer [probe_b200]\"\n  - \"probe 3 (read-only stream, host-measured oracle map, 4 KB chunks claimed from per-die lists, G=4 chunks per atomic): 256 MB plain 56.3 us, die-blind atomic 56.4, all-local 56.3, all-remote 70.7. Locality gives no bandwidth at saturation; only all-remote traffic is capped, by the die-to-die link at about 3.6 TB/s per direction [probe_b200, CUDA events]\"\n  - \"probe 3 at S with low-contention per-SM counters (CUPTI, harness_time): read 5 MB plain 3.52, local 4.48, remote 4.45 us. Read 20 MB 6.53/7.46/8.16; 80 MB 18.18/19.20/24.64. The 200 ns local-vs-remote first round trip is invisible at S, and the %smid-based assignment adds about 1 us [probe_b200]\"\n  - \"dead end: a single-address end-of-call reset counter (atomicAdd by every CTA) doubles kernel time (80 MB read 18.2 -> 37.5 us): same-address L2 atomics serialise at about 1 ns each. Any per-call scratch-counter design must avoid a global done-counter [probe_b200]\"\n  - \"pitfall for microbenchmarks: clock64 around a load needs a consumer (STS of the value) between the load and the second clock read, or ptxas issues CS2R before the scoreboard wait (all readings 13 cycles). ld.global.cg becomes LDG.E.STRONG.GPU on sm_100a [probe_b200]\"\n  - \"verdict: H16 refuted. The latency split (70%) and the granularity (4 KB) pass the gate, but the home bit is not computable; the oracle gain is about 0 at S and at L; assignment overhead is about 1 us or more. Do not revisit die locality for streaming kernels [probe_b200; INFERRED]\"\n  - \"run_tests: 16/16 pass; vs r1-geglu-efld-m S +0.2%, M 0.0%, L 0.0% (same code) [run_tests]\"\npaths:\n  - {max_tokens: 3072, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100\"\n  A100:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\n  L40S:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\nrisks:\n  - \"Identical to r1-geglu-efld-m; a portal submission would only measure noise\"\n  - \"The die map and hash were measured on one rented B200 with unlocked clocks; the conclusion (no gain) does not depend on clocks\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-geglu-die-probe-ctl",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows1"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r1-geglu-efld-m"
+  ],
+  "round": "r2",
+  "solution": "problems/085_geglu_activation/rounds/r2/candidates/r2-geglu-die-probe-ctl.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E2 (tests H16): Two-die locality: is the L2 partition / HBM home of an address exploitable from %smid?. Probe first, build second. Probe 1 (dispatch): launch the r1 kernel's exact grids for 128, 422, 512 rows and 2048 rows with each CTA recording %smid into a scratch buffer; report the histogram of SMs used and the order in which SM ids fill (do small grids land on one die?). Probe 2 (latency map): a single-CTA pointer-chase kernel pinned by launching 148 CTAs that read %smid and only the CTA on a chosen SM (sweep SM 0, 37, 74, 111, 147) chases; chase within L2-resident lines (first touch the buffer with a read, then chase) over a 64 MB buffer with stride candidates 128 B, 1 KB, 4 KB, 64 KB, 1 MB, and record per-line latency for 4096 lines; look for a bimodal latency (~150 ns vs far) and the address-bit pattern that separates the modes. Probe 3 (bandwidth): a read-only stream over 256 MB executed only by CTAs on SMs 0-73 vs only SMs 74-147 vs all (the others exit at once), each at the same bytes; compare TB/s; then, if probe 2 found a coarse mapping, the same with the address set restricted to lines homed locally vs remotely. If and only if probe 2 shows a >= 20% latency split with a granularity >= 1 KB that a kernel can compute from the address, build a variant of r1-geglu-efld-m: each CTA reads %smid, derives its die, and takes its row (or 4 KB chunk) from a per-die work counter in a scratch buffer that the last CTA resets (one launch, deterministic kernel sequence, correct for every call, no data-dependent output), assigning local-homed chunks first. Measure under the harness-exact bench at 7.9/31/126/503 MB, 21 interleaved reps, and run run_tests. Record the mapping result in findings whatever the outcome; also report the probe-1 histogram as it bears on H6. Success: Probe 2 finds a computable local/remote split and the locality-aware variant is >= 2% faster at M or >= 3% at L, or >= 0.2 us at S, with 16/16 pass. Refuted if: The latency split is < 10% or the home partition changes at < 1 KB granularity with no computable pattern, or small grids are already spread across both dies and the locality variant gains < 1%. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:E2:H16",
+   "operation": "new_design",
+   "parents": [
+    "r1-geglu-efld-m"
+   ]
+  },
+  "timings": {}
+ },
+ "r2-geglu-row640-efm": {
+  "card": "id: r2-geglu-row640-efm\nparents: [r1-geglu-efld-m]\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows1\n  red: warp\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E1 (H14) finds no read-path cap. Clean-L2 plain loads stream at 7.4-7.5 TB/s marginal. The full\n  kernel runs at 86-88% of DRAM peak (ncu). The dirty-flush write-back (155 MB at 503 MB) sets the\n  L time, and no access order changes it. Swizzles, prefetch-ahead, reversed order and two rows\n  per thread all tie or lose. The only structural lever left is the CTA count. One 640-thread CTA\n  per row dispatches 5x fewer CTAs: the empty-kernel span at 8192 rows drops from 22.2 to 7.2 us.\n  On the rented B200 this ties r1, because dispatch is hidden at 1965 MHz. If CTA dispatch scales\n  with the portal's 1500 MHz SM clock, it could gain slightly at M/L on the portal only.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: medium\n  M:\n    pct: -1\n    confidence: low\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 32\n  smem_per_cta_bytes: 0\n  threads_per_cta: 640\n  ctas_per_sm: 3\n  bytes_in_flight_per_sm: 122880\n  launches_per_call: 1\nknobs:\n  THREADS: 640\n  CTAS_PER_ROW: 1\n  FLOATS_PER_THREAD: 8\n  EF_MAX_ROWS: 3072\n  LOAD_HINT_SMALL: \"ld.global.nc.L1::no_allocate.L2::evict_first.v8.f32\"\n  LOAD_HINT_LARGE: \"ld.global.nc.v8.f32\"\n  STORE_HINT: evict_last\ndispatch:\n  - {max_tokens: 3072, kernel: \"geglu_row_kernel<true>\", meta: {x: ef, st: el, threads: 640}}\n  - {max_tokens: null, kernel: \"geglu_row_kernel<false>\", meta: {x: none, st: el, threads: 640}}\ntests: [H14]\nfindings:\n  - \"nvidia-smi -lgc 1500,1500 is not permitted on the rented B200 (no permission); -lmc is unsupported (memory already at 3996 MHz); ncu --clock-control base also fails to lock clocks, so H15 cannot be measured on this box [probe_b200]\"\n  - \"bench method: torch CUDA events around a ctypes launch include CPU launch gaps (empty kernel read 16-26 us); use sol_execbench.core.bench.cupti_utils.collect_cupti_activities and per-kernel end-start instead [probe_b200]\"\n  - \"step 1 read-only, CUPTI, 167.8/335.5 MB of reads (252/503 MB workloads): 256-bit DIRTY 33.25/62.99 us (5.05/5.33 TB/s), CLEAN 27.50/50.12 (6.10/6.69); 128-bit (512 B per warp instruction) DIRTY 33.06/62.16, CLEAN 27.12/49.42 (6.19/6.79); bulk copy into smem DIRTY 33.60/63.35, CLEAN 27.76/51.01 [probe_b200]\"\n  - \"step 1: CLEAN marginal read bandwidth (4096 -> 8192 rows) 7.42 TB/s (256-bit), 7.52 (128-bit), 7.22 (bulk copy into smem); DIRTY marginal 5.8 TB/s. The 6.2 TB/s 'cap' in H14 was write-back plus ramp, not a read-path limit; H14 refuted [probe_b200]\"\n  - \"step 1: 128-bit and 256-bit loads tie on reads (128-bit 1-2% faster CLEAN); the TMA/bulk path into smem is 1-3% slower than LDG; the SM return path is not the limit [probe_b200]\"\n  - \"step 1 (c): a prefetch.L2-only kernel finishes issuing 335 MB in 16 us (21 TB/s): fire-and-forget, so it cannot measure the DRAM fill rate. One-shot pf_l2 (2 x 4 KB per CTA) is 22.8 us, the same as the empty kernel [probe_b200]\"\n  - \"step 1 (e): data already in L2 (32 MB x 8 passes, persistent 592-2368 CTAs): 21.6-22.7 TB/s [probe_b200]\"\n  - \"step 1: read-only with L2 prefetch of row+64: CLEAN 25.92/48.49 us (-6%/-3% vs plain 256-bit), DIRTY 33.54/62.10 (+1/-1%) [probe_b200]\"\n  - \"ncu (rented clock, single samples) at 503 MB: full kernel DIRTY read 335.5 MB, write 155 MB, 86.1-86.7% of DRAM peak; CLEAN write 99 MB, 87.5-88.4%; read-only DIRTY write 61.7 MB, 79%; read-only CLEAN 81-82%. lts read sectors 15.7M (= input bytes / 32 B for every variant). At 63 MB: full DIRTY write 15.8-18.4 MB, EF loads 8.1 MB [probe_b200 ncu]\"\n  - \"CTA dispatch: empty kernel span with (5, rows) x 128-thread CTAs = 1.47/2.31/3.62/6.31/11.59/22.18 us at 128/512/1024/2048/4096/8192 rows (~0.54 ns per CTA GPU-wide); with rows x 640-thread CTAs 1.47/1.54/1.76/2.53/4.07/7.23 us [probe_b200]\"\n  - \"step 2 (full kernel, EL stores, default loads, 21 interleaved reps, harness sequence) vs base at 252/441/503 MB: reversed rows -0.2/-0.1/+0.2%; swizzle G=8 +4.7/+2.9/+2.8%; G=16 +6.3/+4.1/+3.3%; G=64 +5.5/-/+4.3%; L2 prefetch row+64 +0.1/+1.0/+3.9%; +512 +8.3/+10.8/+12.0%; +2048 +35/+45/+46%; 2 rows per thread (all loads first) +1.6/+1.3/+1.3%; one 640-thread CTA per row -0.1/-0.2/-0.2% [probe_b200]\"\n  - \"dead end: spreading concurrent CTAs over 1-4 MB apart regions (row swizzle) costs 3-6% at L; DRAM likes the natural sequential order [probe_b200]\"\n  - \"dead end: L2 prefetch ahead of the read front hurts the full kernel (prefetched lines evicted, or extra dirty evictions before use); worse the further ahead [probe_b200]\"\n  - \"variant (iv), a CTA holding gate of row r and linear of row r+1, cannot compute any output row alone; not built [INFERRED]\"\n  - \"640-thread one-CTA-per-row vs (5, rows) 128-thread at 128/512/1024/2048/4096/8192 rows: default loads 0.0/0.0/0.0/-0.3/-0.4/-0.1%; with EF loads vs base+EF: 0.0/-1.4/-1.4/-0.4%. 2 x 320-thread CTAs per row: -2.5% at 128 rows, +0.9% at 512, about 0 at L (single bench, noise-level) [probe_b200]\"\n  - \"run_tests 16/16 pass vs r1-geglu-efld-m on the same B200: S -0.1%, M -0.9% (1,1024 -1.2%, 2,512 -0.8%, 8,256 -1.4%, 1,2048 -0.7%, 4,541 -0.4%), L -0.1% (16,256 +2.0%, others -0.4..-0.8%); emulator 0.678 +- 0.011 [run_tests]\"\n  - \"conclusion for H14: L is at the DRAM ceiling for this traffic (86-88% of peak with 490 MB in-window at 503 MB); the only L lever left would be fewer in-window write-back bytes, which H17 says no policy changes [probe_b200; INFERRED]\"\npaths:\n  - {max_tokens: 3072, lang: cuda, width: 256, threads: 640, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}\n  - {max_tokens: null, lang: cuda, width: 256, threads: 640, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100\"\n  A100:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\n  L40S:\n    runs: false\n    representative: false\n    note: \"sm_100-only PTX\"\nrisks:\n  - \"Ties r1 on the rented B200; any portal gain depends on CTA dispatch being SM-clock-bound at 1500 MHz, which could not be measured (clock locks not permitted)\"\n  - \"At 128/131 rows the grid has fewer CTAs (128/131) than SMs (148); measured tie on the rented B200, but a few SMs stay idle\"\n  - \"3 CTAs/SM x 640 threads = 1920 resident threads (94% occupancy) vs 2048 for 128-thread CTAs; slightly fewer bytes in flight per SM (123 vs 131 KB)\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-geglu-row640-efm",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows1"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r1-geglu-efld-m"
+  ],
+  "round": "r2",
+  "solution": "problems/085_geglu_activation/rounds/r2/candidates/r2-geglu-row640-efm.json",
+  "status": "proposed",
+  "task": {
+   "band": "L",
+   "instructions": "Experiment E1 (tests H14): What caps reads at 6.2 TB/s, and does any legitimate access order lift the L stream?. Start from r1-geglu-efld-m and its bench that reproduces timing.py (input copy to a shifted address, output zero, cudaCtxResetPersistingL2Cache, 252 MB zero_, interleaved repeats, CUPTI span). First check whether `nvidia-smi -lgc 1500,1500 -lmc 3996` is permitted on the rented box and report it. Step 1, read-only ceiling at 503 MB and 252 MB in CLEAN state (flush, then a read-only sum over another 252 MB) with ncu dram__bytes_read.sum.per_second, lts__t_sectors_op_read, l1tex__m_xbar2l1tex_read_bytes: (a) r0 read-only LDG.256 one-shot; (b) LDG.128 one-shot; (c) a kernel that only issues cp.async.bulk.prefetch.L2 over the whole input (no SM data return) to measure the DRAM-to-L2 fill rate; (d) one-shot CTAs that issue a cp.async.bulk 1-D copy of their 4 KB gate and 4 KB linear chunk into smem and exit after the mbarrier (no L1 path, no ring); (e) an L2-resident re-read of a 32 MB buffer to get the L2-to-SM ceiling. Report TB/s for each; if (c) exceeds 6.8 TB/s the cap is on the SM return path and (d)-style loads are the lead. Step 2, access order on the full kernel at 252/441/503 MB, 21 interleaved reps each, EL stores, default loads: (i) current grid (5, rows); (ii) 1-D grid with a tile swizzle so concurrently dispatched CTAs touch regions 1-4 MB apart (e.g. tile = (i % G) * (rows/G) + i / G for G in 8, 16, 64; 5120 = 2^10*5 so no division by 640 is needed if the swizzle is on the row index); (iii) reversed row order; (iv) CTAs that handle the gate chunk of row r and the linear chunk of row r+1 so each CTA's two loads are 60 KB apart instead of 20 KB; (v) each CTA loads gate+linear of two rows but stores nothing until both are in (already tied, include as a control). Step 3: take the best of step 2 and, if a bulk-to-smem load path won step 1, build a one-shot bulk1d variant (no ring, one 8 KB copy per CTA, consume from smem, EL 256-bit stores). Run run_tests on the best variant (all 16 workloads) and record every number in findings, including negative ones. Success: A variant beats r1-geglu-efld-m by >= 3% at 252, 441 and 503 MB (21 interleaved reps, medians) with 16/16 pass, or step 1 identifies the read cap's location with a TB/s figure that changes the design. Refuted if: No read-only variant exceeds 6.5 TB/s CLEAN, prefetch-to-L2 also caps at ~6.2 TB/s, and no access order beats r1 by more than 1.5% at any L size: then H14 is refuted and L is at the hardware ceiling for this traffic. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:E1:H14",
+   "operation": "structural_mutation",
+   "parents": [
+    "r1-geglu-efld-m"
    ]
   },
   "timings": {}

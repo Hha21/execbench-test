@@ -1,0 +1,84 @@
+id: r2-geglu-die-probe-ctl
+parents: [r1-geglu-efld-m]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows1
+  red: warp
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E2/H16 asked whether the B200's two dies make the home partition of an address usable from %smid.
+  Probes found a real latency split: remote DRAM reads take about 994 cycles against 585 local, and
+  the home changes every 4 KB. But the home depends on a physical 2 MB-page bit that the kernel cannot
+  compute. With a perfect host-measured map, locality still gives nothing when the stream saturates
+  bandwidth or at S, and any die-aware dynamic assignment costs about 1 us or more. The build gate
+  failed, so this candidate is r1's kernel unchanged (a control). It is not worth a portal slot.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 0
+  threads_per_cta: 128
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs:
+  THREADS: 128
+  CTAS_PER_ROW: 5
+  FLOATS_PER_THREAD: 8
+  EF_MAX_ROWS: 3072
+  STORE_HINT: evict_last
+dispatch:
+  - {max_tokens: 3072, kernel: geglu_5120_kernel<true>, meta: {x: ef, st: el}}
+  - {max_tokens: null, kernel: geglu_5120_kernel<false>, meta: {x: none, st: el}}
+tests: [H16, H6]
+findings:
+  - "probe 1 (dispatch, H6): r1's grids use all 148 SMs at every size. At 128 rows, 640 CTAs land 4-5 per SM, and 338 of them run on SMs 0-73 vs 302 on SMs 74-147. Dispatch spans 256 ns at 640 CTAs and 576 ns at 2110 CTAs. CTAs start in TPC pairs (2k, 2k+1), striding over GPCs. Small grids do NOT land on one die [probe_b200]"
+  - "die map (warm L2 by SM0, re-read from each SM): the dies are interleaved in TPC pairs, not split at smid 74. Die of SM0 has 70 SMs; the other die has 78: SMs 6,7,10-15,22,23,26-31,38,39,42-47,54,55,58-63,70,71,74-79,84,85,88-93,98,99,102-107,112,113,116-121,126,127,130-141 [probe_b200]"
+  - "probe 2 (latency, single-thread dependent ld.cg, SM cycles at about 1.9 GHz): cold DRAM is bimodal, 585 local vs 994 remote (+70%). L2 hit on the SM's own die is 255-310. A line cached only in the other die's L2 takes about 657. A reading SM gets a near-die copy in its own L2, so a second read is local [probe_b200]"
+  - "home mapping: constant per 4 KB chunk. Within a 2 MB page, the home is the XOR of VA bits 12,13,14,15,17,18,19,20 (100% fit over 256 MB), XORed with one per-page constant. That constant is a physical-address bit: the best fit from VA bits 21-30 is only 81-91% and varies between allocations, so a kernel cannot compute the home from the pointer [probe_b200]"
+  - "probe 3 (read-only stream, host-measured oracle map, 4 KB chunks claimed from per-die lists, G=4 chunks per atomic): 256 MB plain 56.3 us, die-blind atomic 56.4, all-local 56.3, all-remote 70.7. Locality gives no bandwidth at saturation; only all-remote traffic is capped, by the die-to-die link at about 3.6 TB/s per direction [probe_b200, CUDA events]"
+  - "probe 3 at S with low-contention per-SM counters (CUPTI, harness_time): read 5 MB plain 3.52, local 4.48, remote 4.45 us. Read 20 MB 6.53/7.46/8.16; 80 MB 18.18/19.20/24.64. The 200 ns local-vs-remote first round trip is invisible at S, and the %smid-based assignment adds about 1 us [probe_b200]"
+  - "dead end: a single-address end-of-call reset counter (atomicAdd by every CTA) doubles kernel time (80 MB read 18.2 -> 37.5 us): same-address L2 atomics serialise at about 1 ns each. Any per-call scratch-counter design must avoid a global done-counter [probe_b200]"
+  - "pitfall for microbenchmarks: clock64 around a load needs a consumer (STS of the value) between the load and the second clock read, or ptxas issues CS2R before the scoreboard wait (all readings 13 cycles). ld.global.cg becomes LDG.E.STRONG.GPU on sm_100a [probe_b200]"
+  - "verdict: H16 refuted. The latency split (70%) and the granularity (4 KB) pass the gate, but the home bit is not computable; the oracle gain is about 0 at S and at L; assignment overhead is about 1 us or more. Do not revisit die locality for streaming kernels [probe_b200; INFERRED]"
+  - "run_tests: 16/16 pass; vs r1-geglu-efld-m S +0.2%, M 0.0%, L 0.0% (same code) [run_tests]"
+paths:
+  - {max_tokens: 3072, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: ef, st: el, launches: 1}
+  - {max_tokens: null, lang: cuda, width: 256, threads: 128, rows: 1, grid: oneshot, mem: ldg, x: none, st: el, launches: 1}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "256-bit ld/st and .L2::evict_first on 256-bit loads need sm_100"
+  A100:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX"
+  L40S:
+    runs: false
+    representative: false
+    note: "sm_100-only PTX"
+risks:
+  - "Identical to r1-geglu-efld-m; a portal submission would only measure noise"
+  - "The die map and hash were measured on one rented B200 with unlocked clocks; the conclusion (no gain) does not depend on clocks"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

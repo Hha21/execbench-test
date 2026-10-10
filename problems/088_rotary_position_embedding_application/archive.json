@@ -392,7 +392,35 @@
   ],
   "round": "r2",
   "solution": "problems/088_rotary_position_embedding_application/rounds/r2/candidates/r2-rope-ceiling-v4.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z11rope_kernelILi256EEvPKfS1_S1_S1_PfS2_jjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 8,
+     "LDG.NA.CONSTANT.128": 4,
+     "STG.128": 4
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z11rope_kernelILi128EEvPKfS1_S1_S1_PfS2_jjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 8,
+     "LDG.NA.CONSTANT.128": 4,
+     "STG.128": 4
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "L",
    "instructions": "Experiment E3 (tests H14): L-band ceiling probe: fastest read+write stream on the bench at 612 and 2689 MB across memory paths, with evict_last stores. 1. Write pure copy kernels (read Q/K rows, write the outputs, no tables, no maths) that share r1's harness binding, so each can be timed on the (1,64,8,8192) and (32,16,4,4096) workloads exactly like a solution. All use evict_last cache_hint stores unless stated. Variants: (a) r1's exact load/store code with the FMAs removed (the control, LDG.128 x 16 lanes, 128 and 256 threads); (b) LDG.256 / STG.256 with 8 lanes per row (ld.global.nc.L1::no_allocate.v8.f32); (c) 1-D cp.async.bulk ring: persistent grid, 32 KB, 64 KB and 96 KB per CTA in flight (dynamic shared memory, mbarrier expect_tx, 2-4 stages), stores either direct from registers or cp.async.bulk shared-to-global with the evict_last policy on the copy; (d) 2-D TMA (cuTensorMapEncodeTiled on the host each call) with the same ring sizes; (e) variant (a) with Q and K CTAs interleaved (even blockIdx -> Q, odd -> K) and with the grid reversed; (f) variant (a) with plain stores and with STG.256 stores only. 2. Time each at 612 and 2689 MB interleaved with (a) as control, 3 repeats; report TB/s = bytes / t and the marginal slope between the two sizes; also time (c)/(d) at 36 and 134 MB to record their fixed cost. 3. If any variant beats (a) by >= 3% at both L sizes, add the RoPE maths and the tables to it (table rows via LD4 from L2 as in r1, or bulk-copied once per s-tile if the ring is s-tile x head-group ordered), make it the > 262144-row path of r1's dispatcher, run_tests all 16, and submit if the bench L geomean improves >= 3% with S/M unchanged. If nothing beats (a), record the ceiling and the fixed cost of each path as findings and stop. Success: A path reaches >= 7.2 TB/s at 2689 MB on the bench (>= 3% over r1's copy control) and the RoPE kernel built on it is >= 3% faster at L in run_tests; portal score > 0.682. Refuted if: No path exceeds the LDG.128 control by 3% at either L size: H14 is supported, the L band is at the bench ceiling, and all later rounds target S/M and the portal-vs-bench gap only. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -403,9 +431,51 @@
     "r1-rope-v4nc-s128"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,40,8,131": 3.49,
+    "1,56,8,853": 8.87,
+    "1,64,8,8192": 92.42,
+    "1,8,8,128": 2.67,
+    "2,32,4,211": 4.61,
+    "2,40,8,4096": 59.31,
+    "2,48,6,919": 14.77,
+    "32,16,4,4096": 387.7,
+    "4,24,6,293": 6.59,
+    "4,36,6,2048": 50.99,
+    "4,48,12,1321": 47.25,
+    "64,8,8,128": 19.35,
+    "8,16,4,373": 9.41,
+    "8,24,8,1024": 39.06,
+    "8,28,4,1024": 39.79,
+    "8,32,4,1087": 46.53
+   }
+  }
  },
  "r2-rope-pair2-magic-occ10": {
+  "b200": {
+   "geomean_us": 23.654,
+   "score": 0.682703,
+   "submission": "64591",
+   "timings": {
+    "1,40,8,131": 3.7,
+    "1,56,8,853": 10.6,
+    "1,64,8,8192": 94.10000000000001,
+    "1,8,8,128": 3.0,
+    "2,32,4,211": 5.3,
+    "2,40,8,4096": 62.0,
+    "2,48,6,919": 16.8,
+    "32,16,4,4096": 397.4,
+    "4,24,6,293": 8.1,
+    "4,36,6,2048": 54.4,
+    "4,48,12,1321": 48.599999999999994,
+    "64,8,8,128": 21.1,
+    "8,16,4,373": 11.1,
+    "8,24,8,1024": 40.7,
+    "8,28,4,1024": 40.599999999999994,
+    "8,32,4,1087": 47.7
+   }
+  },
   "card": "id: r2-rope-pair2-magic-occ10\nparents:\n  - r1-rope-v4nc-s128\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  E1/H5: two heads at the same s per 16-lane group share one cos/sin load and double the x bytes per thread\n  (16 rows per 128-thread CTA, half the CTAs). On the bench it is neutral (within +-1.5% of r1). Bytes in flight\n  beyond about 80 KB per SM hurt, so the pair path is capped at 10 CTAs/SM with unused dynamic smem. A magic\n  divisor replaces rl % S on all paths (H8, -0.5..-2.5% at S/M). The portal slot reads H15: if the locked clock\n  starves latency, the half-CTA-count pair path should gain more on the portal at M than on the bench (~-1.7%).\nexpected_effect:\n  S:\n    pct: -2.6\n    confidence: medium\n  M:\n    pct: -1.7\n    confidence: medium\n  L:\n    pct: 0\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 40\n  smem_per_cta_bytes: 11500\n  threads_per_cta: 128\n  ctas_per_sm: 10\n  bytes_in_flight_per_sm: 81920\n  launches_per_call: 1\nknobs:\n  pair_threads: 128\n  pair_HG: 2\n  pair_pad_smem: 11500\n  pair_carveout_pct: 50\n  pair_rule: \"H,Hkv even and R > 4096 and S <= 1536\"\n  row_threshold: 262144\n  store_hint: evict_last\ndispatch:\n  - {rule: \"H%2==0 && Hkv%2==0 && R>4096 && S<=1536\", kernel: rope_pair<128>, meta: {threads: 128, pairs: 8, ctas_per_sm: 10}}\n  - {max_rows: 262144, kernel: rope_row<128>, meta: {threads: 128, rows: 8}}\n  - {max_rows: null, kernel: rope_row<256>, meta: {threads: 256, rows: 16}}\ntests:\n  - H5\n  - H8\n  - H3\n  - H15\n  - H11\nfindings:\n  - \"H5 refuted on the bench: pair HG=2 (NVRTC 48 regs, 10 CTAs/SM, 0 spills) vs r1+magic within +-1.5% at every size: 6.6 MB -2.4..-4.5%, 15.8-61 MB +-1%, 102 MB -1.3..-2.2%, 134-326 MB -0.5..-1%, 354-612 MB +0.4..+1.4%, 2689 MB +1.1..+1.3% [probe_b200, 3 interleaved repeats, 2 sessions]\"\n  - \"dead end: HG=4 (48 regs) +44% at 2.2 MB, +12..+22% at 6.6-16 MB, +7% at 57-61 MB, +2..+3% at L [probe_b200]\"\n  - \"H3: no-table twin of the pair kernel (constants for cos/sin) vs pair with tables: -2.6% at 612 MB, -1.5% at 407, +-1% at 269-354, +1% at 2689; table L2 traffic is <= 2.6% on the bench even at S=8192 [probe_b200]\"\n  - \"NEW: more bytes in flight hurts. The pair kernel at 40 regs (nvcc; 12 CTAs/SM = 96 KB of x per SM) has SASS identical to the 48-reg build (10 CTAs/SM = 80 KB) but is +2..+8% slower at 6.6-134 MB and +2..+3% at L [probe_b200: p2_128b vs p2_128; run_tests first draft +1.3..+2.6% at 36-102 MB]\"\n  - \"occupancy sweep with smem padding (132 KB carve-out): row kernel 16 CTAs/SM best; 13 CTAs +2..+4.5% at 36-102 MB; 10 CTAs +5..+10% everywhere. Pair kernel 10 vs 7 CTAs/SM within 1-3%. Rows in flight per SM: optimum about 128-160 rows (64-80 KB) [probe_b200]\"\n  - \"padding smem alone at unchanged occupancy (row kernel 16 CTAs/SM with 7.4 KB smem) costs +0.4..+3.5% at 57-102 MB (smaller L1 for tables); the pair kernel at 10 CTAs/SM with 11.5 KB padding ties no padding [probe_b200]\"\n  - \"carve-out: PreferredSharedMemoryCarveout 45-50% gives the 132 KB config; CTAs = floor(135168/(smem+1024)) matched cuOccupancy for 7400/9000/11500/16000 B (16/13/10/7) [probe_b200]\"\n  - \"H8 supported (small): magic divisor (umulhi + add + shift, host-computed) vs rl % S in r1: -2.5% at 2.2 MB, -1.0..-2.1% at 6.6-16 MB, -0.5..-1.1% at 36-134 MB, 0 at L [probe_b200]\"\n  - \"run_tests final: 16/16 pass; S -2.6%, M -1.7%, L -0.1% vs r1 on the same B200; 2.2 MB 2.5 vs 2.7, 6.6 MB -3.8%, 57 MB -2.4%, 269 MB (8,24,8) -4.1% / (8,28,4) -1.1%, no workload worse than +0.2%; predicted portal 0.6813 +- 0.0116 [run_tests]\"\n  - \"first draft without occupancy cap (pair at 12 CTAs/SM): S -1.0%, M -0.3%, L -0.1%; 36 MB +2.6%, 57 MB +1.6%, 102 MB +1.3% [run_tests]\"\n  - \"toolchain: nvcc (portal build) and NVRTC (probe) allocate different register counts for identical SASS (40 vs 48); occupancy-sensitive designs must be checked with compile_b200, not probe resources [compile_b200, probe_b200]\"\npaths:\n  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: 330000, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"not measured; B200 bench only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Bench gains are 1-3%, near noise at S; the portal may show nothing beyond the magic-divisor gain\"\n  - \"The 10 CTAs/SM cap relies on the driver choosing the 132 KB carve-out from a 50% hint; if it picks 228 KB the pair path drops to 18-smem-limited... (actually the reg limit of 12 applies) and loses L1 for tables\"\n  - \"cudaFuncSetAttribute (carve-out preference) is set once on our own kernel; it is ordinary occupancy control, but flag it for review\"\n  - \"Pair path dispatch keys on S <= 1536 and R > 4096, chosen from bench data; shape-only, correct for all shapes (odd H or Hkv fall back to the row kernel)\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r2-rope-pair2-magic-occ10",
   "language": "cuda_cpp",
@@ -425,7 +495,48 @@
   ],
   "round": "r2",
   "solution": "problems/088_rotary_position_embedding_application/rounds/r2/candidates/r2-rope-pair2-magic-occ10.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z8rope_rowILi256EEvPKfS1_S1_S1_PfS2_jjjjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 8,
+     "STG.128": 8
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z8rope_rowILi128EEvPKfS1_S1_S1_PfS2_jjjjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 8,
+     "STG.128": 8
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z9rope_pairILi128EEvPKfS1_S1_S1_PfS2_jjjjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 8,
+     "STG.128": 8
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (tests H5): Two heads per thread sharing one cos/sin load, 16-lane layout, <= 56 regs, one-shot; bench sweep then portal slot (tests H3, H5, H6, H11, H15). 1. Start from r1-rope-v4nc-s128 (16 lanes per row, lane j owns columns 4j..4j+3 and 64+4j..). Add a kernel rope_pair<THREADS, HG> where each thread handles HG rows at the same sequence position s from HG consecutive heads of the same batch element: pair index p over (b, hp, s) with hp in [0, H/HG); s = p % S; row0 = HG*(p - s) + s (for HG=2: row0 = 2p - s), rows row0 + i*S for i < HG. Load the four table vectors once (cl, ch, sl, sh), issue all 2*HG x loads (ld.global.nc.L1::no_allocate.v4.f32) and the 4 table loads before any FMA, then compute and store each row with the evict_last cache_hint stores. Q pairs first, then K pairs (separate Rq/HG, Rk/HG counts; the modulo uses the in-stream pair index). Dispatch to r1's one-row kernel whenever H % HG != 0 or Hkv % HG != 0, and keep that path for the smallest workload (< ~4k rows) where 64 CTAs would underfill 148 SMs. 2. Compile for sm_100a: target <= 56 regs for HG=2 (use __launch_bounds__(256,4) or (128,8)); report regs, spills and SASS counts; no shared memory. 3. Bench, interleaved with r1 as the control, 3 repeats per size, all 16 workloads: HG=2 at 128 and 256 threads; HG=4 at 128 threads if it fits in <= 72 regs without spills. Record the per-size winner and the no-table twin of the best (tables replaced by constants) to measure how much of any gain is table traffic vs bytes in flight. 4. Knob: replace rl % S by a host-computed magic divisor (mulhi + shift, passed as two kernel args) in both the pair kernel and r1's path; report its effect at 6.6-57 MB (H8). 5. Build the dispatcher (per-band thresholds from step 3), run_tests, and if the bench geomean is within +1% of r1 at every band submit it: the portal delta vs bench delta at M and at 612 MB is the H11/H15 reading. Success: Bench: >= 3% faster than r1 at 36-134 MB or >= 3% at 612 MB with no band more than 1% slower; portal: score > 0.682, or the portal gain at M/L exceeds the bench gain by >= 3 points (H15 supported). Refuted if: HG=2 at <= 56 regs is within +-1% of r1 at every size on the bench and the portal delta matches the bench delta: then more bytes in flight per thread and halved table traffic buy nothing, H5 and H3 are refuted in the 16-lane layout, and H15 loses its main support. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -436,7 +547,26 @@
     "r1-rope-v4nc-s128"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,40,8,131": 3.33,
+    "1,56,8,853": 8.66,
+    "1,64,8,8192": 92.39,
+    "1,8,8,128": 2.5,
+    "2,32,4,211": 4.51,
+    "2,40,8,4096": 59.3,
+    "2,48,6,919": 14.52,
+    "32,16,4,4096": 387.48,
+    "4,24,6,293": 6.53,
+    "4,36,6,2048": 51.1,
+    "4,48,12,1321": 47.04,
+    "64,8,8,128": 18.96,
+    "8,16,4,373": 9.3,
+    "8,24,8,1024": 37.48,
+    "8,28,4,1024": 38.69,
+    "8,32,4,1087": 46.4
+   }
+  }
  },
  "r2-rope-psst-m": {
   "card": "id: r2-rope-psst-m\nparents:\n  - r1-rope-v4nc-s128\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: persistent-wstat\n  launch: fused\n  tile: rows8\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  H13 test. A register-pipelined persistent grid (148 x k CTAs, next row's loads issued before the current row's\n  FMAs, no smem, no barriers) should remove the per-CTA replacement gap and beat r1's one-shot grid at 36-134 MB.\n  Bench result: refuted. Static persistent grids lose a share of bandwidth that grows with size (+3..+14% at the\n  same occupancy as r1), likely because a fixed per-SM split cannot follow uneven per-SM bandwidth the way dynamic\n  CTA dispatch does. The best variant (s-stationary, depth 1, 48 regs) ties r1 within about 2% at 36-102 MB and is\n  routed only there.\nexpected_effect:\n  S:\n    pct: 2\n    confidence: medium\n  M:\n    pct: 1\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 48\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 9\n  bytes_in_flight_per_sm: 73728\n  launches_per_call: 1\nknobs:\n  persistent_rows_min: 32769\n  persistent_rows_max: 110000\n  k_sm: occupancy_minus_1\n  pipeline_depth: 1\n  THREADS_P: 128\n  THREADS_S: 128\n  THREADS_L: 256\n  row_threshold: 262144\n  store_hint: evict_last\ndispatch:\n  - {max_rows: 32768, kernel: rope_kernel<128>, meta: {threads: 128, rows: 8}}\n  - {max_rows: 110000, kernel: rope_psst, meta: {threads: 128, k: occupancy-1, depth: 1}}\n  - {max_rows: 262144, kernel: rope_kernel<128>, meta: {threads: 128, rows: 8}}\n  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 16}}\ntests:\n  - H13\nfindings:\n  - \"H13 refuted on the bench: no register-only persistent configuration at <= 64 regs beats r1 by >= 3% at 36-134 MB; at 134-612 MB all are +3..+14% slower [probe_b200, 3 sessions]\"\n  - \"registers/occupancy (sm_100a): linear 2-set pipeline 72 regs (128 thr, 7 CTAs/SM) / 77 (256 thr, 3); with __launch_bounds__(128,8) 64 regs; s-stationary depth 1 48 regs (10 CTAs/SM at 128 thr, 20 at 64), depth 2 56 regs (9); all 0 spills, 0 smem [probe_b200 resources + cuOccupancy]\"\n  - \"linear persistent vs r1 (36/61/102/134/269 MB): plin128 k7 +4.9/+5.2/+6.1/+4.7/+10.1%; plin128 64-reg k8 +1.5/+3.5/+4.8/+4.1/+10.3%; plin256 k3 +7.3/+9.0/+7.6/+5.3/+8.4% [probe_b200]\"\n  - \"s-stationary vs r1: psst128 k9 6.6 MB +1.9%, 15.8 +1.4, 36 +1.8 (-3.5 in another session), 57 -0.4, 61 +0.8, 102 +1.2, 134 +4.1, 269 +8.3, 612 +3.5%; k10 is worse than k9; depth 2 (k7/k8) and 64-thread k20 are no better [probe_b200]\"\n  - \"dead end, key result: persistent with NO prefetch at r1's own occupancy (32 regs, 16 CTAs/SM, grid 148x16) is +3.6% at 6.6 MB, +7.8 at 15.8, +7 at 61, +6.5 at 102, +7.2 at 134, +10.6 at 269, +13.8% at 612 MB. Removing CTA replacement costs bandwidth; the loss grows with size, so it is a rate deficit and not a fixed cost [probe_b200]\"\n  - \"replacement gap: empty one-shot grids (R/8 CTAs of 128 thr) span 1.6 us at 6.6 MB, 3.2 us at 36 MB, 9.4 us at 134 MB, 18 us at 269 MB and 39 us at 612 MB; an empty persistent grid (148x16) spans 2.2 us at every size. Dispatch overlaps memory work: r1 at 269 MB (39 us) is not dispatch-bound, and r1 time minus persistent time is negative at every size [probe_b200]\"\n  - \"dead end: dynamic work-stealing persistent (warp tickets on one global atomic counter, last warp resets it; chunks of 8 or 32 rows, with or without row prefetch) adds about 15-20 us fixed cost: +250..+390% at 15.8 MB, +37..+56% at 269 MB, +17..+34% at 612 MB. Same-address atomics from 2-4.7k warps serialise [probe_b200]\"\n  - \"run_tests (final, 16/16 pass) vs r1 on the same B200: persistent-path workloads 36 MB 6.8 vs 6.6 (+4.4%), 57 MB 9.0 vs 8.9 (+1.4%), 61 MB 9.6 vs 9.4 (+2.3%), 102 MB 15.1 vs 14.8 (+2.2%); other workloads use identical code (-0.3..+0.2% at M/L, noise at 2.2/6.6 MB); predicted portal 0.676 vs 0.677 [run_tests]\"\n  - \"implication for later rounds: on this B200, hardware CTA dispatch acts as a free dynamic load balancer for 128-float row streams; persistent designs (static or atomic-dynamic) should be parked for #88 unless they raise bytes in flight per SM well beyond r1's ~64 KB of x at no occupancy cost\"\npaths:\n  - {max_tokens: null, max_rows: 32768, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: 110000, lang: cuda, width: 128, threads: 128, rows: 8, grid: persistent, mem: ldg, wstat: true, launches: 1, prefetch: true, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"not measured; B200 bench only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Bench says the persistent path is 1-4% slower at 36-102 MB; a portal slot would only be a second reading of H15 (whether a design with fewer CTA replacements loses less under the locked clock), with an expected score at or below r1's 0.677\"\n  - \"k is read from cudaOccupancyMaxActiveBlocksPerMultiprocessor on the running device (48 regs -> 10 at 128 threads, k = 9); the static cache is a device property, not per-call state\"\n  - \"the s-stationary mapping needs Rq and R to be multiples of S, which holds for every [B,H,S,128] shape\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -458,7 +588,48 @@
   ],
   "round": "r2",
   "solution": "problems/088_rotary_position_embedding_application/rounds/r2/candidates/r2-rope-psst-m.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z11rope_kernelILi256EEvPKfS1_S1_S1_PfS2_jjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 10,
+     "STG.128": 8
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z11rope_kernelILi128EEvPKfS1_S1_S1_PfS2_jjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 10,
+     "STG.128": 8
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 0
+   },
+   {
+    "kernel": "_Z9rope_psstPKfS0_S0_S0_PfS1_jjjj",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT.128": 12,
+     "LDG.NA.CONSTANT.128": 10,
+     "STG.128": 8
+    },
+    "regs": 48,
+    "resident_per_sm": null,
+    "smem": 0
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "M",
    "instructions": "Experiment E2 (tests H13): Register-pipelined persistent grid (CAKE-style) for 6.6-269 MB: no shared memory, next row's loads issued before the current row's FMAs. 1. Keep r1's 16-lane layout and per-row loads. Write rope_persist<THREADS>: grid = 148 * k (k = resident CTAs per SM read from cudaOccupancyMaxActiveBlocksPerMultiprocessor at module init, never from another chip), each 16-lane group walks rows r = g, g + G, g + 2G, ... (G = total 16-lane groups in the grid). Software pipeline depth 1 in registers: before computing row i, issue the x loads (2 x LDX4) and table loads (4 x LD4) of row i+1 into a second register set; compute and store row i with evict_last stores; swap. Two register sets = 48 live floats + addressing: target <= 64 regs, 0 spills, 0 shared memory (any shared memory strips L1 from the tables: r1 padding trap). No __syncthreads. 2. Row order knob: (a) linear (consecutive groups take consecutive rows, table re-read per row from L1/L2), (b) s-stationary (a group keeps s fixed and steps through heads: rows S apart, table loaded once per s, so only x is prefetched and the live set is 16 table + 2 x 8 x regs; needs the modulo only once per group). 3. Bench vs r1 interleaved, 3 repeats, sizes 6.6, 15.8, 36, 57, 61, 102, 134, 269 MB, plus 612 and 2689 to check L is not hurt; sweep k = occupancy, occupancy-1, and THREADS 128/256. Report the per-CTA replacement gap directly: r1's time minus the persistent time at the same bytes, and an empty persistent grid span. 4. If any configuration wins >= 3% at 36-134 MB, build the dispatcher (persistent for the winning sizes, r1 elsewhere), run_tests, and submit; the portal delta vs bench delta is a second reading of H15. Success: Bench >= 3% faster than r1 at 36-134 MB with L unchanged (within 1%); portal score > 0.682. Refuted if: Every register-only pipelined configuration at <= 64 regs and k = occupancy is within +-1% of r1 or slower at 36-134 MB on the bench: H13 is refuted for this problem (the CAKE result does not transfer to 128-float rows with a table), and persistent designs are parked. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
@@ -467,6 +638,124 @@
    "operation": "structural_mutation",
    "parents": [
     "r1-rope-v4nc-s128"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,40,8,131": 3.31,
+    "1,56,8,853": 8.99,
+    "1,64,8,8192": 92.34,
+    "1,8,8,128": 2.69,
+    "2,32,4,211": 4.46,
+    "2,40,8,4096": 59.3,
+    "2,48,6,919": 15.14,
+    "32,16,4,4096": 387.55,
+    "4,24,6,293": 6.85,
+    "4,36,6,2048": 51.2,
+    "4,48,12,1321": 47.32,
+    "64,8,8,128": 19.27,
+    "8,16,4,373": 9.63,
+    "8,24,8,1024": 38.98,
+    "8,28,4,1024": 39.1,
+    "8,32,4,1087": 46.43
+   }
+  }
+ },
+ "r3-rope-hints-dispatch": {
+  "card": "id: r3-rope-hints-dispatch\nparents:\n  - r2-rope-pair2-magic-occ10\noperation: knob_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  E2/H11/H19: on the bench the table cost is small, so only the cheapest hint wins survive. Table loads with an\n  L2 evict_last policy on the 256-thread row path keep the 8-16 MB tables in L2 at 612 and 2689 MB (R > 450k).\n  Plain x loads help the 134 MB workload, whose 128 KB tables stay in L1. The pair path now also serves S <= 2048,\n  which changes only the 354 MB workload. The evict_first policy on x loads (H16) hurts at M and is dropped.\n  The portal may show more than the bench at 354 MB (pair path, half the table traffic) if H11 holds.\nexpected_effect:\n  S:\n    pct: -0.3\n    confidence: low\n  M:\n    pct: -0.4\n    confidence: medium\n  L:\n    pct: -0.7\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 40\n  smem_per_cta_bytes: 11500\n  threads_per_cta: 128\n  ctas_per_sm: 10\n  bytes_in_flight_per_sm: 81920\n  launches_per_call: 1\nknobs:\n  pair_rule: \"H,Hkv even and R>4096 and S<=2048\"\n  plain_x_rule: \"pair path and R>=120000 and S<=256\"\n  table_el_rule: \"row256 path and R>450000\"\n  row_threshold: 262144\n  store_hint: evict_last\ndispatch:\n  - {rule: \"H%2==0 && Hkv%2==0 && R>4096 && S<=2048 && R>=120000 && S<=256\", kernel: \"rope_pair<128,plainx>\", meta: {threads: 128, ctas_per_sm: 10}}\n  - {rule: \"H%2==0 && Hkv%2==0 && R>4096 && S<=2048\", kernel: \"rope_pair<128>\", meta: {threads: 128, ctas_per_sm: 10}}\n  - {max_rows: 262144, kernel: \"rope_row<128>\", meta: {threads: 128}}\n  - {max_rows: 450000, kernel: \"rope_row<256>\", meta: {threads: 256}}\n  - {max_rows: null, kernel: \"rope_row<256,table_el>\", meta: {threads: 256}}\ntests:\n  - H11\n  - H16\n  - H19\n  - H3\nfindings:\n  - \"(a) pair path at L vs r2 row256, 3 repeats: 354 MB p128 -0.1% / p256 -0.2%; 407 MB +0.7% / +0.7%; 612 MB 0.0% / +1.3%; 2689 MB +0.9% / +0.6%. Neutral at 354, slightly worse above; the pair path was extended only to S <= 2048 (354 MB) [probe_b200]\"\n  - \"(b) table loads .nc.L2::cache_hint evict_last on the row256 path: 354 MB +0.3%, 407 MB +0.8%, 612 MB -1.8 / -1.3%, 2689 MB -0.7 / -0.5%. Kept only for R > 450k [probe_b200]\"\n  - \"(b) dead end: table evict_last on the PAIR path is +5..+11% at 134-407 MB, and on row128 +0.9..+1.4% at 134-326 MB. Only the row256 path at 612+ MB gains [probe_b200]\"\n  - \"(c) plain x loads vs nc.no_allocate x: 134 MB -1.0 / -1.5 / -1.5% (stable over 3 repeats and two runs), 269 MB -0.5 / -0.3 / -0.1% (spread about the same size), 322 MB +0.6%, 407 MB +1.0%, 612 MB +4.3%, 2689 MB +1.4%, 36 MB +3.7%, 57 MB +7.0%. Kept only for R >= 120k with S <= 256 (the 134 MB workload) [probe_b200]\"\n  - \"(c') ld.global.nc without no_allocate: same as plain (-0.6% at 134 MB, +3.4% at 36 MB, +7.0% at 57 MB); no_allocate is what matters below 134 MB [probe_b200]\"\n  - \"(d) H16 refuted at M: nc.L1::no_allocate.L2::cache_hint with a fractional evict_first policy on x is +16.7% at 36 MB, +16.2% at 57 MB, +10.8% at 134 MB, +5.9% at 269 MB, +5.6% at 322 MB; neutral at 407 MB (-0.2%), 612 MB (+0.2%), 2689 MB (-0.1%). The PTX form compiles and gives correct results [probe_b200]\"\n  - \"composite run_tests (16/16 pass) vs r2 on the same B200: S -0.3%, M -0.4%, L -0.7%. 134 MB -1.7%, 612 MB -2.4%, 2689 MB -0.4%, 354 MB -1.0%, 6.6 MB -2.6%, 36 MB -0.9%; 15.8 MB +2.8% runs code identical to r2's pair kernel, so it is noise. Predicted portal 0.6842 +- 0.0115 [run_tests]\"\n  - \"compile_b200: rope_row<128/256> 32 regs, rope_pair<128> 40 regs, 0 spills, 0 smem (pair gets 11.5 KB dynamic padding at launch) [compile_b200]\"\n  - \"success test: -1.5% at 612 and 2689 MB not met at 2689 MB (-0.4..-0.7%); 612 MB and 134 MB met. The bench total gain is under 1% in every band, so a portal gain of 3% in any band is unlikely unless H11 (locked-clock L2 effect) is real; only the portal can show that [reasoning]\"\npaths:\n  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: 119999, max_seq: 2048, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, max_rows: 262144, min_rows: 120000, max_seq: 256, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, max_rows: 450000, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: el_nc, st: el}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"not measured; B200 bench only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Bench gains are 0.4-0.7% per band, below the 5% portal noise; the portal result will say little unless H11 amplifies the table effect\"\n  - \"The plain-x rule (R >= 120k, S <= 256) and the table-evict_last rule (R > 450k) are fitted to single workloads, each 1.5% or less; shape-only and correct for all shapes\"\n  - \"Pair path with S <= 2048 uses cudaFuncSetAttribute for the carve-out (ordinary occupancy control, flagged for review)\"\n  - \"Table evict_last pins 8-16 MB of tables in L2; it loses on the pair path and at 354-407 MB, so keep it off those\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r3-rope-hints-dispatch",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "knob_mutation",
+  "parents": [
+   "r2-rope-pair2-magic-occ10"
+  ],
+  "round": "r3",
+  "solution": "problems/088_rotary_position_embedding_application/rounds/r3/candidates/r3-rope-hints-dispatch.json",
+  "status": "proposed",
+  "task": {
+   "band": "L",
+   "instructions": "Experiment E2 (tests H11): L/M hint and pair-path dispatch: pair at S > 1536, table evict_last, plain x at >= 134 MB, evict_first x. Four knobs on the r2 code, each measured against unchanged r2 with 3 interleaved repeats per size (bench noise is 1%; report medians and the spread). (a) H3/H11: remove the S <= 1536 limit so the pair path runs at 354, 407, 612 and 2689 MB; also try rope_pair<256> (16 pairs, 32 rows per CTA) there, since 128 vs 256 threads tie for the row kernel at L. (b) H19: table loads via ld.global.nc.L2::cache_hint with a createpolicy evict_last policy (r1 saw -2.7% at 612 MB, -0.9% at 2689), tested at 322-2689 MB and at 134-269 MB. (c) H19: plain ld.global.v4 (no .nc, no no_allocate) on x for R >= 120k rows (134 MB and up), tested at 134, 269, 612, 2689 MB; keep nc below 134 MB where r1 measured -7% at 57 MB. (d) H16: x loads with ld.global.nc.L1::no_allocate.L2::cache_hint and a createpolicy fractional evict_first policy (verify the PTX form compiles with compile_b200; fall back to .L2::evict_first qualifier if cache_hint on .nc is rejected), tested at 36, 57, 134, 269, 612, 2689 MB. Then compose the best setting per size range into one dispatcher (shape-only rules), run compile_b200 for regs/spills on every kernel, run_tests, and submit if no workload is worse than +1% on the bench. In the design card list every hint per path (x, w, st) so the emulator can learn them. Report per-knob tables; a knob that is neutral on the bench but mechanism-plausible for the portal (a and b) may still be included if it never loses more than 0.5%. Success: Composite kernel at least -1.5% at 612 and 2689 MB and -1% at 134-269 MB on the bench with nothing worse than +1%; portal L geomean -2% or better (about +0.003), M -1%. Refuted if: (a) pair at L is >= +1.5% slower at 354-2689 MB in all three repeats and (b)+(c) are within +-0.7% (then H11 is closed on the bench side and only the portal probe of (a) remains); (d) worse than +1% at any M size closes H16. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "sonnet",
+   "niche": "exp:E2:H11",
+   "operation": "knob_mutation",
+   "parents": [
+    "r2-rope-pair2-magic-occ10"
+   ]
+  },
+  "timings": {}
+ },
+ "r3-rope-pair2-e3-closed": {
+  "card": "id: r3-rope-pair2-e3-closed\nparents:\n  - r2-rope-pair2-magic-occ10\noperation: specialisation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows16\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  E3/H18: the padded pair path (124 KB L1) cannot hold the 128-211 KB tables of the S<=211 workloads, so an\n  unpadded pair (12 CTAs/SM, full L1) or the row path should win at 6.6, 15.8 and 134 MB; 64-thread pairs and\n  the carve-out switch might also cost something at S. Result: none of them moves any workload by 2%. The code is\n  r2 unchanged and is not worth a portal slot.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 40\n  smem_per_cta_bytes: 11500\n  threads_per_cta: 128\n  ctas_per_sm: 10\n  bytes_in_flight_per_sm: 81920\n  launches_per_call: 1\nknobs:\n  pair_threads: 128\n  pair_HG: 2\n  pair_pad_smem: 11500\n  pair_carveout_pct: 50\n  pair_rule: \"H,Hkv even and R > 4096 and S <= 1536\"\n  row_threshold: 262144\n  store_hint: evict_last\ndispatch:\n  - {rule: \"H%2==0 && Hkv%2==0 && R>4096 && S<=1536\", kernel: rope_pair<128>, meta: {threads: 128, pairs: 8, ctas_per_sm: 10}}\n  - {max_rows: 262144, kernel: rope_row<128>, meta: {threads: 128, rows: 8}}\n  - {max_rows: null, kernel: rope_row<256>, meta: {threads: 256, rows: 16}}\ntests:\n  - H18\n  - H6\n  - H12\nfindings:\n  - \"H18 refuted on the bench: padded pair / unpadded pair / row128 / pair64, 3 interleaved repeats, medians us: 2.2 MB 2.56/2.58/2.56/2.59; 6.6 MB 3.41/3.40/3.49/3.42; 15.8 MB 4.54/4.58/4.64/4.58; 134 MB 18.91/18.88/19.08/18.84. Only row128 at 6.6 MB (+2.3%) and 134 MB (+0.9%) differs from the pair paths, and r2 already routes those to the pair [probe_b200]\"\n  - \"H6 at S: 64-thread pair CTAs (4 pairs, 8 rows) are within +-1% of the padded 128-thread pair at 2.2-134 MB (2.59 vs 2.56, 3.42 vs 3.41, 4.58 vs 4.54, 18.84 vs 18.91); the pair at 2.2 MB (256 CTAs of 128 threads, 128 pairs-CTAs) ties the row path (2.56 vs 2.56). S-band CTA shape is closed [probe_b200]\"\n  - \"carve-out switch costs nothing: empty 256-CTA kernel, 11500 B smem + 50% carve-out 1.31-1.44 us (median 1.31), 0 smem 1.31-1.47 (median 1.39), 11500 B with no carve-out hint 1.31-1.47 (median 1.47); 5 interleaved repeats after the harness flush, differences <= 0.08 us = timing steps [probe_b200]\"\n  - \"H12 floor decomposition (median us, 5 repeats, 0.03-0.08 us steps): empty 1-CTA kernel 1.47, empty 256 CTAs 1.42, empty 393 CTAs 1.47; 2.2 MB (256 CTAs, row128): empty grid 1.39, stores-only 1.63, loads-only (x+tables) 2.56, full 2.59; 6.6 MB (393 CTAs, padded pair): empty grid 1.70, stores-only 1.96, loads-only 3.52, full 3.39. So the full kernel = loads-only, the stores add nothing visible beyond the loads, and the loads cost about 1.1 us (2.2 MB) to 1.8 us (6.6 MB) above an empty grid of the same shape [probe_b200]\"\n  - \"H12 reading: about 1.4 us of the 2.6 us at 2.2 MB is the empty-kernel CUPTI span, about 1.1 us is one DRAM round trip plus the load stream, and the stores add 0.03 us. The only lever left at 2.2 MB is the load latency itself; Tb is 2.9 us there [probe_b200]\"\n  - \"run_tests of the unchanged r2 code: 16/16 pass; S -0.5%, M +0.1%, L +0.1% vs the r2 reference on the same B200 (noise); predicted portal 0.6825 +- 0.0114 vs 0.6827 [run_tests]\"\n  - \"dead end: no S-band CTA shape or routing (padded/unpadded pair, row128, pair64) beats another by 2% at 2.2-134 MB; H18 and the S-band CTA-shape question are closed [probe_b200]\"\npaths:\n  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: 330000, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Identical to r2: expect the same 0.683 on the portal; submitting it spends a slot for no expected gain\"\n  - \"cudaFuncSetAttribute (carve-out preference) is set once on our own kernel; ordinary occupancy control, flagged for review\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r3-rope-pair2-e3-closed",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows16"
+  },
+  "operation": "specialisation",
+  "parents": [
+   "r2-rope-pair2-magic-occ10"
+  ],
+  "round": "r3",
+  "solution": "problems/088_rotary_position_embedding_application/rounds/r3/candidates/r3-rope-pair2-e3-closed.json",
+  "status": "proposed",
+  "task": {
+   "band": "S",
+   "instructions": "Experiment E3 (tests H18): Small-shape specialisation: S <= 256 table-in-L1 routing, 64-thread pairs at 6.6-16 MB, and the 2.2 MB floor decomposition. Part 1 (H18): for shapes with S <= 256 (tables 128-256 KB: workloads 6.6, 15.8 and 134 MB) compare three routings with 3 interleaved repeats: r2 padded pair (10 CTAs/SM, 124 KB L1), unpadded pair with default carve-out (12 CTAs/SM, full L1), and rope_row<128> (16 CTAs/SM, full L1). Also check whether the carve-out switch itself costs anything: time an empty 256-CTA kernel launched with PAIR_PAD_SMEM + 50% carve-out vs the same kernel with 0 smem, each immediately after a harness-style memset, 5 interleaved repeats. Part 2 (H6 at S): 64-thread pair CTAs (4 pairs, 8 rows) and 128-thread pairs at 2.2-15.8 MB vs r2 (2.2 MB currently takes the row path because R <= 4096; test the pair there too with 64-thread CTAs = 256 CTAs). Part 3 (H12, record only): decompose the 2.2 MB and 6.6 MB times on the bench: empty 1-CTA kernel, empty grid of r2's shape, loads-only (x + tables, result reduced into one predicated store), stores-only, full kernel; report each span so the fixed-cost model (launch floor, round trip, store drain) gets numbers. Wire any routing that wins by >= 2% on its workloads into the dispatcher (shape-only rules), run_tests, and submit only if at least one of the 6.6/15.8/134 MB workloads improves by >= 2% with nothing worse than +0.5%; otherwise record findings only. Expected value is small (+0.001-0.002); the session's main product is the measurements for H6/H12/H18. Success: A routing that is >= 2% faster at 6.6, 15.8 or 134 MB on the bench with no regression elsewhere, or a carve-out switch cost >= 0.15 us that can be removed; plus the floor decomposition recorded. Refuted if: All three routings within +-1% at 6.6, 15.8 and 134 MB, the carve-out switch within 0.05 us, and 64-thread pairs within +-1% at 2.2-15.8 MB: H18 closed, S-band CTA shape closed, 2.2 MB stays parked. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "sonnet",
+   "niche": "exp:E3:H18",
+   "operation": "specialisation",
+   "parents": [
+    "r2-rope-pair2-magic-occ10"
+   ]
+  },
+  "timings": {}
+ },
+ "r3-rope-quad-d2-m": {
+  "card": "id: r3-rope-quad-d2-m\nparents:\n  - r2-rope-pair2-magic-occ10\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows32\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  E1/H17: a depth-2 group (heads 2h, 2h+1 at positions 2s2, 2s2+1; 4 rows, 2 table rows, all 16 loads\n  issued before any FMA) cuts the number of waves at 57-134 MB by 15-20% (6 CTAs/SM x 32 rows = 192 rows\n  per SM, against r2's 160). On the bench it lands within -0.7..+1.1% of r2 there. If the portal penalty\n  comes from wave boundaries at the locked 1.5 GHz clock (H15/H17), these four workloads should gain >= 2%\n  on the portal. The single-wave 36 MB case planned in E1 cannot be built without ptxas serialising the\n  loads, so 36 MB stays on r2's pair path.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: medium\n  L:\n    pct: 0\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 80\n  smem_per_cta_bytes: 0\n  threads_per_cta: 128\n  ctas_per_sm: 6\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  quad_threads: 128\n  quad_launch_bounds_min_blocks: 6\n  quad_rule: \"H,Hkv even and 50000 <= R <= 140000 and S <= 1536\"\n  pair_pad_smem: 11500\n  pair_carveout_pct: 50\n  row_threshold: 262144\n  store_hint: evict_last\ndispatch:\n  - {rule: \"H%2==0 && Hkv%2==0 && 50000<=R<=140000 && S<=1536\", kernel: rope_quad, meta: {threads: 128, groups: 8, rows: 32, ctas_per_sm: 6}}\n  - {rule: \"H%2==0 && Hkv%2==0 && R>4096 && S<=1536\", kernel: rope_pair<128>, meta: {threads: 128, pairs: 8, ctas_per_sm: 10}}\n  - {max_rows: 262144, kernel: rope_row<128>, meta: {threads: 128, rows: 8}}\n  - {max_rows: null, kernel: rope_row<256>, meta: {threads: 256, rows: 16}}\ntests:\n  - H17\n  - H15\nfindings:\n  - \"H17 core assumption fails on the bench: a single wave at 36 MB needs >= 238 resident rows/SM (8 CTAs x 32 rows at <= 64 regs), but at 64 regs ptxas always delays part of the 8 x loads until after the first FMAs. Seen with nc x loads (quad_8: 64 regs, +3.1% at 36 MB, +9.4% at 57, +6.3% at 61, +12..+19% at 6.6-16 MB), with table(s+1) loads moved after the first stores (56 regs, 9 CTAs/SM: +0.9..+18%), and with plain aliasing x loads (still split) [probe_b200 SASS + harness_time, 3 interleaved repeats]\"\n  - \"dead end: table rows via cp.async.ca into per-thread smem slots (x only in registers): nvcc/NVRTC still allocate 64 regs, and ptxas puts the cp.async wait before the last x load: +5..+24% at 6.6-134 MB (cpa128 8 CTAs/SM; cpa256 4 CTAs/SM is worse, +11..+19%) [probe_b200]\"\n  - \"trap: an if (two) branch around the second position's stores let ptxas sink that position's 8 loads into the branch (two serial round trips). Use predicated asm stores (setp + @p st) so the code has no branch [probe_b200 SASS]\"\n  - \"best depth-2 variant: all 16 loads up front, 80 regs (nvcc and NVRTC agree), 6 CTAs/SM = 96 KB of x per SM: vs r2 pair +0.9% at 6.6 MB, +2.5% at 15.8, +6.1% at 36 (1.24 waves vs pair's 1.49), +1.4% at 57, +0.9% at 61 [probe_b200, 3 interleaved repeats]\"\n  - \"run_tests with depth-2 routed to 50k-140k rows: 16/16 pass; 57 MB -0.7%, 61 MB +1.1%, 102 MB +0.3%, 134 MB -0.2% vs r2 on the same B200; other workloads run r2's code (-3.4..+1.1%, noise); band S -1.3 / M +0.4 / L -0.2%; predicted portal 0.6835 +- 0.0115 [run_tests]\"\n  - \"waves at 57/61/102/134 MB: quad 1.92/2.10/3.49/4.61 vs pair 2.31/2.52/4.19/5.54 (CTAs / (148 x resident CTAs per SM)) [reasoning]\"\n  - \"consistent with H4: the bench optimum is about 128-192 rows in flight per SM; one wave at 36 MB needs about 238, so depth and wave count are tied to an occupancy the bench penalises [probe_b200, r2 findings]\"\npaths:\n  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, min_rows: 4097, max_rows: 49999, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, min_rows: 50000, max_rows: 140000, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 4, table_shared_heads: 2, positions_per_thread: 2, regs: 80, ctas_per_sm_cap: 6}\n  - {max_tokens: null, min_rows: 140001, max_rows: 330000, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"not measured; B200 bench only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Bench-neutral at 57-134 MB (61 MB +1.1%, just over the +1% submission bar but within noise); any portal gain depends on H17 holding, and a null portal result closes wave count as a lever at M\"\n  - \"36 MB, the workload where H17 predicted the largest gain, is not covered: depth-2 is +6% there on the bench at 6 CTAs/SM\"\n  - \"rope_quad depends on ptxas keeping all 16 loads before the first FMA at 80 regs; a different ptxas version could reschedule them (check the SASS order)\"\n  - \"cudaFuncSetAttribute (carve-out preference) on rope_pair, inherited from r2; flag for review\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r3-rope-quad-d2-m",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg128",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows32"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r2-rope-pair2-magic-occ10"
+  ],
+  "round": "r3",
+  "solution": "problems/088_rotary_position_embedding_application/rounds/r3/candidates/r3-rope-quad-d2-m.json",
+  "status": "proposed",
+  "task": {
+   "band": "M",
+   "instructions": "Experiment E1 (tests H17): Depth-2 pair kernel: one wave at <= 36 MB, half the waves at 57-134 MB. Build rope_pair2 in kernel.cu alongside the r2 kernels: each 16-lane group handles heads (2hp, 2hp+1) at positions (2*s2, 2*s2+1): rows row0 = 2*(bhp)*S + 2*s2, row0+1, row0+S, row0+S+1, with the second position predicated off when 2*s2+1 == S (odd S). Group index g -> (bhp, s2) via a magic divisor for S2 = ceil(S/2) computed on the host; Q groups first, then K; requires H and Hkv even, else fall back to r2's paths. Issue all 8 x loads (nc, L1::no_allocate) and 4 table loads (two table rows) before any FMA; evict_last cache_hint stores; 128-thread CTAs (8 groups = 32 rows, 16 KB of x per CTA), __launch_bounds__(128, 8). Check with compile_b200 (nvcc, not NVRTC) that regs <= 64 and spills = 0; if it spills, try computing outputs in place or 96-thread CTAs. Knobs: occupancy cap 8 vs 6 CTAs/SM (dynamic smem padding with the r2 carve-out trick) and 128 vs 256 threads. Measure vs r2 with 3 interleaved repeats at 6.6, 15.8, 36, 57, 61, 102, 134, 269 MB (6.6 and 15.8 MB are expected to lose from too few CTAs; find the row threshold where depth-2 starts winning, probably 25-35k rows). Record the first-wave size: at 36 MB (35,160 rows) the grid is 1,099 CTAs vs 1,184 resident, a single wave. Then wire the best threshold into the dispatcher (depth-2 for R in [threshold, 140k], r2 pair/row elsewhere), run_tests, and if no workload is worse than +1% submit as the portal probe of H15/H17 even when the bench gain is only 0..-2%: the mechanism predicts the gain appears on the portal (36 MB +23% vs bench) and r2 already proved pairs are not amplified, so a null portal result here is informative too. Success: Bench -3% or better at 36 MB and no loss above +1% at 57-134 MB; or bench within +-1.5% at 36-134 MB and portal -4% or better at 36 MB with M geomean -2% (H17 supported, H15 narrowed to wave boundaries). Refuted if: Depth-2 is >= +2% slower than r2 at 36 and 57 MB on the bench at both occupancy caps, or bench-neutral and portal within +-1.5% at 36-61 MB (then depth and wave count are closed for #88; the portal penalty at M is something else). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).",
+   "model": "opus",
+   "niche": "exp:E1:H17",
+   "operation": "structural_mutation",
+   "parents": [
+    "r2-rope-pair2-magic-occ10"
    ]
   },
   "timings": {}

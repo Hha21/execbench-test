@@ -1,0 +1,85 @@
+id: r3-rope-pair2-e3-closed
+parents:
+  - r2-rope-pair2-magic-occ10
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E3/H18: the padded pair path (124 KB L1) cannot hold the 128-211 KB tables of the S<=211 workloads, so an
+  unpadded pair (12 CTAs/SM, full L1) or the row path should win at 6.6, 15.8 and 134 MB; 64-thread pairs and
+  the carve-out switch might also cost something at S. Result: none of them moves any workload by 2%. The code is
+  r2 unchanged and is not worth a portal slot.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 11500
+  threads_per_cta: 128
+  ctas_per_sm: 10
+  bytes_in_flight_per_sm: 81920
+  launches_per_call: 1
+knobs:
+  pair_threads: 128
+  pair_HG: 2
+  pair_pad_smem: 11500
+  pair_carveout_pct: 50
+  pair_rule: "H,Hkv even and R > 4096 and S <= 1536"
+  row_threshold: 262144
+  store_hint: evict_last
+dispatch:
+  - {rule: "H%2==0 && Hkv%2==0 && R>4096 && S<=1536", kernel: rope_pair<128>, meta: {threads: 128, pairs: 8, ctas_per_sm: 10}}
+  - {max_rows: 262144, kernel: rope_row<128>, meta: {threads: 128, rows: 8}}
+  - {max_rows: null, kernel: rope_row<256>, meta: {threads: 256, rows: 16}}
+tests:
+  - H18
+  - H6
+  - H12
+findings:
+  - "H18 refuted on the bench: padded pair / unpadded pair / row128 / pair64, 3 interleaved repeats, medians us: 2.2 MB 2.56/2.58/2.56/2.59; 6.6 MB 3.41/3.40/3.49/3.42; 15.8 MB 4.54/4.58/4.64/4.58; 134 MB 18.91/18.88/19.08/18.84. Only row128 at 6.6 MB (+2.3%) and 134 MB (+0.9%) differs from the pair paths, and r2 already routes those to the pair [probe_b200]"
+  - "H6 at S: 64-thread pair CTAs (4 pairs, 8 rows) are within +-1% of the padded 128-thread pair at 2.2-134 MB (2.59 vs 2.56, 3.42 vs 3.41, 4.58 vs 4.54, 18.84 vs 18.91); the pair at 2.2 MB (256 CTAs of 128 threads, 128 pairs-CTAs) ties the row path (2.56 vs 2.56). S-band CTA shape is closed [probe_b200]"
+  - "carve-out switch costs nothing: empty 256-CTA kernel, 11500 B smem + 50% carve-out 1.31-1.44 us (median 1.31), 0 smem 1.31-1.47 (median 1.39), 11500 B with no carve-out hint 1.31-1.47 (median 1.47); 5 interleaved repeats after the harness flush, differences <= 0.08 us = timing steps [probe_b200]"
+  - "H12 floor decomposition (median us, 5 repeats, 0.03-0.08 us steps): empty 1-CTA kernel 1.47, empty 256 CTAs 1.42, empty 393 CTAs 1.47; 2.2 MB (256 CTAs, row128): empty grid 1.39, stores-only 1.63, loads-only (x+tables) 2.56, full 2.59; 6.6 MB (393 CTAs, padded pair): empty grid 1.70, stores-only 1.96, loads-only 3.52, full 3.39. So the full kernel = loads-only, the stores add nothing visible beyond the loads, and the loads cost about 1.1 us (2.2 MB) to 1.8 us (6.6 MB) above an empty grid of the same shape [probe_b200]"
+  - "H12 reading: about 1.4 us of the 2.6 us at 2.2 MB is the empty-kernel CUPTI span, about 1.1 us is one DRAM round trip plus the load stream, and the stores add 0.03 us. The only lever left at 2.2 MB is the load latency itself; Tb is 2.9 us there [probe_b200]"
+  - "run_tests of the unchanged r2 code: 16/16 pass; S -0.5%, M +0.1%, L +0.1% vs the r2 reference on the same B200 (noise); predicted portal 0.6825 +- 0.0114 vs 0.6827 [run_tests]"
+  - "dead end: no S-band CTA shape or routing (padded/unpadded pair, row128, pair64) beats another by 2% at 2.2-134 MB; H18 and the S-band CTA-shape question are closed [probe_b200]"
+paths:
+  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: 330000, max_seq: 1536, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Identical to r2: expect the same 0.683 on the portal; submitting it spends a slot for no expected gain"
+  - "cudaFuncSetAttribute (carve-out preference) is set once on our own kernel; ordinary occupancy control, flagged for review"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

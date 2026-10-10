@@ -1,0 +1,259 @@
+=== TASK ===
+Round r3: update the hypothesis ledger and design 3 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+r2 portal result: r2-rope-pair2-magic-occ10 0.6827 (predicted 0.681; new best, r1 was 0.6772). The portal gain was -0.2..-6% per workload, largest at the two smallest workloads and at 6.6-57 MB. The public board (fetched 2026-10-09) has s5 = 0.6884, s1 = 0.6978, s10 = 0.6657, so we are about 6th. Top 5 needs +0.0057 on the mean, i.e. +0.09 summed over 16 workloads. r2's ~1-3% speedups were worth +0.0055, so one more similar step reaches it.
+Weakest workloads: (1,8,8,128) S 0.487 (3.0 us vs Tb 2.9); (64,8,8,128) S 0.619 (21.1 vs Tb 28.5, derived Tsol ~9.3 us); (32,16,4,4096) and (1,64,8,8192) at 0.670. Everything else is at 0.68-0.735.
+Prioritise ideas that move many workloads by 1-3% on the portal, especially where portal/bench is largest (6.6-57 MB, +13-22%), plus the two workloads with num_heads == num_kv_heads == 8 and seq_len 128. Remember the portal amplifies latency-tolerance gains (r0->r1: +16.7% portal vs +6.7% bench at L). No deliberate launch delay or anything aimed at the harness's flush.
+
+=== PROBLEM ===
+L1/088_rotary_position_embedding_application: 16 workloads, variable axes ['batch_size', 'num_heads', 'num_kv_heads', 'seq_len']; bands by size: S <= 56.8 MB < M <= 269.5 MB < L
+         1,8,8,128       2.23 MB  band S
+        1,40,8,131       6.57 MB  band S
+        2,32,4,211      15.77 MB  band S
+        4,24,6,293      36.30 MB  band S
+        1,56,8,853      56.78 MB  band S
+        8,16,4,373      61.49 MB  band M
+        2,48,6,919     102.58 MB  band M
+        64,8,8,128     134.35 MB  band M
+       8,24,8,1024     269.48 MB  band M
+       8,28,4,1024     269.48 MB  band M
+       8,32,4,1087     321.68 MB  band L
+      4,48,12,1321     326.00 MB  band L
+       4,36,6,2048     354.42 MB  band L
+       2,40,8,4096     406.85 MB  band L
+       1,64,8,8192     612.37 MB  band L
+      32,16,4,4096    2688.55 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/088_rotary_position_embedding_application/ledger.yaml) ===
+# Hypothesis ledger for #88 (RoPE application), seeded 10 October 2026 by the r0 research session.
+# r1 update 10 October 2026 after the first portal result (r0-rope-ldg256-os-stel, 0.6351).
+# r2 update 10 October 2026 after the second portal result (r1-rope-v4nc-s128, 0.6772).
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'Clock locking on the rented card (nvidia-smi -lgc/-lmc) is a probe tool only; never change clocks or any device state from a solution. (r1: the rented card refuses -lgc anyway.)'
+- 'Any kernel that pairs rows (heads h, h+1 or rows s, s+1) must dispatch to a one-row path when the pairing does not divide the shape; every candidate stays correct for every shape.'
+hypotheses:
+- id: H1
+  statement: evict_last on the output stores cuts in-window dirty write-backs, as in #38, so M sizes gain most.
+  status: supported
+  evidence:
+  - 'probe r0: EL vs plain stores, same kernel: 36 MB 7.11 vs 8.02 us, 61 MB 10.49 vs 11.48, 269 MB 39.05 vs 42.10, 407 MB 56.73 vs 61.93 [probe_b200]'
+  - 'run_tests r0: 0.83-0.88x the plain copy at 61-269 MB'
+  - 'r1 (v4 layout): plain stores +3% at 15.8 MB, +17% at 36 MB; at 2.2 MB no difference [probe_b200]'
+- id: H2
+  statement: CTA dispatch rate (about 0.55-0.65 us per 1000 CTAs regardless of 64 or 256 threads) caps 64-thread one-shot grids at L, so 256-thread CTAs win there while 64-thread CTAs win at S/M.
+  status: refuted
+  evidence:
+  - 'probe r0: empty grids 64x32768 18.0 us, 64x49152 26.4 us, 256x8192 5.3 us, 256x12288 7.4 us, 256x81920 43.5 us'
+  - 'probe r0: 64-thr vs 256-thr: 36 MB 6.94 vs 7.11, 269 MB 38.77 vs 39.05, 407 MB 59.75 vs 56.73 (one session)'
+  - 'r1 (3 sessions): r0 with 64-thread CTAs at every size is -6..-8% at 322-407 MB and -2..-3% at 612-2689 vs the 256-thread path; 49k-327k 64-thread CTAs are not dispatch-bound; with the v4 layout 128 and 256 threads tie within 0.3% at L [probe_b200]'
+  - 'dispatch rate 1800 CTAs/us x 8 KB = 15 TB/s of reads: it caps nothing above 4-row CTAs in steady state; it only sets the single-wave fill time at S (H6)'
+- id: H3
+  statement: Sharing one cos/sin load across several heads (rows S*512 B apart) cuts L2 traffic and helps L, most at S=8192 (612 MB) where the 16 MB of tables live in L2.
+  status: open
+  evidence:
+  - 'probe r0 (8-lane layout, 80 regs): 2-head variant 269 MB 38.39 vs 39.05 (noise), 407 MB 60.96 vs 56.73'
+  - 'r1: L1-hit table probe (s0) vs 64-thread r0: -0.5..-1.6% at 269-2689 MB but -5.5% at 612 MB (S=8192) [probe_b200]'
+  - 'r1 variants A/C/W (8-lane layout, 64-80 regs): all +2..+4% vs 64-thread r0 at L on the bench; the register cost of the 8-lane layout confounds the test. E1 retests in the 16-lane layout at <= 56 regs.'
+- id: H4
+  statement: Occupancy (resident threads per SM) limits bandwidth; the 8-lane 256-bit layout at 50-60 regs loses to the 16-lane 128-bit layout at 32 regs partly through occupancy.
+  status: supported
+  evidence:
+  - 'probe r0: float4 layout with 32 regs ties the 60-reg v8 layout at 36 and 269 MB and is 5% slower at 407 MB (one session; contradicted by r1)'
+  - 'r1: v4 16-lane layout (32 regs) vs r0 (50 regs): -9/-6/-6% bench, -10/-10/-17% portal at S/M/L [run_tests, portal]'
+  - 'r1: the no-table probe gains -10% at 36-61 MB but the L1-hit table probe (same 50 regs) only -2.5..-5%: the rest is occupancy (30 vs 50 regs) [probe_b200]'
+  - 'r1: per-thread depth does not replace resident threads: persistent D=3/D=4 at 104-138 regs +5..+30% [probe_b200]'
+- id: H5
+  statement: Two rows per thread raise bytes in flight per SM and help M/L once the register cost is <= 56 regs (16-lane layout, both rows sharing one table load), i.e. the r0 result was a register-cost artefact of the 8-lane layout.
+  status: open
+  evidence:
+  - 'probe r0: 2 rows/thread at 256 threads in the 8-lane layout (108 regs): +9% at 36 MB, +15% at 407 MB'
+  - 'r2 lead: in the 16-lane layout 2 rows sharing a table need 16 x + 16 table + 8 output regs, about 48 regs: 5 CTAs/SM at 256 threads = 80 KB of x in flight vs 64 KB for r1. E1 tests it.'
+- id: H6
+  statement: At 6.6-57 MB (2k-7k CTAs, one to three waves) the single-wave fill time (0.55-0.7 us per 1000 CTAs) and the per-CTA replacement gap are the fixed cost; 4x fewer CTAs (32 rows per 256-thread CTA, all loads issued up front) cut about 0.5-1 us there. At 2.2 MB the kernel is already at the copy floor.
+  status: open
+  evidence:
+  - 'probe r0: 64/128/256-thread one-row-per-thread variants are within 0.15 us of each other at 2.2 MB (2.62-2.77 us)'
+  - 'r1: at 2.2 MB v4 2.59 us vs plain copy 2.64 and v4 copy 2.56; no-table probe 2.69: the kernel is at the copy floor [probe_b200]'
+  - 'portal r1: (1,8,8,128) 3.2 us vs Tb 2.9 (0.470); portal/bench 1.23 at 2.2 MB but +13..+22% at 6.6-57 MB (3.9/5.2/8.0/11.0 vs 3.46/4.61/6.63/8.99): the 6.6-57 MB workloads are where S-band design can still pay.'
+- id: H7
+  statement: Load hints on x (.nc, L1::no_allocate) and on cos/sin (.nc) change nothing measurable; plain loads would do.
+  status: refuted
+  evidence:
+  - 'r1: at 2.2 MB plain vs nc/no_allocate x loads, plain vs nc table loads, plain vs cache_hint stores: all within 0.03 us [probe_b200, 5 interleaved repeats]'
+  - 'r1: nc on x is -7% at 57 MB and -1% at 102 MB (8.99 vs 9.69 us); nc on the tables alone changes nothing; at 134-269 MB plain is 1-3% faster than nc [probe_b200]'
+  - 'r1: table loads with L2::evict_last: -2.7% at 612 MB, -0.9% at 2689, neutral or +0.7% elsewhere [probe_b200]'
+- id: H8
+  statement: The runtime modulo rl % S (about 20-30 instructions of reciprocal division in the prologue before any load issues) costs a measurable fraction of the per-CTA replacement gap at 1.5 GHz; a host-computed magic divisor (mulhi + shift) or a power-of-two fast path recovers it at S/M.
+  status: open
+  evidence:
+  - 'probe r0: the 2-head variant uses a modulo-free grid and was not faster (unlocked clocks, 80 regs: confounded)'
+  - 'r2 lead: 8 of 16 workloads have power-of-two S; the modulo runs once per thread per row. Effect expected <= 2%; test as a knob inside E1/E2, not as its own slot.'
+- id: H9
+  statement: Partial or first-output-only evict_last is no better than evict_last on all stores (as #38 H15), since the gain saturates at about 25-30 MB of parked write-back.
+  status: parked
+  evidence:
+  - 'r2 lead: worth <= 1% by the #38 result; not a slot.'
+- id: H10
+  statement: SOLAR for this problem is bytes/8 TB/s including cos/sin, so scores at the floor would be about 0.75-0.8 as in #38.
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol back-solved from (t, Tb, S) is about 0.53 x bytes/8 TB/s at >= 134 MB (2689 MB: ~177 us vs floor8 336; 269 MB: ~18 vs 33.7; 134 MB: ~9.2 vs 16.8), the same 0.53x as #38. At S it is 0.6-0.9x floor8 but ill-conditioned (0.1 us rounding).'
+  - 'consequence: per-workload ceiling at L is about 0.68 at 7 TB/s and 0.74 at 8 TB/s; r1 sits at 0.67-0.68 there; at 2689 MB 7.05 TB/s would give 0.687 vs 0.669.'
+- id: H11
+  statement: At the locked 1.5 GHz SM/L2 clock, the cos/sin table reads from L2 (2 B per byte of x) are an M/L limiter on the portal; cutting table traffic 2-4x recovers several % at L (most at S >= 4096) but not the M-band portal gap.
+  status: open
+  evidence:
+  - 'portal r1: L band marginal 6.82 TB/s (fit on 612 and 2689 MB) vs #38 r3 at 7.03 TB/s on the same portal with 1 B of weight reads per byte of x; 612 MB (S=8192) runs at 6.47 TB/s vs 6.74 at 2689 MB (S=4096).'
+  - 'portal r1 vs bench: +10.4% at (64,8,8,128), whose 128 KB of tables are L1-resident, the same as +15% at 61 MB and +6% at 269 MB: table L2 traffic does not explain the M-band portal penalty. The claimed 8-15% at M is withdrawn; L stays open.'
+  - 'r1: the bench L1-hit table probe gains -5.5% at 612 MB, -0.5..-1.6% elsewhere at L; bench clocks cannot be locked, so only a portal slot can show the locked-L2 effect [probe_b200]'
+  - 'r1: s-tile x head-group one-shot CTAs (variant A) tie at 2689 MB on the bench: a design that is bench-neutral and halves table traffic is the right portal probe (E1).'
+- id: H12
+  statement: The 0.7 us gap at 2.2 MB between r0 (3.6 us) and the baseline (2.9 us) comes from the load/store path (ld.global.nc texture path, 256-bit accesses, the cache_hint store) rather than from CTA shape, since 64/128/256-thread shapes tie on the bench.
+  status: supported
+  evidence:
+  - 'r1: 8-lane 256-bit -> 16-lane 128-bit: 2.98 -> 2.59 us at 2.2 MB on the bench; hints are not the cause (all within 0.03 us) [probe_b200]; portal 3.6 -> 3.2 us. The remaining 0.3 us to Tb at 2.2 MB is within tiny-kernel portal noise (CAKE: 5-9% launch-order effects) and is not a design lever.'
+- id: H13
+  statement: A register-pipelined persistent grid (grid = 148 x resident CTAs, each thread issues the next row''s x and table loads before the current row''s FMAs, no shared memory, no barriers) beats the one-shot grid at 6.6-269 MB by removing the per-CTA replacement gap and the single-wave fill, as CAKE''s mid-size program does on B200.
+  status: open
+  evidence:
+  - 'literature: CAKE pipelined persistent program capped at 4-6 CTAs/SM beat our #38 one-shot by 0.6 us at 25 MB, tied at >= 400 MB [cake-pr5741]'
+  - 'r1-rope-pers-tstat-m: table-stationary persistent with the table in shared memory (80 regs, 3 CTAs/SM) +9..+20% at 57-269 MB; the first version with the table in registers (98 regs) likewise. Both are confounded by register cost, shared-memory carve-out (which strips L1 from the tables, see the r1 padding trap) and per-tile table stalls; neither tested the register-only pipeline. E2 does.'
+- id: H14
+  statement: The bench''s 7.0 TB/s marginal (r1, LDG.128 one-shot, evict_last stores) is the B200 read+write ceiling for this traffic pattern; no memory path (1-D bulk or TMA rings at 32-96 KB per CTA, 256-bit accesses, interleaved Q/K CTA order, STG.256) exceeds it by >= 3% at 612-2689 MB.
+  status: open
+  evidence:
+  - 'literature: public B200 streams fit 7.05-7.10 TB/s marginal (CAKE, LDG.128); no published TMA stream number [b200_sota]'
+  - 'r0: plain copy 413 us at 2689 MB (6.5 TB/s, plain stores) vs r0 kernel 400 us: evict_last stores beat the naive copy, so the ceiling must be probed with evict_last stores [probe_b200]'
+- id: H15
+  statement: The portal penalty versus the bench (about +0.5 us at <= 16 MB, +1.5-2.5 us at 36-320 MB, +2.5% at 2689 MB) is latency starvation at the locked clock (longer L2/XBAR latency in ns, slower CTA replacement), so designs with more x bytes in flight per SM and fewer CTA replacements lose less on the portal than on the bench; the portal delta of such a design exceeds its bench delta.
+  status: open
+  evidence:
+  - 'portal vs bench, r0 -> r1 (50 regs/256-bit -> 32 regs/128-bit, 2x resident threads): S +10.0% bench / +10.5% portal; M +6.8 / +10.3; L +6.7 / +16.7 [lab notebook]'
+  - 'portal r1 per workload vs bench: 2.2 MB +23%, 6.6 +13%, 15.8 +13%, 36 +21%, 57 +22%, 134 +10%, 269 +6%, 612 +2%, 2689 +2.5%'
+  - 'test: E1 (2 rows per thread, 80-96 KB of x in flight per SM) and E2 (pipelined persistent) submitted after the bench; H15 holds if the portal gain exceeds the bench gain by >= 3 points at M.'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r0-rope-ldg256-os-stel (portal 0.6351) vs r2-rope-pair2-magic-occ10: S bench +13.2% / portal +13.2%; M bench +9.1% / portal +12.2%; L bench +6.5% / portal +17.9%
+- r1-rope-v4nc-s128 (portal 0.6772) vs r2-rope-pair2-magic-occ10: S bench +2.9% / portal +2.5%; M bench +2.2% / portal +1.7%; L bench -0.2% / portal +1.1%
+Findings recorded by design sessions, newest round first:
+Round r2:
+- [r2-rope-ceiling-v4] H14 SUPPORTED: control copy (r1 LDG.128 nc/no_allocate loads, 16 lanes/row, no maths, evict_last cache_hint stores) = 86.7-86.9 us at 612 MB (6.95-6.97 TB/s), 385.7-386.5 us at 2689 MB (6.95-6.96 TB/s), marginal slope 6.94-6.96 TB/s; 128 and 256 threads tie (6.97 vs 6.96 at 2689 MB) [probe_b200, harness_time, 3 interleaved repeats]
+- [r2-rope-ceiling-v4] (b) LDG.256/STG.256, 8 lanes/row (64/128/256 thr): 6.86-6.90 TB/s at both sizes, 0.5-1.3% below the control; 256-bit does not raise the ceiling, it slightly lowers it [probe_b200]
+- [r2-rope-ceiling-v4] (e) Q/K CTAs interleaved 1:1 (until K runs out): 6.92/6.94 TB/s, -0.4% vs control; grid reversed: 6.95/6.95, tie. CTA order is not a lever [probe_b200]
+- [r2-rope-ceiling-v4] (f) plain stores instead of evict_last (v4, 128 and 256 thr): 6.62-6.64 TB/s at 612 MB (+5% time) but 6.88-6.91 at 2689 MB (-0.8%); 256-bit plain stores similar. evict_last stores matter below about 1 GB, converge at 2689 MB where the parked write-back is under 5% of traffic [probe_b200]
+- [r2-rope-ceiling-v4] (c) persistent 1-D cp.async.bulk rings, bulk load to smem then cp.async.bulk store with L2 evict_last policy (single issuing thread, mbarrier expect_tx): 32 KB x6 CTAs/SM, 64 KB x3, 96 KB x2, tiles 4-32 KB, 3-16 stages: 612 MB 94.9-97.1 us (6.22-6.36 TB/s), 2689 MB 431-440 us (6.10-6.22 TB/s), slope 6.06-6.19 TB/s. 11-12% SLOWER than control for every config; the ring size (32 to 96 KB in flight per CTA) does not matter [probe_b200]
+- [r2-rope-ceiling-v4] (c') same ring with stores from registers (128/256 threads read smem, STG.128 evict_last): 6.12-6.18 TB/s at 2689 MB, same as the bulk-store ring. The bulk store is not the limiter either; the persistent grid-stride structure is [probe_b200]
+- [r2-rope-ceiling-v4] one-shot bulk (one 4/8/16 KB tile per 32-thread CTA, load then bulk store, evict_last policy): 612 MB 87.3-87.6 us (6.90-6.92 TB/s), 2689 MB 390-391 us (6.87-6.88 TB/s), 134 MB 18.8-19.0 us. Ties the control within 1%, so the TMA engine itself reaches the ceiling but never exceeds it; persistence costs 11% [probe_b200]
+- [r2-rope-ceiling-v4] fixed cost at 134 MB: control 18.9 us, one-shot bulk 18.8-19.0 us, persistent rings 19.8-20.1 us (plain-store bulk ring 23.5-23.7 us, +24%, confirming evict_last on the bulk copy matters). 36 MB was not timed for the rings [probe_b200]
+- [r2-rope-ceiling-v4] not run: (d) 2-D TMA with cuTensorMapEncodeTiled. The 1-D bulk path already shares the same copy engine and a one-shot 1-D tile ties the control, so a 2-D descriptor is not expected to exceed it [reasoning]
+- [r2-rope-ceiling-v4] L ceiling on the bench is about 6.96 TB/s (about 85% of 8.18 TB/s). r1's RoPE kernel at 2689 MB is 387.7 us in run_tests, 1.0-1.5% above the copy control, so the maths and tables cost almost nothing at L. Remaining L-band gap to the portal (portal 399 us vs bench 387.7) is a portal-vs-bench effect, not a memory-path effect [probe_b200, run_tests]
+- [r2-rope-ceiling-v4] run_tests of the unchanged r1 code: 16/16 pass; S +0.3%, M +0.3%, L +0.6% vs r1 on the same GPU (noise); predicted portal 0.6761 +/- 0.0116 [run_tests]
+- [r2-rope-ceiling-v4] consequence: later rounds should target S/M and the portal-vs-bench gap (H15, H11); L-band memory-path work (TMA, bulk rings, 256-bit, CTA ordering) is a dead end
+- [r2-rope-pair2-magic-occ10] H5 refuted on the bench: pair HG=2 (NVRTC 48 regs, 10 CTAs/SM, 0 spills) vs r1+magic within +-1.5% at every size: 6.6 MB -2.4..-4.5%, 15.8-61 MB +-1%, 102 MB -1.3..-2.2%, 134-326 MB -0.5..-1%, 354-612 MB +0.4..+1.4%, 2689 MB +1.1..+1.3% [probe_b200, 3 interleaved repeats, 2 sessions]
+- [r2-rope-pair2-magic-occ10] dead end: HG=4 (48 regs) +44% at 2.2 MB, +12..+22% at 6.6-16 MB, +7% at 57-61 MB, +2..+3% at L [probe_b200]
+- [r2-rope-pair2-magic-occ10] H3: no-table twin of the pair kernel (constants for cos/sin) vs pair with tables: -2.6% at 612 MB, -1.5% at 407, +-1% at 269-354, +1% at 2689; table L2 traffic is <= 2.6% on the bench even at S=8192 [probe_b200]
+- [r2-rope-pair2-magic-occ10] NEW: more bytes in flight hurts. The pair kernel at 40 regs (nvcc; 12 CTAs/SM = 96 KB of x per SM) has SASS identical to the 48-reg build (10 CTAs/SM = 80 KB) but is +2..+8% slower at 6.6-134 MB and +2..+3% at L [probe_b200: p2_128b vs p2_128; run_tests first draft +1.3..+2.6% at 36-102 MB]
+- [r2-rope-pair2-magic-occ10] occupancy sweep with smem padding (132 KB carve-out): row kernel 16 CTAs/SM best; 13 CTAs +2..+4.5% at 36-102 MB; 10 CTAs +5..+10% everywhere. Pair kernel 10 vs 7 CTAs/SM within 1-3%. Rows in flight per SM: optimum about 128-160 rows (64-80 KB) [probe_b200]
+- [r2-rope-pair2-magic-occ10] padding smem alone at unchanged occupancy (row kernel 16 CTAs/SM with 7.4 KB smem) costs +0.4..+3.5% at 57-102 MB (smaller L1 for tables); the pair kernel at 10 CTAs/SM with 11.5 KB padding ties no padding [probe_b200]
+- [r2-rope-pair2-magic-occ10] carve-out: PreferredSharedMemoryCarveout 45-50% gives the 132 KB config; CTAs = floor(135168/(smem+1024)) matched cuOccupancy for 7400/9000/11500/16000 B (16/13/10/7) [probe_b200]
+- [r2-rope-pair2-magic-occ10] H8 supported (small): magic divisor (umulhi + add + shift, host-computed) vs rl % S in r1: -2.5% at 2.2 MB, -1.0..-2.1% at 6.6-16 MB, -0.5..-1.1% at 36-134 MB, 0 at L [probe_b200]
+- [r2-rope-pair2-magic-occ10] run_tests final: 16/16 pass; S -2.6%, M -1.7%, L -0.1% vs r1 on the same B200; 2.2 MB 2.5 vs 2.7, 6.6 MB -3.8%, 57 MB -2.4%, 269 MB (8,24,8) -4.1% / (8,28,4) -1.1%, no workload worse than +0.2%; predicted portal 0.6813 +- 0.0116 [run_tests]
+- [r2-rope-pair2-magic-occ10] first draft without occupancy cap (pair at 12 CTAs/SM): S -1.0%, M -0.3%, L -0.1%; 36 MB +2.6%, 57 MB +1.6%, 102 MB +1.3% [run_tests]
+- [r2-rope-pair2-magic-occ10] toolchain: nvcc (portal build) and NVRTC (probe) allocate different register counts for identical SASS (40 vs 48); occupancy-sensitive designs must be checked with compile_b200, not probe resources [compile_b200, probe_b200]
+- [r2-rope-psst-m] H13 refuted on the bench: no register-only persistent configuration at <= 64 regs beats r1 by >= 3% at 36-134 MB; at 134-612 MB all are +3..+14% slower [probe_b200, 3 sessions]
+- [r2-rope-psst-m] registers/occupancy (sm_100a): linear 2-set pipeline 72 regs (128 thr, 7 CTAs/SM) / 77 (256 thr, 3); with __launch_bounds__(128,8) 64 regs; s-stationary depth 1 48 regs (10 CTAs/SM at 128 thr, 20 at 64), depth 2 56 regs (9); all 0 spills, 0 smem [probe_b200 resources + cuOccupancy]
+- [r2-rope-psst-m] linear persistent vs r1 (36/61/102/134/269 MB): plin128 k7 +4.9/+5.2/+6.1/+4.7/+10.1%; plin128 64-reg k8 +1.5/+3.5/+4.8/+4.1/+10.3%; plin256 k3 +7.3/+9.0/+7.6/+5.3/+8.4% [probe_b200]
+- [r2-rope-psst-m] s-stationary vs r1: psst128 k9 6.6 MB +1.9%, 15.8 +1.4, 36 +1.8 (-3.5 in another session), 57 -0.4, 61 +0.8, 102 +1.2, 134 +4.1, 269 +8.3, 612 +3.5%; k10 is worse than k9; depth 2 (k7/k8) and 64-thread k20 are no better [probe_b200]
+- [r2-rope-psst-m] dead end, key result: persistent with NO prefetch at r1's own occupancy (32 regs, 16 CTAs/SM, grid 148x16) is +3.6% at 6.6 MB, +7.8 at 15.8, +7 at 61, +6.5 at 102, +7.2 at 134, +10.6 at 269, +13.8% at 612 MB. Removing CTA replacement costs bandwidth; the loss grows with size, so it is a rate deficit and not a fixed cost [probe_b200]
+- [r2-rope-psst-m] replacement gap: empty one-shot grids (R/8 CTAs of 128 thr) span 1.6 us at 6.6 MB, 3.2 us at 36 MB, 9.4 us at 134 MB, 18 us at 269 MB and 39 us at 612 MB; an empty persistent grid (148x16) spans 2.2 us at every size. Dispatch overlaps memory work: r1 at 269 MB (39 us) is not dispatch-bound, and r1 time minus persistent time is negative at every size [probe_b200]
+- [r2-rope-psst-m] dead end: dynamic work-stealing persistent (warp tickets on one global atomic counter, last warp resets it; chunks of 8 or 32 rows, with or without row prefetch) adds about 15-20 us fixed cost: +250..+390% at 15.8 MB, +37..+56% at 269 MB, +17..+34% at 612 MB. Same-address atomics from 2-4.7k warps serialise [probe_b200]
+- [r2-rope-psst-m] run_tests (final, 16/16 pass) vs r1 on the same B200: persistent-path workloads 36 MB 6.8 vs 6.6 (+4.4%), 57 MB 9.0 vs 8.9 (+1.4%), 61 MB 9.6 vs 9.4 (+2.3%), 102 MB 15.1 vs 14.8 (+2.2%); other workloads use identical code (-0.3..+0.2% at M/L, noise at 2.2/6.6 MB); predicted portal 0.676 vs 0.677 [run_tests]
+- [r2-rope-psst-m] implication for later rounds: on this B200, hardware CTA dispatch acts as a free dynamic load balancer for 128-float row streams; persistent designs (static or atomic-dynamic) should be parked for #88 unless they raise bytes in flight per SM well beyond r1's ~64 KB of x at no occupancy cost
+Round r1:
+- [r1-rope-ldg256-os64-tabel] clock lock: nvidia-smi -lgc 1500,1500 refused on the rented card (no permission); -lmc unsupported (only deferred). The portal's 1.5 GHz regime cannot be reproduced; the H11 locked-clock test is impossible here [probe_b200]
+- [r1-rope-ldg256-os64-tabel] no-table probe (cos/sin replaced by constants, 30 regs) vs r0 dispatcher: -10..-12% at 36 MB, -8..-10% at 61, -3% at 134, -1..-2% at 269, -7% at 322, -8% at 407, -7% at 612, -2% at 2689 [probe_b200, 3 sessions]
+- [r1-rope-ldg256-os64-tabel] s0 probe (same 50 regs, table row forced to s&1 so every table load hits L1) matches no-table at L (-7..-8% at 322-612) but not at 36-61 MB (-2.5..-5% vs -10%): at S/M part of the no-table gain is occupancy (30 vs 50 regs) [probe_b200]
+- [r1-rope-ldg256-os64-tabel] MAIN: r0's 256-thread L path is the loss. r0 with 64-thread CTAs at every size: -8.0% at 322, -7.2% at 326, -7.3% at 354, -6.1% at 407, -1.8% at 612, -2.5% at 2689 vs r0's dispatcher; 128-thread: -6.8/-5.4/-6.3/-5.3/-3.0/-3.1%. Seen in 3 probe sessions; contradicts r0's finding that 256 beat 64 by 5% at 407 MB. 49k-327k 64-thread CTAs are not dispatch-bound on the bench [probe_b200]
+- [r1-rope-ldg256-os64-tabel] vs 64-thread r0, the L1-hit table (s0) gains only -0.5..-1.6% at 269-2689 MB, but -5.5% at 612 MB (S=8192, 8 MB tables) and -11% at 2.2 MB: table traffic is a small cost on the bench once CTAs are small [probe_b200]
+- [r1-rope-ldg256-os64-tabel] table loads with L2::evict_last (.L2::evict_last qualifier or cache_hint policy; same SASS LDG.E.ELL2.256): -2.7 points at 612 MB, -0.9 at 2689, +0.5..+0.7 (noise) at 322-407, neutral at S/M; kept on the >450k-row path only [probe_b200]
+- [r1-rope-ldg256-os64-tabel] dead end, variant A (s-tile x head-group CTAs, heads slowest; 256 thr TS x HG = 8x4, 4x8, 16x2; 64 thr 4x2, 2x4): +2..+12% at 36-269 MB, ties at 2689; A_4_2's -5% at 407 MB is the 64-thread effect, not table sharing [probe_b200]
+- [r1-rope-ldg256-os64-tabel] dead end, variant B (table slice staged in static smem, __syncthreads): +7..+25% at every size (B_8_4: 426 vs 399 us at 2689 MB) [probe_b200]
+- [r1-rope-ldg256-os64-tabel] dead end, variant C (table in registers, loop over HG heads; HG=2 with x prefetch 80 regs, HG=4/8 with or without prefetch 64-80 regs; C2 unrolled 72 regs at 64/128 thr): best C2p -4% at 407 vs 256-thread r0 but +2..+3% vs 64-thread r0 at 407-2689 MB [probe_b200]
+- [r1-rope-ldg256-os64-tabel] dead end, variant W (4 heads of one s per warp, so each table instruction hits 256 B): +3..+4% vs 64-thread r0 at 407-2689 MB; its no-table twin W0 ties r0, so W's in-warp table merging costs ~3.5% instead of saving [probe_b200]
+- [r1-rope-ldg256-os64-tabel] trap: padding CTAs with dynamic smem to control occupancy (carve-out 100%) makes r0 +40..+77% slower because the table loads lose L1; r0 depends on L1 for the tables, and smem-padding occupancy tests are invalid for this kernel [probe_b200]
+- [r1-rope-ldg256-os64-tabel] run_tests (final): 16/16 pass; L band -5.2% (322 MB -7.2%, 326 -8.1%, 354 -7.2%, 407 -4.3%, 612 -1.1%, 2689 -3.0%); S/M +1.2% although the <=450k-row code is identical to r0's 64-thread path: bench bias or noise; the same +1.1% appeared with the hint on all paths [run_tests]
+- [r1-rope-pers-tstat-m] run_tests (16/16 pass), persistent M path 256 thr, TS 32, D 2, 80 regs, 3 CTAs/SM vs r0: 61 MB 12.7 vs 11.2 (+14%), 57 MB 11.5 vs 10.5 (+9%), 102 MB 19.2 vs 16.5 (+16%), 134 MB 24.1 vs 20.1 (+20%), 269 MB 46.0/45.7 vs 38.8/39.1 (+17-19%); S/L unchanged [run_tests]
+- [r1-rope-pers-tstat-m] first version, table in registers (98 regs, 2 CTAs/SM at 256 thr, 5 at 128): (256,k=2) 61 MB 12.6 vs r0 11.0, 134 MB 24.0 vs 19.5, 269 MB 45.9 vs 39.5; k above occupancy (2nd wave) +10-25% more [probe_b200]
+- [r1-rope-pers-tstat-m] table in shared memory, per-thread slots without a barrier (80 regs at D=2, 104 at D=3, 134-138 at D=4): best p_256_D2 (3 CTAs/SM) 36 MB 8.4 vs 7.66, 61 MB 11.9 vs 11.1, 134 MB 21.6 vs 19.8, 269 MB 43.4 vs 39.6; p_128_D2 (6 CTAs/SM) ties it; D=3 +5-10% more, D=4 +15-30% more: per-thread depth does not replace resident threads [probe_b200]
+- [r1-rope-pers-tstat-m] dead end: __launch_bounds__(256,4) forces 64 regs (4 CTAs/SM, no spills) but is much slower: M +23-46% vs r0 [run_tests]
+- [r1-rope-pers-tstat-m] proxy for H11 (bench clocks): r0 with every table read pointed at row 0 (L1 hits, no table L2 traffic): 64-thr 61 MB -4%, 134 MB -3%, 269 MB 0%, 407 MB -1.5%; 256-thr -10%, -7.5%, -7%, -8%. Table traffic costs 256-thread CTAs far more than 64-thread ones [probe_b200]
+- [r1-rope-pers-tstat-m] same session: r0_256 is 6-11% slower than r0_64 at 61-407 MB (407 MB: 63.2 vs 59.1), unlike r0's earlier finding that 256-thr wins at 407 MB; sessions differ [probe_b200]
+- [r1-rope-pers-tstat-m] ordering: bh-major (linear sweep, table reloaded from L2 each tile) persistent is 13-27% slower than s-tile-major; s-tile-major order is not what costs the persistent kernel (confounded by the per-tile table stall and 2 vs 3 CTAs/SM) [probe_b200]
+- [r1-rope-pers-tstat-m] clock locking on the rented card is not permitted (nvidia-smi -lgc: no permission; -lmc unsupported), so H11's locked-clock L2 limit cannot be tested on the bench [probe_b200]
+- [r1-rope-v4nc-s128] H12 supported: the gap is in the load/store width and layout, not the hints. Plain vs nc/no_allocate x loads or table loads (8 lanes, 256-bit) and plain vs cache_hint stores at 2.2 MB: all within 0.03 us of r0 (2.98 us); at 6.6 MB plain stores are +0.06 us [probe_b200, 5 interleaved repeats]
+- [r1-rope-v4nc-s128] 2.2 MB (median us, 5 repeats): r0 2.98; x plain 2.98; table plain 3.01; plain stores 2.99; 32-thr 4-row 256-bit 2.72; 16 lanes v4 128 thr all-plain 2.67 / 2.59 in the second session; v4 + evict_last stores 2.59; v4 nc 2.59; v4 at 64/256 threads 2.62; v2 (32 lanes) 2.59; no-table probe (constants) 2.69; plain copy 2.64 (v4 copy 2.56). The kernel is now at the copy floor [probe_b200]
+- [r1-rope-v4nc-s128] 6.6 MB: r0 3.58; v4_el128 3.46; v4 plain stores 3.55; 32-thr 4-row 256-bit 3.46; 32-thr 2-row v4 plain 3.91 (worse); no-table 3.36; copy 3.31 [probe_b200]
+- [r1-rope-v4nc-s128] 15.8 MB: r0 4.83; v4_el 4.61; v4 with plain stores 4.96 (+3%, evict_last stores matter here); 32-thr 256-bit 4.83; no-table copy 4.45 [probe_b200]
+- [r1-rope-v4nc-s128] 36 MB: r0 7.68; v4_el128 6.85; v4 nc + el 6.63; 64-thr v4 7.65; v4 plain stores 8.03; copy 6.56 [probe_b200]
+- [r1-rope-v4nc-s128] 57-102 MB: r0 10.5/16.5 (54.6k/99k rows); v4 plain loads el 9.66/14.98; v4 nc el 8.99/14.79 (-15%/-10%). x plain + table nc 9.69/15.01; x nc + table plain 9.01/14.78: the nc on x is what matters at 57 MB [probe_b200]
+- [r1-rope-v4nc-s128] 134-269 MB: r0 19.83/39.17; v4 nc 128 19.17/38.95; v4 plain 128 18.95/38.77 (within 1-3%) [probe_b200]
+- [r1-rope-v4nc-s128] L band, 256-thread v4 vs r0 256-thread 8-lane: 322 MB 46.3 vs 49.7 (-6.7%); 354 MB 51.2 vs 54.9 (-6.8%); 612 MB 92.8 vs 93.8 (-1%); 2689 MB 389.4 vs 396.2 (-1.7%). 128 and 256 threads tie within 0.3% at L [probe_b200]
+- [r1-rope-v4nc-s128] dead end: v2 / 32 lanes per row is slower above 6 MB (+10-20%); 32-thread CTAs with 2 rows (v4) are +9% at 6.6 MB; 32-thread 4-row 256-bit is no better than r0 above 15 MB [probe_b200]
+- [r1-rope-v4nc-s128] run_tests full 16/16 pass vs r0 on the same B200: S -9.4%, M -6.2%, L -6.3% geomean; 2.2 MB 2.6 vs 2.9 (-10.9%), 6.6 MB -1.7%, 15.8 MB -7.5%, 36 MB -12.7%, 57 MB -13.6%; predicted portal 0.665 [run_tests]
+- [r1-rope-v4nc-s128] compile: 32 regs, 0 spills, LDG.128 x12 (4 of them .NA), STG.128 x4 per thread [compile_b200]
+Round r0:
+- [r0-rope-ldg256-os-stel] run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]
+- [r0-rope-ldg256-os-stel] evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]
+- [r0-rope-ldg256-os-stel] 64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]
+- [r0-rope-ldg256-os-stel] dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]
+- [r0-rope-ldg256-os-stel] bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]
+- [r0-rope-ldg256-os-stel] cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]
+
+=== PORTAL RESULTS (best first) ===
+- r2-rope-pair2-magic-occ10: portal 0.6827, S/M/L 5.5/23.0/81.5 µs
+- r1-rope-v4nc-s128: portal 0.6772, S/M/L 5.6/23.4/82.3 µs
+- r0-rope-ldg256-os-stel: portal 0.6351, S/M/L 6.2/25.9/96.1 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (1,8,8,128) | middle (8,24,8,1024) | largest (32,16,4,4096) |
+|---|---|---|---|
+| x: ef | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| w: nc | +0.0% ± 6.1 | +0.0% ± 6.3 | +0.0% ± 6.3 |
+| w: el | +1.8% ± 6.6 | +2.7% ± 6.7 | +1.4% ± 6.7 |
+| st: ef | +1.8% ± 6.6 | +2.7% ± 6.7 | +1.4% ± 6.7 |
+| st: none (vs el) | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| width 128 | +0.0% ± 6.1 | +0.0% ± 6.3 | +0.0% ± 6.3 |
+| threads 512, rows 32 | +1.6% ± 6.6 | +2.3% ± 6.6 | +1.2% ± 6.7 |
+| threads 128, rows 8 | -1.3% ± 5.4 | -1.2% ± 5.7 | -0.2% ± 5.8 |
+| grid persistent | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| prefetch L2 | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| mem tma | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| lang triton | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+| lang cute | +1.3% ± 6.5 | +1.9% ± 6.6 | +1.0% ± 6.6 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r2-rope-pair2-magic-occ10 | ldg128/oneshot/dispatch:size | cuda_cpp | 4.6/20.6/78.7 | -/-/- | -/-/- | -/-/- | 5.5/23.0/81.5 | 0.682703 | 32/0/None; 32/0/None | passed |
+| r1-rope-v4nc-s128 | ldg128/oneshot/dispatch:size | cuda_cpp | 4.8/21.1/78.5 | -/-/- | -/-/- | -/-/- | 5.6/23.4/82.3 | 0.67717 | 32/0/None; 32/0/None | passed |
+| r0-rope-ldg256-os-stel | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/22.5/83.7 | -/-/- | -/-/- | -/-/- | 6.2/25.9/96.1 | 0.635079 | 50/0/None; 50/0/None | passed |
+| r1-rope-ldg256-os64-tabel | ldg256/oneshot/dispatch:size | cuda_cpp | 5.3/22.7/79.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 50/0/None; 50/0/None | passed |
+| r1-rope-pers-tstat-m | ldg256/persistent-wstat/dispatch:size | cuda_cpp | 5.4/26.2/83.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 50/0/None; 50/0/None | passed |
+| r2-rope-ceiling-v4 | ldg128/oneshot/dispatch:size | cuda_cpp | 4.8/21.1/78.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/0/None; 32/0/None | passed |
+| r2-rope-psst-m | ldg128/persistent-wstat/dispatch:size | cuda_cpp | 4.8/21.2/78.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/0/None; 32/0/None | passed |

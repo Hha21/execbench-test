@@ -1,0 +1,94 @@
+id: r3-rope-hints-dispatch
+parents:
+  - r2-rope-pair2-magic-occ10
+operation: knob_mutation
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows16
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  E2/H11/H19: on the bench the table cost is small, so only the cheapest hint wins survive. Table loads with an
+  L2 evict_last policy on the 256-thread row path keep the 8-16 MB tables in L2 at 612 and 2689 MB (R > 450k).
+  Plain x loads help the 134 MB workload, whose 128 KB tables stay in L1. The pair path now also serves S <= 2048,
+  which changes only the 354 MB workload. The evict_first policy on x loads (H16) hurts at M and is dropped.
+  The portal may show more than the bench at 354 MB (pair path, half the table traffic) if H11 holds.
+expected_effect:
+  S:
+    pct: -0.3
+    confidence: low
+  M:
+    pct: -0.4
+    confidence: medium
+  L:
+    pct: -0.7
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 11500
+  threads_per_cta: 128
+  ctas_per_sm: 10
+  bytes_in_flight_per_sm: 81920
+  launches_per_call: 1
+knobs:
+  pair_rule: "H,Hkv even and R>4096 and S<=2048"
+  plain_x_rule: "pair path and R>=120000 and S<=256"
+  table_el_rule: "row256 path and R>450000"
+  row_threshold: 262144
+  store_hint: evict_last
+dispatch:
+  - {rule: "H%2==0 && Hkv%2==0 && R>4096 && S<=2048 && R>=120000 && S<=256", kernel: "rope_pair<128,plainx>", meta: {threads: 128, ctas_per_sm: 10}}
+  - {rule: "H%2==0 && Hkv%2==0 && R>4096 && S<=2048", kernel: "rope_pair<128>", meta: {threads: 128, ctas_per_sm: 10}}
+  - {max_rows: 262144, kernel: "rope_row<128>", meta: {threads: 128}}
+  - {max_rows: 450000, kernel: "rope_row<256>", meta: {threads: 256}}
+  - {max_rows: null, kernel: "rope_row<256,table_el>", meta: {threads: 256}}
+tests:
+  - H11
+  - H16
+  - H19
+  - H3
+findings:
+  - "(a) pair path at L vs r2 row256, 3 repeats: 354 MB p128 -0.1% / p256 -0.2%; 407 MB +0.7% / +0.7%; 612 MB 0.0% / +1.3%; 2689 MB +0.9% / +0.6%. Neutral at 354, slightly worse above; the pair path was extended only to S <= 2048 (354 MB) [probe_b200]"
+  - "(b) table loads .nc.L2::cache_hint evict_last on the row256 path: 354 MB +0.3%, 407 MB +0.8%, 612 MB -1.8 / -1.3%, 2689 MB -0.7 / -0.5%. Kept only for R > 450k [probe_b200]"
+  - "(b) dead end: table evict_last on the PAIR path is +5..+11% at 134-407 MB, and on row128 +0.9..+1.4% at 134-326 MB. Only the row256 path at 612+ MB gains [probe_b200]"
+  - "(c) plain x loads vs nc.no_allocate x: 134 MB -1.0 / -1.5 / -1.5% (stable over 3 repeats and two runs), 269 MB -0.5 / -0.3 / -0.1% (spread about the same size), 322 MB +0.6%, 407 MB +1.0%, 612 MB +4.3%, 2689 MB +1.4%, 36 MB +3.7%, 57 MB +7.0%. Kept only for R >= 120k with S <= 256 (the 134 MB workload) [probe_b200]"
+  - "(c') ld.global.nc without no_allocate: same as plain (-0.6% at 134 MB, +3.4% at 36 MB, +7.0% at 57 MB); no_allocate is what matters below 134 MB [probe_b200]"
+  - "(d) H16 refuted at M: nc.L1::no_allocate.L2::cache_hint with a fractional evict_first policy on x is +16.7% at 36 MB, +16.2% at 57 MB, +10.8% at 134 MB, +5.9% at 269 MB, +5.6% at 322 MB; neutral at 407 MB (-0.2%), 612 MB (+0.2%), 2689 MB (-0.1%). The PTX form compiles and gives correct results [probe_b200]"
+  - "composite run_tests (16/16 pass) vs r2 on the same B200: S -0.3%, M -0.4%, L -0.7%. 134 MB -1.7%, 612 MB -2.4%, 2689 MB -0.4%, 354 MB -1.0%, 6.6 MB -2.6%, 36 MB -0.9%; 15.8 MB +2.8% runs code identical to r2's pair kernel, so it is noise. Predicted portal 0.6842 +- 0.0115 [run_tests]"
+  - "compile_b200: rope_row<128/256> 32 regs, rope_pair<128> 40 regs, 0 spills, 0 smem (pair gets 11.5 KB dynamic padding at launch) [compile_b200]"
+  - "success test: -1.5% at 612 and 2689 MB not met at 2689 MB (-0.4..-0.7%); 612 MB and 134 MB met. The bench total gain is under 1% in every band, so a portal gain of 3% in any band is unlikely unless H11 (locked-clock L2 effect) is real; only the portal can show that [reasoning]"
+paths:
+  - {max_tokens: null, max_rows: 4096, lang: cuda, width: 128, threads: 128, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: 119999, max_seq: 2048, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}
+  - {max_tokens: null, max_rows: 262144, min_rows: 120000, max_seq: 256, lang: cuda, width: 128, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: none, w: nc, st: el, rows_per_thread: 2, table_shared_heads: 2, ctas_per_sm_cap: 10, pad_smem: 11500}
+  - {max_tokens: null, max_rows: 450000, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 128, threads: 256, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: el_nc, st: el}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "not measured; B200 bench only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Bench gains are 0.4-0.7% per band, below the 5% portal noise; the portal result will say little unless H11 amplifies the table effect"
+  - "The plain-x rule (R >= 120k, S <= 256) and the table-evict_last rule (R > 450k) are fitted to single workloads, each 1.5% or less; shape-only and correct for all shapes"
+  - "Pair path with S <= 2048 uses cudaFuncSetAttribute for the carve-out (ordinary occupancy control, flagged for review)"
+  - "Table evict_last pins 8-16 MB of tables in L2; it loses on the pair path and at 354-407 MB, so keep it off those"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,0 +1,90 @@
+id: r1-rope-ldg256-os64-tabel
+parents:
+  - r0-rope-ldg256-os-stel
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Most of r0's L-band loss is its 256-thread CTA path, not the cos/sin L2 traffic. 50 regs give 4x256 = 1024
+  threads per SM against 18x64 = 1152, with coarser CTA retirement, and on the bench 64-thread CTAs beat it by 6-8%
+  at 322-407 MB and 2-3% at 612-2689 MB. Table-sharing layouts recover nothing beyond that. An L2::evict_last hint
+  on the table loads helps where the tables are 4-8 MB and are re-read across a multi-MB output stream that is also
+  evict_last. The portal locks the SM clock at 1.5 GHz, which may scale CTA dispatch cost, so the largest path uses
+  128-thread CTAs to halve the CTA count (2689 MB: 164k CTAs instead of 328k).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: -5
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 50
+  smem_per_cta_bytes: 0
+  threads_per_cta: 64
+  ctas_per_sm: 18
+  bytes_in_flight_per_sm: 73728
+  launches_per_call: 1
+knobs:
+  THREADS_SM: 64
+  THREADS_L: 128
+  row_threshold: 450000
+  table_hint_large: L2::evict_last
+  store_hint: evict_last
+dispatch:
+  - {max_rows: 450000, kernel: "rope_kernel<64,false>", meta: {threads: 64, rows: 8, table: nc}}
+  - {max_rows: null, kernel: "rope_kernel<128,true>", meta: {threads: 128, rows: 16, table: nc_L2_evict_last}}
+tests:
+  - H11
+  - H2
+  - H3
+findings:
+  - "clock lock: nvidia-smi -lgc 1500,1500 refused on the rented card (no permission); -lmc unsupported (only deferred). The portal's 1.5 GHz regime cannot be reproduced; the H11 locked-clock test is impossible here [probe_b200]"
+  - "no-table probe (cos/sin replaced by constants, 30 regs) vs r0 dispatcher: -10..-12% at 36 MB, -8..-10% at 61, -3% at 134, -1..-2% at 269, -7% at 322, -8% at 407, -7% at 612, -2% at 2689 [probe_b200, 3 sessions]"
+  - "s0 probe (same 50 regs, table row forced to s&1 so every table load hits L1) matches no-table at L (-7..-8% at 322-612) but not at 36-61 MB (-2.5..-5% vs -10%): at S/M part of the no-table gain is occupancy (30 vs 50 regs) [probe_b200]"
+  - "MAIN: r0's 256-thread L path is the loss. r0 with 64-thread CTAs at every size: -8.0% at 322, -7.2% at 326, -7.3% at 354, -6.1% at 407, -1.8% at 612, -2.5% at 2689 vs r0's dispatcher; 128-thread: -6.8/-5.4/-6.3/-5.3/-3.0/-3.1%. Seen in 3 probe sessions; contradicts r0's finding that 256 beat 64 by 5% at 407 MB. 49k-327k 64-thread CTAs are not dispatch-bound on the bench [probe_b200]"
+  - "vs 64-thread r0, the L1-hit table (s0) gains only -0.5..-1.6% at 269-2689 MB, but -5.5% at 612 MB (S=8192, 8 MB tables) and -11% at 2.2 MB: table traffic is a small cost on the bench once CTAs are small [probe_b200]"
+  - "table loads with L2::evict_last (.L2::evict_last qualifier or cache_hint policy; same SASS LDG.E.ELL2.256): -2.7 points at 612 MB, -0.9 at 2689, +0.5..+0.7 (noise) at 322-407, neutral at S/M; kept on the >450k-row path only [probe_b200]"
+  - "dead end, variant A (s-tile x head-group CTAs, heads slowest; 256 thr TS x HG = 8x4, 4x8, 16x2; 64 thr 4x2, 2x4): +2..+12% at 36-269 MB, ties at 2689; A_4_2's -5% at 407 MB is the 64-thread effect, not table sharing [probe_b200]"
+  - "dead end, variant B (table slice staged in static smem, __syncthreads): +7..+25% at every size (B_8_4: 426 vs 399 us at 2689 MB) [probe_b200]"
+  - "dead end, variant C (table in registers, loop over HG heads; HG=2 with x prefetch 80 regs, HG=4/8 with or without prefetch 64-80 regs; C2 unrolled 72 regs at 64/128 thr): best C2p -4% at 407 vs 256-thread r0 but +2..+3% vs 64-thread r0 at 407-2689 MB [probe_b200]"
+  - "dead end, variant W (4 heads of one s per warp, so each table instruction hits 256 B): +3..+4% vs 64-thread r0 at 407-2689 MB; its no-table twin W0 ties r0, so W's in-warp table merging costs ~3.5% instead of saving [probe_b200]"
+  - "trap: padding CTAs with dynamic smem to control occupancy (carve-out 100%) makes r0 +40..+77% slower because the table loads lose L1; r0 depends on L1 for the tables, and smem-padding occupancy tests are invalid for this kernel [probe_b200]"
+  - "run_tests (final): 16/16 pass; L band -5.2% (322 MB -7.2%, 326 -8.1%, 354 -7.2%, 407 -4.3%, 612 -1.1%, 2689 -3.0%); S/M +1.2% although the <=450k-row code is identical to r0's 64-thread path: bench bias or noise; the same +1.1% appeared with the hint on all paths [run_tests]"
+paths:
+  - {max_tokens: null, max_rows: 450000, lang: cuda, width: 256, threads: 64, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 256, threads: 128, rows: 16, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: el, st: el}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "256-bit ld/st.global.v8.f32 and createpolicy need sm_100a"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "r0's card measured 256-thread beating 64-thread by 5% at 407 MB; three sessions here say the opposite. If the portal (1.5 GHz SM clock) is CTA-dispatch-bound, 49k 64-thread CTAs at 407 MB could lose; the 128-thread path for >450k rows hedges the largest sizes only"
+  - "S/M are unchanged code; any S/M move on the portal is noise"
+  - "H11 is still untested at 1.5 GHz: if the portal's +15% gap is table traffic at the locked L2 clock, this kernel recovers only the CTA-shape part"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

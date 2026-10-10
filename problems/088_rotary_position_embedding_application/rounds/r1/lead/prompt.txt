@@ -1,0 +1,127 @@
+=== TASK ===
+Round r1: update the hypothesis ledger and design 3 experiments.
+
+=== PROBLEM ===
+L1/088_rotary_position_embedding_application: 16 workloads, variable axes ['batch_size', 'num_heads', 'num_kv_heads', 'seq_len']; bands by size: S <= 56.8 MB < M <= 269.5 MB < L
+         1,8,8,128       2.23 MB  band S
+        1,40,8,131       6.57 MB  band S
+        2,32,4,211      15.77 MB  band S
+        4,24,6,293      36.30 MB  band S
+        1,56,8,853      56.78 MB  band S
+        8,16,4,373      61.49 MB  band M
+        2,48,6,919     102.58 MB  band M
+        64,8,8,128     134.35 MB  band M
+       8,24,8,1024     269.48 MB  band M
+       8,28,4,1024     269.48 MB  band M
+       8,32,4,1087     321.68 MB  band L
+      4,48,12,1321     326.00 MB  band L
+       4,36,6,2048     354.42 MB  band L
+       2,40,8,4096     406.85 MB  band L
+       1,64,8,8192     612.37 MB  band L
+      32,16,4,4096    2688.55 MB  band L
+
+=== HYPOTHESIS LEDGER (problems/088_rotary_position_embedding_application/ledger.yaml) ===
+# Hypothesis ledger for #88 (RoPE application), seeded 10 October 2026 by the r0 research session.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+hypotheses:
+- id: H1
+  statement: evict_last on the output stores cuts in-window dirty write-backs, as in #38, so M sizes gain most.
+  status: supported
+  evidence:
+  - 'probe r0: EL vs plain stores, same kernel: 36 MB 7.11 vs 8.02 us, 61 MB 10.49 vs 11.48, 269 MB 39.05 vs 42.10, 407 MB 56.73 vs 61.93 [probe_b200]'
+  - 'run_tests r0: 0.83-0.88x the plain copy at 61-269 MB'
+- id: H2
+  statement: CTA dispatch rate (about 0.55-0.65 us per 1000 CTAs regardless of 64 or 256 threads) caps 64-thread one-shot grids at L, so 256-thread CTAs win there while 64-thread CTAs win at S/M.
+  status: supported
+  evidence:
+  - 'probe r0: empty grids 64x32768 18.0 us, 64x49152 26.4 us, 256x8192 5.3 us, 256x12288 7.4 us, 256x81920 43.5 us'
+  - 'probe r0: 64-thr vs 256-thr: 36 MB 6.94 vs 7.11, 269 MB 38.77 vs 39.05, 407 MB 59.75 vs 56.73'
+  - 'probe r0: 512 and 1024 threads per CTA are 3-8% slower than 256 at 269-2689 MB'
+- id: H3
+  statement: Sharing one cos/sin load across several heads (rows S*512 B apart) cuts L2 traffic and helps L.
+  status: refuted
+  evidence:
+  - 'probe r0: 2-head variant (80 regs): 269 MB 38.39 vs 39.05 (noise), 407 MB 60.96 vs 56.73; the strided row pairs seem to cost more than the saved L2 reads'
+- id: H4
+  statement: Occupancy (60 regs -> 4 CTAs/SM at 256 threads) limits L-band bandwidth.
+  status: refuted
+  evidence:
+  - 'probe r0: float4 layout with 32 regs (full occupancy) ties the 60-reg v8 layout at 36 and 269 MB and is 5% slower at 407 MB'
+- id: H5
+  statement: More rows per thread (register tiles) raise bytes in flight and help L.
+  status: refuted
+  evidence:
+  - 'probe r0: 2 rows/thread at 256 threads (108 regs): slower at every size (+9% at 36 MB, +15% at 407 MB)'
+- id: H6
+  statement: The S-band fixed cost (2.6-3.0 us at 2.2 MB vs 1.76 us for an empty grid) can be cut by issuing all of a CTA's loads before any use with fewer CTAs, or by 1-4 row CTAs.
+  status: open
+  evidence:
+  - 'probe r0: 64/128/256-thread one-row-per-thread variants are within 0.15 us of each other at 2.2 MB (2.62-2.77 us)'
+- id: H7
+  statement: Load hints on x (.nc, L1::no_allocate) and on cos/sin (.nc) change nothing measurable; plain loads would do.
+  status: open
+  evidence:
+  - 'r0 uses .nc + L1::no_allocate on x and .nc on tables without an A/B'
+- id: H8
+  statement: The per-row integer modulo (rl % S) and the 60-register body are cheap at 1.5 GHz; a (stream, bh, s-tile) grid that avoids the modulo gains nothing.
+  status: open
+  evidence:
+  - 'probe r0: the 2-head variant uses a modulo-free grid and was not faster'
+- id: H9
+  statement: Partial or first-output-only evict_last is no better than evict_last on all stores (as #38 H15), since the gain saturates at about 25-30 MB of parked write-back.
+  status: open
+  evidence: []
+- id: H10
+  statement: SOLAR for this problem is bytes/8 TB/s including cos/sin, so scores at the floor would be about 0.75-0.8 as in #38.
+  status: open
+  evidence:
+  - 'unknown until the first portal submission; floor8 geomean 14.2 us, r0 geomean 23.5 us on the unlocked rented card'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-rope-ldg256-os-stel] run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]
+- [r0-rope-ldg256-os-stel] evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]
+- [r0-rope-ldg256-os-stel] 64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]
+- [r0-rope-ldg256-os-stel] dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]
+- [r0-rope-ldg256-os-stel] bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]
+- [r0-rope-ldg256-os-stel] cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]
+
+=== PORTAL RESULTS (best first) ===
+- r0-rope-ldg256-os-stel: portal 0.6351, S/M/L 6.2/25.9/96.1 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (1,8,8,128) | middle (8,24,8,1024) | largest (32,16,4,4096) |
+|---|---|---|---|
+| x: ef | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| w: nc | +0.0% ± 4.4 | +0.0% ± 4.4 | +0.0% ± 4.4 |
+| w: el | +0.1% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| st: ef | +0.1% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| st: none (vs el) | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| width 128 | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| threads 512, rows 32 | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| threads 128, rows 8 | -0.3% ± 4.4 | -0.1% ± 4.4 | +0.1% ± 4.4 |
+| grid persistent | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| prefetch L2 | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| mem tma | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| lang triton | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+| lang cute | +0.0% ± 4.4 | +0.0% ± 4.4 | -0.0% ± 4.4 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-rope-ldg256-os-stel | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/22.5/83.7 | -/-/- | -/-/- | -/-/- | 6.2/25.9/96.1 | 0.635079 | 50/0/None; 50/0/None | passed |

@@ -1,0 +1,78 @@
+id: r1-rope-pers-tstat-m
+parents:
+  - r0-rope-ldg256-os-stel
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: persistent-wstat
+  launch: fused
+  tile: rows32
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H13. At M (50k-262k rows), a persistent grid of 148 x occupancy CTAs would beat r0's one-shot grid. Each CTA
+  takes a contiguous range of s-tile-major tiles, keeps its cos/sin slice in shared memory and prefetches the
+  next tile's x into registers, which removes the 2 B of L2 table reads per byte of x and the per-CTA ramp.
+  Measured result: REFUTED on the bench, +13-20% at M against r0. The persistent structure (fewer resident
+  threads, serial per-thread load-wait chain) costs more than the table saving, which is at most 3-4% for r0's
+  64-thread path on the bench. Whether the locked 1.5 GHz L2 clock on the portal changes this is untested (the
+  bench clock cannot be locked).
+expected_effect:
+  S: {pct: 1, confidence: high}
+  M: {pct: 15, confidence: medium}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 80
+  smem_per_cta_bytes: 33792
+  threads_per_cta: 256
+  ctas_per_sm: 3
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  THREADS_M: 256
+  TS: 32
+  DEPTH: 2
+  grid_M: 148 x occupancy (3)
+  M_rows_range: "50000..262144"
+  THREADS_S: 64
+  THREADS_L: 256
+  store_hint: evict_last
+dispatch:
+  - {max_rows: 49999, kernel: rope_kernel<64>, meta: {threads: 64, rows: 8, grid: oneshot}}
+  - {max_rows: 262144, kernel: rope_pers_kernel<256>, meta: {threads: 256, rows: 32, grid: persistent, depth: 2}}
+  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 32, grid: oneshot}}
+tests:
+  - H13
+  - H11
+findings:
+  - "run_tests (16/16 pass), persistent M path 256 thr, TS 32, D 2, 80 regs, 3 CTAs/SM vs r0: 61 MB 12.7 vs 11.2 (+14%), 57 MB 11.5 vs 10.5 (+9%), 102 MB 19.2 vs 16.5 (+16%), 134 MB 24.1 vs 20.1 (+20%), 269 MB 46.0/45.7 vs 38.8/39.1 (+17-19%); S/L unchanged [run_tests]"
+  - "first version, table in registers (98 regs, 2 CTAs/SM at 256 thr, 5 at 128): (256,k=2) 61 MB 12.6 vs r0 11.0, 134 MB 24.0 vs 19.5, 269 MB 45.9 vs 39.5; k above occupancy (2nd wave) +10-25% more [probe_b200]"
+  - "table in shared memory, per-thread slots without a barrier (80 regs at D=2, 104 at D=3, 134-138 at D=4): best p_256_D2 (3 CTAs/SM) 36 MB 8.4 vs 7.66, 61 MB 11.9 vs 11.1, 134 MB 21.6 vs 19.8, 269 MB 43.4 vs 39.6; p_128_D2 (6 CTAs/SM) ties it; D=3 +5-10% more, D=4 +15-30% more: per-thread depth does not replace resident threads [probe_b200]"
+  - "dead end: __launch_bounds__(256,4) forces 64 regs (4 CTAs/SM, no spills) but is much slower: M +23-46% vs r0 [run_tests]"
+  - "proxy for H11 (bench clocks): r0 with every table read pointed at row 0 (L1 hits, no table L2 traffic): 64-thr 61 MB -4%, 134 MB -3%, 269 MB 0%, 407 MB -1.5%; 256-thr -10%, -7.5%, -7%, -8%. Table traffic costs 256-thread CTAs far more than 64-thread ones [probe_b200]"
+  - "same session: r0_256 is 6-11% slower than r0_64 at 61-407 MB (407 MB: 63.2 vs 59.1), unlike r0's earlier finding that 256-thr wins at 407 MB; sessions differ [probe_b200]"
+  - "ordering: bh-major (linear sweep, table reloaded from L2 each tile) persistent is 13-27% slower than s-tile-major; s-tile-major order is not what costs the persistent kernel (confounded by the per-tile table stall and 2 vs 3 CTAs/SM) [probe_b200]"
+  - "clock locking on the rented card is not permitted (nvidia-smi -lgc: no permission; -lmc unsupported), so H11's locked-clock L2 limit cannot be tested on the bench [probe_b200]"
+paths:
+  - {max_tokens: null, max_rows: 49999, lang: cuda, width: 256, threads: 64, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 256, threads: 256, rows: 32, grid: persistent, mem: ldg, wstat: true, launches: 1, prefetch: true, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st.global.v8.f32 needs sm_100a"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "M band 13-20% slower than r0 on the bench; do not submit unless the operator wants a portal test of H11 at locked clocks"
+  - "grid sized from the runtime occupancy query (3 CTAs/SM at 80 regs); a compiler change that alters registers changes the grid but cannot create a second wave"
+  - "static per-launcher occupancy cache depends only on the device, not on data or pointers"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

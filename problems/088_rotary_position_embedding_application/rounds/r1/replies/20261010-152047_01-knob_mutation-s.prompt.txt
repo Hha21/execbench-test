@@ -1,0 +1,317 @@
+=== TASK ===
+Round: r1   Operation: knob_mutation
+Problem: L1/088_rotary_position_embedding_application   Target niche: exp:E2:H12   Target band: S
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r1-'.
+Experiment E2 (tests H12): S-band load/store path A/B scan against the 2.9 us portal baseline at 2.2 MB. Target: (1,8,8,128) scores 0.437 because r0 takes 3.6 us on the portal against a 2.9 us baseline; on the bench r0 is 3.0 us. Build single-change variants of r0's 64-thread S path and measure each at 2.2, 6.6, 15.8 and 36 MB, interleaved with r0, at least 5 repeats per variant, report medians and spread (kernels under 10 us show 5-9% launch-order noise): (a) x loads plain `ld.global.v8.f32` (no .nc, no L1::no_allocate); (b) table loads plain `ld.global.v8.f32`; (c) a 128-bit layout: 16 lanes per row, 128 threads per 8-row CTA, plain `ld.global.v4.f32` and `st.global.v4` (Triton-like, tests whether 256-bit accesses add latency); (d) plain `st.global.v8` stores without createpolicy/cache_hint, S path only; (e) 32-thread CTAs with 4 rows (512 CTAs at 2.2 MB) and 32-thread CTAs with 2 rows at 16 lanes per row (1024 CTAs); (f) probe-only references: the same grid with no table loads (constants, wrong output) and a plain copy kernel, to bound what is reachable at each size. Then combine the winning changes, run_tests 16/16, and if the combination beats r0 by >= 0.25 us at 2.2 MB and is not slower at 6.6-36 MB, submit it to the portal with the M/L path unchanged (dispatch threshold stays at 262,144 rows unless the scan says otherwise). Record every variant's median per size in findings, including the losers. Success: Bench: >= 0.25 us (8%) faster than r0 at 2.2 MB and >= 3% at 6.6-15.8 MB across the interleaved repeats. Portal: (1,8,8,128) <= 3.2 us (from 3.6) and S-band geomean <= 5.9 us (from 6.2). Refuted if: No single change or combination beats r0 by more than 0.1 us at 2.2 MB after 5 interleaved repeats, and the no-table probe is also within 0.1 us: the fixed cost lives in launch, first DRAM touch and tail, not in the load/store path; H12 refuted, H6 narrows to CTA count and row mapping. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Keep the kernel copy-like (memory-bound): the portal locks the SM clock lower than the test bench and penalises extra SM work per byte (the problem card). Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-rope-ldg256-os-stel | ldg256/oneshot/dispatch:size | cuda_cpp | 5.2/22.5/83.7 | -/-/- | -/-/- | -/-/- | 6.2/25.9/96.1 | 0.635079 | 50/0/None; 50/0/None | passed |
+B200 results so far:
+- r0-rope-ldg256-os-stel: B200 score 0.635, geomean 27.1 µs, B200 S/M/L 6.2/25.9/96.1 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #88 (RoPE application), seeded 10 October 2026 by the r0 research session.
+# r1 update 10 October 2026 after the first portal result (r0-rope-ldg256-os-stel, 0.6351).
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No deliberate delay before launch (CPU busy-wait, sleep, extra host work) and nothing else meant to change when our kernel reaches the GPU relative to the harness''s flush memset: a kernel that arrives ~60 us late, after the 73 us flush, measures ~0.4 us faster at small sizes on the same code (#84 r1 E1). It exploits the timing methodology, not kernel speed. Off-limits unless NVIDIA approves.'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only at <= 300 tokens (H16): clustered large grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot (r13, H21).'
+- 'Clock locking on the rented card (nvidia-smi -lgc/-lmc) is a probe tool only; never change clocks or any device state from a solution.'
+hypotheses:
+- id: H1
+  statement: evict_last on the output stores cuts in-window dirty write-backs, as in #38, so M sizes gain most.
+  status: supported
+  evidence:
+  - 'probe r0: EL vs plain stores, same kernel: 36 MB 7.11 vs 8.02 us, 61 MB 10.49 vs 11.48, 269 MB 39.05 vs 42.10, 407 MB 56.73 vs 61.93 [probe_b200]'
+  - 'run_tests r0: 0.83-0.88x the plain copy at 61-269 MB'
+- id: H2
+  statement: CTA dispatch rate (about 0.55-0.65 us per 1000 CTAs regardless of 64 or 256 threads) caps 64-thread one-shot grids at L, so 256-thread CTAs win there while 64-thread CTAs win at S/M.
+  status: supported
+  evidence:
+  - 'probe r0: empty grids 64x32768 18.0 us, 64x49152 26.4 us, 256x8192 5.3 us, 256x12288 7.4 us, 256x81920 43.5 us'
+  - 'probe r0: 64-thr vs 256-thr: 36 MB 6.94 vs 7.11, 269 MB 38.77 vs 39.05, 407 MB 59.75 vs 56.73'
+  - 'probe r0: 512 and 1024 threads per CTA are 3-8% slower than 256 at 269-2689 MB'
+- id: H3
+  statement: Sharing one cos/sin load across several heads (rows S*512 B apart) cuts L2 traffic and helps L.
+  status: open
+  evidence:
+  - 'probe r0 (unlocked clocks): 2-head variant (80 regs): 269 MB 38.39 vs 39.05 (noise), 407 MB 60.96 vs 56.73'
+  - 'r1 lead: re-opened. The bench runs the SM/L2 clock above 1.5 GHz, so it cannot show an L2-bandwidth limit that the locked portal has (H11). Re-test with the portal, or with locked clocks on the bench if nvidia-smi allows it.'
+- id: H4
+  statement: Occupancy (60 regs -> 4 CTAs/SM at 256 threads) limits L-band bandwidth.
+  status: refuted
+  evidence:
+  - 'probe r0: float4 layout with 32 regs (full occupancy) ties the 60-reg v8 layout at 36 and 269 MB and is 5% slower at 407 MB'
+- id: H5
+  statement: More rows per thread (register tiles) raise bytes in flight and help L.
+  status: refuted
+  evidence:
+  - 'probe r0: 2 rows/thread at 256 threads (108 regs): slower at every size (+9% at 36 MB, +15% at 407 MB)'
+- id: H6
+  statement: The S-band fixed cost (2.6-3.0 us at 2.2 MB vs 1.76 us for an empty grid) can be cut by issuing all of a CTA's loads before any use with fewer CTAs, or by 1-4 row CTAs.
+  status: open
+  evidence:
+  - 'probe r0: 64/128/256-thread one-row-per-thread variants are within 0.15 us of each other at 2.2 MB (2.62-2.77 us)'
+  - 'portal r0: (1,8,8,128) 3.6 us vs Tb 2.9 us, score 0.437, the worst workload; a 2.2 MB kernel at <= 2.9 us exists on this harness (the PyTorch-side baseline). Portal/bench ratio at S is 1.19 (6.2 vs 5.2 us geomean).'
+- id: H7
+  statement: Load hints on x (.nc, L1::no_allocate) and on cos/sin (.nc) change nothing measurable; plain loads would do.
+  status: open
+  evidence:
+  - 'r0 uses .nc + L1::no_allocate on x and .nc on tables without an A/B'
+  - 'r1 lead: the 0.7 us gap to the 2.9 us baseline at 2.2 MB makes the .nc/texture path and the 256-bit loads suspects for extra latency; E2 A/Bs them.'
+- id: H8
+  statement: The per-row integer modulo (rl % S) and the 60-register body are cheap at 1.5 GHz; a (stream, bh, s-tile) grid that avoids the modulo gains nothing.
+  status: open
+  evidence:
+  - 'probe r0: the 2-head variant uses a modulo-free grid and was not faster (unlocked clocks)'
+- id: H9
+  statement: Partial or first-output-only evict_last is no better than evict_last on all stores (as #38 H15), since the gain saturates at about 25-30 MB of parked write-back.
+  status: open
+  evidence: []
+- id: H10
+  statement: SOLAR for this problem is bytes/8 TB/s including cos/sin, so scores at the floor would be about 0.75-0.8 as in #38.
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol back-solved from (t, Tb, S) is about 0.53 x bytes/8 TB/s at >= 134 MB (2689 MB: ~177 us vs floor8 336; 269 MB: ~18 vs 33.7; 134 MB: ~9.2 vs 16.8), the same 0.53x as #38. At S it is 0.6-0.9x floor8 but ill-conditioned (0.1 us rounding).'
+  - 'consequence: per-workload ceiling at L is about 0.68 at 7 TB/s and 0.74 at 8 TB/s; r0 sits at 0.60-0.62 there.'
+- id: H11
+  statement: At the locked 1.5 GHz SM/L2 clock, the cos/sin table reads from L2 (2 B per byte of x, about 12 TB/s of total L2 traffic at 6 TB/s DRAM, half of it crossing dies) are the M/L limiter on the portal; cutting table traffic 4-8x (s-tile x head-group CTAs sharing the table through L1 or shared memory, or table-stationary persistent CTAs) recovers 8-15% at M/L.
+  status: open
+  evidence:
+  - 'portal r0: L band 5.6-6.0 TB/s (407 MB 72.8 us, 612 MB 107.0 us, 2689 MB 447.6 us) vs #38 r3-cute-ldg256-os-r16 at 6.84 TB/s on the same portal (805 MB, 117.8 us) with 1 B of L2 weight reads per byte of x instead of 2 B.'
+  - 'portal vs bench: +15% at M and L (25.9 vs 22.5, 96.1 vs 83.7 us) and +19% at S, with the same DRAM clock (3996 MHz is the HBM3e maximum); a DRAM-bound kernel would not scale with the SM clock.'
+  - 'portal baseline: Tb is 4.7 TB/s at (64,8,8,128), where the 64 KB tables fit in L1, but 4.1-4.3 TB/s at S >= 1087: the baseline kernel also pays for table traffic at large S.'
+  - 'probe r0 (unlocked): sharing the table across 2 heads was neutral at 269 MB; not evidence against H11 because the bench L2 clock is higher.'
+- id: H12
+  statement: The 0.7 us gap at 2.2 MB between r0 (3.6 us) and the baseline (2.9 us) comes from the load/store path (ld.global.nc texture path, 256-bit accesses, the cache_hint store) rather than from CTA shape, since 64/128/256-thread shapes tie on the bench.
+  status: open
+  evidence:
+  - 'portal r0: 3.6 us vs Tb 2.9 us at (1,8,8,128); bench shapes within 0.15 us of each other [probe_r0]'
+- id: H13
+  statement: A persistent, table-stationary grid (each CTA owns an s-tile whose cos/sin slice sits in shared memory, loops over heads with the next row's x loads issued before the current row's FMAs) beats the one-shot grid at M (61-269 MB) by removing table traffic and the per-CTA ramp, as CAKE's mid-size program does on B200.
+  status: open
+  evidence:
+  - 'literature: CAKE pipelined persistent program capped at 4-6 CTAs/SM beat our #38 one-shot by 0.6 us at 25 MB, tied at >= 400 MB [cake-pr5741]'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-rope-ldg256-os-stel] run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]
+- [r0-rope-ldg256-os-stel] evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]
+- [r0-rope-ldg256-os-stel] 64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]
+- [r0-rope-ldg256-os-stel] dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]
+- [r0-rope-ldg256-os-stel] float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]
+- [r0-rope-ldg256-os-stel] bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]
+- [r0-rope-ldg256-os-stel] cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]
+
+=== PARENTS ===
+--- parent r0-rope-ldg256-os-stel ---
+design card:
+id: r0-rope-ldg256-os-stel
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  RoPE is a pure stream with a per-row L2-resident cos/sin table; a fused one-shot kernel where each thread owns
+  both halves of its column pair (no shuffles, one pass), with 256-bit accesses and evict_last stores, runs at the
+  copy ceiling, and the CTA size must follow the row count because CTA dispatch (0.55 us per 1000 CTAs) caps
+  64-thread grids on the L band.
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 60
+  smem_per_cta_bytes: 0
+  threads_per_cta: 64
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS_S: 64, THREADS_L: 256, ROWS_S: 8, ROWS_L: 32, row_threshold: 262144, store_hint: evict_last}
+dispatch:
+  - {max_rows: 262144, kernel: rope_kernel<64>, meta: {threads: 64, rows: 8}}
+  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 32}}
+tests: [H1, H2]
+findings:
+  - "run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]"
+  - "evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]"
+  - "empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]"
+  - "64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]"
+  - "dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]"
+  - "float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]"
+  - "bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]"
+  - "cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]"
+paths:
+  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 256, threads: 64, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st.global.v8.f32 and createpolicy need sm_100a; does not compile for sm_90a"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "60 registers: 4 CTAs/SM on the 256-thread path (1024 threads); fine so far but limits any multi-row extension"
+  - "binding raises if a pointer is not 32-byte aligned (harness shifts are multiples of 256 B, so this should not trigger)"
+  - "the 2.2 MB workload is 1.23x the plain copy: fixed cost, not bandwidth; S-band specialist still to be found"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 5.2/22.5/83.7
+B200 portal: score 0.635079, geomean 27.114 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=1, num_heads=8, num_kv_heads=8, seq_len=128 | 3.6 | 2.9 | 0.437 |
+| batch_size=1, num_heads=40, num_kv_heads=8, seq_len=131 | 4.0 | 8.6 | 0.708 |
+| batch_size=2, num_heads=32, num_kv_heads=4, seq_len=211 | 5.9 | 10.8 | 0.678 |
+| batch_size=4, num_heads=24, num_kv_heads=6, seq_len=293 | 9.0 | 16.7 | 0.691 |
+| batch_size=1, num_heads=56, num_kv_heads=8, seq_len=853 | 12.3 | 20.7 | 0.669 |
+| batch_size=8, num_heads=16, num_kv_heads=4, seq_len=373 | 12.9 | 21.6 | 0.670 |
+| batch_size=2, num_heads=48, num_kv_heads=6, seq_len=919 | 19.3 | 33.9 | 0.687 |
+| batch_size=64, num_heads=8, num_kv_heads=8, seq_len=128 | 22.6 | 28.5 | 0.590 |
+| batch_size=8, num_heads=24, num_kv_heads=8, seq_len=1024 | 44.7 | 71.3 | 0.666 |
+| batch_size=8, num_heads=28, num_kv_heads=4, seq_len=1024 | 45.9 | 74.3 | 0.668 |
+| batch_size=8, num_heads=32, num_kv_heads=4, seq_len=1087 | 58.9 | 78.5 | 0.604 |
+| batch_size=4, num_heads=48, num_kv_heads=12, seq_len=1321 | 59.7 | 79.2 | 0.602 |
+| batch_size=4, num_heads=36, num_kv_heads=6, seq_len=2048 | 64.1 | 91.1 | 0.625 |
+| batch_size=2, num_heads=40, num_kv_heads=8, seq_len=4096 | 72.8 | 102.5 | 0.622 |
+| batch_size=1, num_heads=64, num_kv_heads=8, seq_len=8192 | 107.0 | 149.6 | 0.621 |
+| batch_size=32, num_heads=16, num_kv_heads=4, seq_len=4096 | 447.6 | 626.2 | 0.624 |
+sm_100a static features: [{"kernel": "_Z11rope_kernelILi256EEvPKfS1_S1_S1_PfS2_jjj", "num_warps": null, "regs": 50, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.NA.CONSTANT.256": 4, "LDG.CONSTANT.256": 8, "STG.256": 4}}, {"kernel": "_Z11rope_kernelILi64EEvPKfS1_S1_S1_PfS2_jjj", "num_warps": null, "regs": 50, "smem": 0, "local": 0, "resident_per_sm": null, "ops": {"LDG.NA.CONSTANT.256": 4, "LDG.CONSTANT.256": 8, "STG.256": 4}}]
+source:
+--- file kernel.cu ---
+// RoPE application (Q and K), fp32, head_dim 128. One fused one-shot launch.
+// Layout: 8 lanes per row; lane j owns columns [8j, 8j+8) and [64+8j, 64+8j+8) (one 256-bit load each),
+// so the rotate_half partner is already in the same thread and no shuffles are needed.
+// out[i]    = x[i]*cos[i]    - x[i+64]*sin[i]        (i < 64)
+// out[i+64] = x[i+64]*cos[i+64] + x[i]*sin[i+64]
+#include <cuda_runtime.h>
+#include <stdint.h>
+
+#define LD8(p, v) asm volatile("ld.global.nc.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];" \
+    : "=f"(v[0]),"=f"(v[1]),"=f"(v[2]),"=f"(v[3]),"=f"(v[4]),"=f"(v[5]),"=f"(v[6]),"=f"(v[7]) : "l"(p))
+#define LDX8(p, v) asm volatile("ld.global.nc.L1::no_allocate.v8.f32 {%0,%1,%2,%3,%4,%5,%6,%7}, [%8];" \
+    : "=f"(v[0]),"=f"(v[1]),"=f"(v[2]),"=f"(v[3]),"=f"(v[4]),"=f"(v[5]),"=f"(v[6]),"=f"(v[7]) : "l"(p))
+#define ST8EL(p, v, pol) asm volatile("st.global.L2::cache_hint.v8.f32 [%0], {%1,%2,%3,%4,%5,%6,%7,%8}, %9;" \
+    :: "l"(p), "f"(v[0]),"f"(v[1]),"f"(v[2]),"f"(v[3]),"f"(v[4]),"f"(v[5]),"f"(v[6]),"f"(v[7]), "l"(pol) : "memory")
+
+template <int THREADS>
+__global__ void __launch_bounds__(THREADS)
+rope_kernel(const float* __restrict__ q, const float* __restrict__ k,
+            const float* __restrict__ cs, const float* __restrict__ sn,
+            float* __restrict__ qo, float* __restrict__ ko,
+            unsigned Rq, unsigned R, unsigned S)
+{
+    constexpr int ROWS = THREADS / 8;
+    const unsigned j = threadIdx.x & 7;
+    const unsigned r = blockIdx.x * ROWS + (threadIdx.x >> 3);
+    if (r >= R) return;
+    const float* x; float* y; unsigned rl;
+    if (r < Rq) { x = q; y = qo; rl = r; } else { x = k; y = ko; rl = r - Rq; }
+    const unsigned s = rl % S;                      // sequence position of this row
+    const float* xp = x + (size_t)rl * 128 + j * 8;
+    const float* cp = cs + (size_t)s * 128 + j * 8;
+    const float* sp = sn + (size_t)s * 128 + j * 8;
+    y += (size_t)rl * 128 + j * 8;
+    float xl[8], xh[8], cl[8], ch[8], sl[8], sh[8], ol[8], oh[8];
+    LDX8(xp, xl); LDX8(xp + 64, xh);
+    LD8(cp, cl);  LD8(cp + 64, ch);
+    LD8(sp, sl);  LD8(sp + 64, sh);
+    unsigned long long pol;
+    asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, 1.0;" : "=l"(pol));
+#pragma unroll
+    for (int e = 0; e < 8; ++e) {
+        ol[e] = xl[e] * cl[e] - xh[e] * sl[e];
+        oh[e] = xh[e] * ch[e] + xl[e] * sh[e];
+    }
+    ST8EL(y, ol, pol);
+    ST8EL(y + 64, oh, pol);
+}
+
+extern "C" void rope_launch(const float* q, const float* k, const float* cs, const float* sn,
+                            float* qo, float* ko, unsigned Rq, unsigned R, unsigned S,
+                            cudaStream_t stream)
+{
+    if (R <= 262144u) {            // S/M band: 8 rows per 64-thread CTA (many small CTAs)
+        const unsigned grid = (R + 7) / 8;
+        rope_kernel<64><<<grid, 64, 0, stream>>>(q, k, cs, sn, qo, ko, Rq, R, S);
+    } else {                       // L band: 32 rows per 256-thread CTA
+        const unsigned grid = (R + 31) / 32;
+        rope_kernel<256><<<grid, 256, 0, stream>>>(q, k, cs, sn, qo, ko, Rq, R, S);
+    }
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cuda_runtime.h>
+
+extern "C" void rope_launch(const float* q, const float* k, const float* cs, const float* sn,
+                            float* qo, float* ko, unsigned Rq, unsigned R, unsigned S,
+                            cudaStream_t stream);
+
+void run(torch::Tensor query, torch::Tensor key, torch::Tensor cos, torch::Tensor sin,
+         torch::Tensor query_rotated, torch::Tensor key_rotated)
+{
+    TORCH_CHECK(query.is_cuda() && key.is_cuda() && cos.is_cuda() && sin.is_cuda(), "inputs must be CUDA");
+    TORCH_CHECK(query.scalar_type() == torch::kFloat32 && key.scalar_type() == torch::kFloat32 &&
+                cos.scalar_type() == torch::kFloat32 && sin.scalar_type() == torch::kFloat32, "fp32 only");
+    TORCH_CHECK(query.is_contiguous() && key.is_contiguous() && cos.is_contiguous() && sin.is_contiguous() &&
+                query_rotated.is_contiguous() && key_rotated.is_contiguous(), "contiguous only");
+    TORCH_CHECK(query.dim() == 4 && key.dim() == 4 && query.size(3) == 128 && key.size(3) == 128, "head_dim must be 128");
+    TORCH_CHECK(cos.dim() == 2 && cos.size(0) == query.size(2) && cos.size(1) == 128, "cos shape");
+    TORCH_CHECK(sin.sizes() == cos.sizes(), "sin shape");
+    TORCH_CHECK(key.size(2) == query.size(2), "seq_len mismatch");
+    TORCH_CHECK(query_rotated.sizes() == query.sizes() && key_rotated.sizes() == key.sizes(), "output shapes");
+    TORCH_CHECK(((query.data_ptr<float>() == nullptr) || (reinterpret_cast<uintptr_t>(query.data_ptr()) & 31) == 0) &&
+                (reinterpret_cast<uintptr_t>(key.data_ptr()) & 31) == 0 &&
+                (reinterpret_cast<uintptr_t>(cos.data_ptr()) & 31) == 0 &&
+                (reinterpret_cast<uintptr_t>(sin.data_ptr()) & 31) == 0 &&
+                (reinterpret_cast<uintptr_t>(query_rotated.data_ptr()) & 31) == 0 &&
+                (reinterpret_cast<uintptr_t>(key_rotated.data_ptr()) & 31) == 0, "32-byte alignment required");
+
+    const int64_t S = query.size(2);
+    const int64_t Rq = query.numel() / 128;
+    const int64_t R = Rq + key.numel() / 128;
+    TORCH_CHECK(R < (1LL << 31) && S > 0, "too many rows");
+    if (R == 0) return;
+
+    const c10::cuda::CUDAGuard guard(query.device());
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    rope_launch(query.data_ptr<float>(), key.data_ptr<float>(), cos.data_ptr<float>(), sin.data_ptr<float>(),
+                query_rotated.data_ptr<float>(), key_rotated.data_ptr<float>(),
+                (unsigned)Rq, (unsigned)R, (unsigned)S, stream);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "RoPE application (DPS)"); }
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

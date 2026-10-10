@@ -1,0 +1,16 @@
+{"workload": {"axes": {"batch_size": 4, "num_heads": 24, "num_kv_heads": 6, "seq_len": 293}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00758}}}
+{"workload": {"axes": {"batch_size": 32, "num_heads": 16, "num_kv_heads": 4, "seq_len": 4096}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.39659}}}
+{"workload": {"axes": {"batch_size": 2, "num_heads": 40, "num_kv_heads": 8, "seq_len": 4096}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.06275}}}
+{"workload": {"axes": {"batch_size": 8, "num_heads": 24, "num_kv_heads": 8, "seq_len": 1024}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.046}}}
+{"workload": {"axes": {"batch_size": 8, "num_heads": 16, "num_kv_heads": 4, "seq_len": 373}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01269}}}
+{"workload": {"axes": {"batch_size": 2, "num_heads": 48, "num_kv_heads": 6, "seq_len": 919}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.019170000000000003}}}
+{"workload": {"axes": {"batch_size": 64, "num_heads": 8, "num_kv_heads": 8, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0241}}}
+{"workload": {"axes": {"batch_size": 8, "num_heads": 32, "num_kv_heads": 4, "seq_len": 1087}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05093}}}
+{"workload": {"axes": {"batch_size": 1, "num_heads": 40, "num_kv_heads": 8, "seq_len": 131}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.0035}}}
+{"workload": {"axes": {"batch_size": 4, "num_heads": 48, "num_kv_heads": 12, "seq_len": 1321}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05147}}}
+{"workload": {"axes": {"batch_size": 1, "num_heads": 64, "num_kv_heads": 8, "seq_len": 8192}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.09389}}}
+{"workload": {"axes": {"batch_size": 4, "num_heads": 36, "num_kv_heads": 6, "seq_len": 2048}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05603}}}
+{"workload": {"axes": {"batch_size": 2, "num_heads": 32, "num_kv_heads": 4, "seq_len": 211}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.004900000000000001}}}
+{"workload": {"axes": {"batch_size": 1, "num_heads": 56, "num_kv_heads": 8, "seq_len": 853}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01149}}}
+{"workload": {"axes": {"batch_size": 1, "num_heads": 8, "num_kv_heads": 8, "seq_len": 128}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.00298}}}
+{"workload": {"axes": {"batch_size": 8, "num_heads": 28, "num_kv_heads": 4, "seq_len": 1024}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.04573}}}

@@ -1,0 +1,61 @@
+id: r0-rope-ldg256-os-stel
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg256
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  RoPE is a pure stream with a per-row L2-resident cos/sin table; a fused one-shot kernel where each thread owns
+  both halves of its column pair (no shuffles, one pass), with 256-bit accesses and evict_last stores, runs at the
+  copy ceiling, and the CTA size must follow the row count because CTA dispatch (0.55 us per 1000 CTAs) caps
+  64-thread grids on the L band.
+expected_effect:
+  S: {pct: 0, confidence: medium}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 60
+  smem_per_cta_bytes: 0
+  threads_per_cta: 64
+  ctas_per_sm: 16
+  bytes_in_flight_per_sm: 131072
+  launches_per_call: 1
+knobs: {THREADS_S: 64, THREADS_L: 256, ROWS_S: 8, ROWS_L: 32, row_threshold: 262144, store_hint: evict_last}
+dispatch:
+  - {max_rows: 262144, kernel: rope_kernel<64>, meta: {threads: 64, rows: 8}}
+  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 32}}
+tests: [H1, H2]
+findings:
+  - "run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]"
+  - "evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]"
+  - "empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]"
+  - "64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]"
+  - "dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]"
+  - "float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]"
+  - "bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]"
+  - "cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]"
+paths:
+  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 256, threads: 64, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+  - {max_tokens: null, max_rows: null, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}
+runs_on:
+  H200: {runs: false, representative: false, note: "256-bit ld/st.global.v8.f32 and createpolicy need sm_100a; does not compile for sm_90a"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "60 registers: 4 CTAs/SM on the 256-thread path (1024 threads); fine so far but limits any multi-row extension"
+  - "binding raises if a pointer is not 32-byte aligned (harness shifts are multiples of 256 B, so this should not trigger)"
+  - "the 2.2 MB workload is 1.23x the plain copy: fixed cost, not bandwidth; S-band specialist still to be found"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

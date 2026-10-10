@@ -1,0 +1,29 @@
+{
+ "r0-rope-ldg256-os-stel": {
+  "card": "id: r0-rope-ldg256-os-stel\nparents: []\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg256\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows8\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  RoPE is a pure stream with a per-row L2-resident cos/sin table; a fused one-shot kernel where each thread owns\n  both halves of its column pair (no shuffles, one pass), with 256-bit accesses and evict_last stores, runs at the\n  copy ceiling, and the CTA size must follow the row count because CTA dispatch (0.55 us per 1000 CTAs) caps\n  64-thread grids on the L band.\nexpected_effect:\n  S: {pct: 0, confidence: medium}\n  M: {pct: 0, confidence: medium}\n  L: {pct: 0, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 60\n  smem_per_cta_bytes: 0\n  threads_per_cta: 64\n  ctas_per_sm: 16\n  bytes_in_flight_per_sm: 131072\n  launches_per_call: 1\nknobs: {THREADS_S: 64, THREADS_L: 256, ROWS_S: 8, ROWS_L: 32, row_threshold: 262144, store_hint: evict_last}\ndispatch:\n  - {max_rows: 262144, kernel: rope_kernel<64>, meta: {threads: 64, rows: 8}}\n  - {max_rows: null, kernel: rope_kernel<256>, meta: {threads: 256, rows: 32}}\ntests: [H1, H2]\nfindings:\n  - \"run_tests: 16/16 pass; 3.0 us at 2.2 MB (1.23x copy), 0.83-0.88x copy at 61-269 MB, 0.96-0.98x copy at 322-2689 MB [run_tests]\"\n  - \"evict_last stores vs plain, same kernel: -11% at 36 MB, -9% at 61 MB, -7% at 269 MB, -8% at 407 MB [probe_b200]\"\n  - \"empty grid spans: 1.76 us for 256 CTAs; 0.55-0.65 us per 1000 CTAs at 64 or 256 threads (18 us for 32768x64, 43.5 us for 81920x256); CTA dispatch caps 64-thread grids at L [probe_b200]\"\n  - \"64-thread CTAs beat 256-thread by 2-3% up to 269 MB; 256-thread beats 64 by 5% at 407 MB; 512/1024-thread CTAs 3-8% slower than 256 at L [probe_b200]\"\n  - \"dead end: 2 rows per thread (108 regs) +9..+15% everywhere; sharing cos/sin across 2 heads (80 regs) neutral at 269 MB, +7% at 407 MB [probe_b200]\"\n  - \"float4 layout with 16 lanes/row (32 regs) ties the 60-reg 256-bit layout at 36 and 269 MB, 5% slower at 407 MB: occupancy is not the limiter [probe_b200]\"\n  - \"bug found: indexing K rows with the global row index read/wrote past the key tensors; fixed by using the in-stream row index [probe_b200]\"\n  - \"cos/sin are independent cos(randn)/sin(randn) tables in [-1,1], all 128 columns needed; harness timing sessions on the rented card drift up to 10% at M/L between probes, compare within a session only [probe_b200]\"\npaths:\n  - {max_tokens: null, max_rows: 262144, lang: cuda, width: 256, threads: 64, rows: 8, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\n  - {max_tokens: null, max_rows: null, lang: cuda, width: 256, threads: 256, rows: 32, grid: oneshot, mem: ldg, wstat: false, launches: 1, prefetch: false, x: nc_noalloc, w: nc, st: el}\nruns_on:\n  H200: {runs: false, representative: false, note: \"256-bit ld/st.global.v8.f32 and createpolicy need sm_100a; does not compile for sm_90a\"}\n  A100: {runs: false, representative: false}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"60 registers: 4 CTAs/SM on the 256-thread path (1024 threads); fine so far but limits any multi-row extension\"\n  - \"binding raises if a pointer is not 32-byte aligned (harness shifts are multiples of 256 B, so this should not trigger)\"\n  - \"the 2.2 MB workload is 1.23x the plain copy: fixed cost, not bandwidth; S-band specialist still to be found\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r0-rope-ldg256-os-stel",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "ldg256",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "new_design",
+  "parents": [],
+  "round": "r0",
+  "solution": "problems/088_rotary_position_embedding_application/rounds/r0/candidates/r0-rope-ldg256-os-stel.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "niche": "research:first-kernel",
+   "operation": "new_design",
+   "parents": []
+  },
+  "timings": {}
+ }
+}

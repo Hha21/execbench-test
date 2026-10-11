@@ -208,7 +208,8 @@ def table(arc, limit=40):
         b200 = rec.get("b200") or {}
         st = rec.get("static_sm100") or []
         res = "; ".join(f"{k.get('regs')}/{k.get('smem')}/{k.get('resident_per_sm')}" for k in st[:2]) or "-"
-        lines.append(f"| {rec['id']} | {n.get('mem', '?')}/{n.get('grid', '?')}/{n.get('spec', '?')} | "
+        lin = (rec.get("task") or {}).get("lineage")          # portfolio rounds: the kernel's lineage
+        lines.append(f"| {rec['id']}{f' [lineage {lin}]' if lin else ''} | {n.get('mem', '?')}/{n.get('grid', '?')}/{n.get('spec', '?')} | "
                      f"{rec.get('language', '?')} | {' | '.join(cells)} | {fmt(band_geomeans(b200.get('timings', {})))} | "
                      f"{b200.get('score', 'pending') if b200 else 'pending'} | {res} | {rec.get('status', '?')} |")
     return "\n".join(lines)

@@ -40,6 +40,7 @@ ap.add_argument("--b200-minutes", type=float, default=10)
 ap.add_argument("--no-gpu", action="store_true", help="research lead: archive and score-model tools only")
 ap.add_argument("--check", action="store_true", help="load everything the server needs, then exit (start-up test)")
 ap.add_argument("--fresh", action="store_true", help="fresh-eyes session: no get_kernel (earlier designs stay hidden)")
+ap.add_argument("--lineage", help="portfolio session: get_kernel reads only this lineage's kernels and r0 baselines")
 A = ap.parse_args()
 A.dir.mkdir(parents=True, exist_ok=True)
 
@@ -68,6 +69,13 @@ def gpu_server():
 
 
 def call(fn, args):
+    if fn == "get_kernel" and A.lineage:          # lineages share conclusions, not code (loop/portfolio.py)
+        import portfolio
+        rec = ARC.get(args.get("id", ""))
+        if rec is None or not portfolio.visible(rec, A.lineage):
+            ids = sorted(k for k, r in ARC.items() if r.get("solution") and portfolio.visible(r, A.lineage))
+            return (f"{args.get('id')!r} is not readable from lineage {A.lineage} (other lineages share conclusions, "
+                    f"not code). Readable ids: {', '.join(ids) or 'none'}")
     with LOCK:                                    # one tool call at a time per session, like the OpenRouter loop
         if fn in ("compile_b200", "run_tests", "probe_b200"):
             if A.no_gpu:

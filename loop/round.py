@@ -11,6 +11,8 @@ and shortlist the best for the B200 portal.
   python3 loop/round.py collect   --round r3
   python3 loop/round.py shortlist --round r3                                    -> rounds/r3/portal/
   python3 loop/round.py table
+  .venv/bin/python loop/round.py ideas --round r1 --backend claude          portfolio round: idea sessions + critic
+  .venv/bin/python loop/round.py lead  --round r1 --backend claude --portfolio   lead manages 2-3 lineages
 
 With --interactive, each task is a design session (loop/designer.py): the LLM can compile its drafts for sm_100a,
 test and time them on a CSF3 GPU against the current best, and query the score model before it answers.
@@ -62,7 +64,8 @@ def get_archive():
 
 
 def slug(task, i):
-    return f"{i:02d}-{task['operation']}-{re.sub(r'[^a-z0-9]+', '', task.get('band', 'all').lower())}"
+    lin = f"lin{re.sub(r'[^a-z0-9]+', '', str(task['lineage']).lower())}-" if task.get("lineage") else ""
+    return f"{i:02d}-{lin}{task['operation']}-{re.sub(r'[^a-z0-9]+', '', task.get('band', 'all').lower())}"
 
 
 def call_llm(static, dyn, task, round_id, i, a):
@@ -157,6 +160,8 @@ def claude_sessions(round_id, jobs, static, a, sdir):
         i, t, dyn, name = job
         mcp_args = ["--name", name, "--round", round_id, "--dir", str(sdir), "--gpu-calls", str(a.gpu_calls),
                     "--probes", str(a.probes), "--b200-minutes", str(minutes)] + (["--fresh"] if t.get("fresh") else [])
+        if t.get("lineage"):                              # get_kernel then reads only this lineage's kernels
+            mcp_args += ["--lineage", str(t["lineage"])]
         model = t.get("model") or a.session_model
         brief = sdir / "briefing_fresh.txt" if t.get("fresh") else system_file
         out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60,
@@ -168,20 +173,25 @@ def claude_sessions(round_id, jobs, static, a, sdir):
             text = more.get("result") or text
             out["total_cost_usd"] = (out.get("total_cost_usd") or 0) + (more.get("total_cost_usd") or 0)
         (sdir / f"{name}.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
-        u = out.get("usage") or {}
-        info = dict(model=f"claude:{model}", finish=out.get("subtype") or ("error" if out.get("is_error") else
-                    "stop"), seconds=out.get("seconds"), turns=out.get("num_turns"), gpu_calls="-",
-                    prompt_tokens=(u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
-                    + (u.get("cache_creation_input_tokens") or 0), cached_tokens=u.get("cache_read_input_tokens"),
-                    completion_tokens=u.get("output_tokens"), reasoning_tokens=None,
-                    cost_usd=round(out.get("total_cost_usd") or 0, 4))
-        with open(ROOT / "loop" / "runs" / "usage.jsonl", "a") as f:
-            f.write(json.dumps(dict(info, time=time.strftime("%Y-%m-%dT%H:%M:%S"), tag=f"{round_id}/{name}",
-                                    billing="claude-plan (cost is the API-equivalent estimate)")) + "\n")
-        return i, (text, info)
+        return i, (text, log_usage(out, model, f"{round_id}/{name}"))
 
     with ThreadPoolExecutor(max_workers=max(1, min(a.parallel, len(jobs)))) as pool:    # each session = claude + MCP
         return dict(pool.map(one, jobs))
+
+
+def log_usage(out, model, tag):
+    """A claude run's tokens and API-equivalent cost -> loop/runs/usage.jsonl; returns the info dict."""
+    u = out.get("usage") or {}
+    info = dict(model=f"claude:{model}", finish=out.get("subtype") or ("error" if out.get("is_error") else "stop"),
+                seconds=out.get("seconds"), turns=out.get("num_turns"), gpu_calls="-",
+                prompt_tokens=(u.get("input_tokens") or 0) + (u.get("cache_read_input_tokens") or 0)
+                + (u.get("cache_creation_input_tokens") or 0), cached_tokens=u.get("cache_read_input_tokens"),
+                completion_tokens=u.get("output_tokens"), reasoning_tokens=None,
+                cost_usd=round(out.get("total_cost_usd") or 0, 4))
+    with open(ROOT / "loop" / "runs" / "usage.jsonl", "a") as f:
+        f.write(json.dumps(dict(info, time=time.strftime("%Y-%m-%dT%H:%M:%S"), tag=tag,
+                                billing="claude-plan (cost is the API-equivalent estimate)")) + "\n")
+    return info
 
 
 
@@ -234,35 +244,93 @@ def leader_gap_text():
         return f"(unavailable: {e})"
 
 
-def cmd_lead(a):
-    """Run the research lead: update the hypothesis ledger and write the round's experiments to plan.json."""
-    import designer
+def evidence_sections(arc, effects=True):
+    """What the lead and the idea sessions read: problem, ledger, notebook, portal results, leader gap, archive."""
     import emulator
+    measured = [r for r in arc.values() if r.get("b200")]
+    calib = "\n".join(f"- {r['id']}: portal {r['b200']['score']:.4f}, S/M/L {archive.fmt(archive.band_geomeans(r['b200'].get('timings', {})))} µs"
+                      for r in sorted(measured, key=lambda r: -r["b200"]["score"]))
+    out = [f"=== PROBLEM ===\n{problem.current().summary()}",
+           f"=== HYPOTHESIS LEDGER ({problem.current().ledger.relative_to(ROOT)}) ===\n"
+           f"{problem.current().ledger.read_text() if problem.current().ledger.exists() else '(none yet)'}",
+           f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=260)}",
+           f"=== PORTAL RESULTS (best first) ===\n{calib or '(none yet)'}",
+           f"=== LEADER GAP (what the public top scores imply; poc/leader_gap.py) ===\n{leader_gap_text()}"]
+    if effects:
+        try:
+            eff = emulator.effects_markdown(emulator.Emulator(arc))
+        except Exception as e:
+            eff = f"(unavailable: {e})"
+        out.append(f"=== EMULATOR: portal minus bench, by design feature ===\n{eff}")
+    out.append(f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}")
+    return out
+
+
+def cmd_ideas(a):
+    """Ideas tier of a portfolio round: independent idea sessions and a premise audit (no GPU), run in parallel; the
+    merged, shuffled pool goes to rounds/<round>/ideas/pool.json for `round.py lead --portfolio`."""
+    import portfolio
+    arc = get_archive()
+    d = rdir(a.round) / "ideas"
+    d.mkdir(parents=True, exist_ok=True)
+    evidence = evidence_sections(arc, effects=False) + [f"=== LINEAGES ===\n{portfolio.lineages_text()}"]
+    static = prompts.static_prompt()
+    jobs = [(f"ideas{i}-{m}", m, portfolio.IDEAS_PROTOCOL,
+             f"Round {a.round}: write 10 design ideas and 3 leader stories for this problem.")
+            for i, m in enumerate(x for x in a.idea_models.split(",") if x)]
+    if a.critic_model:
+        jobs.append(("critic", a.critic_model, portfolio.CRITIC_PROTOCOL,
+                     f"Round {a.round}: audit the premises this project relies on."))
+
+    def one(job):
+        name, model, protocol, task = job
+        (d / f"{name}.briefing.txt").write_text(static + "\n\n" + protocol)
+        prompt = "\n\n".join([f"=== TASK ===\n{task}"] + evidence)
+        (d / f"{name}.prompt.txt").write_text(prompt)
+        out = run_claude(prompt, d / f"{name}.briefing.txt", model, a.effort,
+                         ["--name", name, "--round", a.round, "--dir", str(d), "--no-gpu"], d, name,
+                         a.session_timeout * 60, max_turns=20)
+        text = out.get("result") or ""
+        (d / f"{name}.reply.md").write_text(text)
+        (d / f"{name}.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
+        info = log_usage(out, model, f"{a.round}/ideas/{name}")
+        print(f"{name}: {info['turns']} turns, {info['seconds']} s, API-equivalent ${info['cost_usd']:.2f}", flush=True)
+        return name, text
+
+    with ThreadPoolExecutor(max_workers=max(1, min(a.parallel, len(jobs)))) as pool:
+        replies = dict(pool.map(one, jobs))
+    p = portfolio.pool(replies, seed=hash(a.round) & 0xffff)
+    (d / "pool.json").write_text(json.dumps(p, indent=1))
+    fams = sorted({str(i.get("family", "-")) for i in p["ideas"]})
+    print(f"pool: {len(p['ideas'])} ideas in {len(fams)} families, {len(p['leader_stories'])} leader stories, "
+          f"{len(p['premises'])} doubtful premises -> {(d / 'pool.json').relative_to(ROOT)}")
+    print(f"next: .venv/bin/python loop/round.py lead --problem {problem.current().level}/{problem.current().name} "
+          f"--round {a.round} --backend claude --portfolio")
+
+
+def cmd_lead(a):
+    """Run the research lead: update the hypothesis ledger and write the round's experiments to plan.json. With
+    --portfolio the lead also reads the round's ideas pool and premise audit and manages 2-3 lineages."""
+    import portfolio
     arc = get_archive()
     d = rdir(a.round)
     sdir = d / "lead"
     sdir.mkdir(parents=True, exist_ok=True)
     system_file = sdir / "briefing.txt"
-    system_file.write_text(prompts.static_prompt() + "\n\n" + LEAD_PROTOCOL.format(n=a.max_tasks))
-    measured = [r for r in arc.values() if r.get("b200")]
-    calib = "\n".join(f"- {r['id']}: portal {r['b200']['score']:.4f}, S/M/L {archive.fmt(archive.band_geomeans(r['b200'].get('timings', {})))} µs"
-                       for r in sorted(measured, key=lambda r: -r["b200"]["score"]))
-    try:
-        effects = emulator.effects_markdown(emulator.Emulator(arc))
-    except Exception as e:
-        effects = f"(unavailable: {e})"
+    protocol = portfolio.LEAD_PROTOCOL if a.portfolio else LEAD_PROTOCOL
+    system_file.write_text(prompts.static_prompt() + "\n\n" + protocol.format(n=a.max_tasks))
+    extra = []
+    if a.portfolio:
+        pool_file = d / "ideas" / "pool.json"
+        if not pool_file.exists():
+            raise SystemExit(f"no ideas pool for {a.round}: run round.py ideas --round {a.round} first")
+        extra = [*portfolio.pool_text(json.loads(pool_file.read_text())),
+                 f"=== LINEAGES ({portfolio.lineages_file().relative_to(ROOT)}) ===\n{portfolio.lineages_text()}"]
     prompt = "\n\n".join([
-        f"=== TASK ===\nRound {a.round}: update the hypothesis ledger and design {a.max_tasks} experiments."
+        f"=== TASK ===\nRound {a.round}: update the hypothesis ledger"
+        + (", manage the lineages" if a.portfolio else "") + f" and design {a.max_tasks} experiments."
         + (f"\n\nBRIEF FROM THE OPERATOR FOR THIS ROUND:\n{a.brief}" if getattr(a, "brief", None) else ""),
-        f"=== PROBLEM ===\n{problem.current().summary()}",
-        f"=== HYPOTHESIS LEDGER ({problem.current().ledger.relative_to(ROOT)}) ===\n"
-        f"{problem.current().ledger.read_text() if problem.current().ledger.exists() else '(none yet)'}",
-        f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=260)}",
-        f"=== PORTAL RESULTS (best first) ===\n{calib}",
-        f"=== LEADER GAP (what the public top scores imply; poc/leader_gap.py) ===\n{leader_gap_text()}",
-        f"=== EMULATOR: portal minus bench, by design feature ===\n{effects}",
-        f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}",
-    ])
+        *extra, *evidence_sections(arc)])
     (sdir / "prompt.txt").write_text(prompt)
     if getattr(a, "from_reply", False):             # re-parse a saved reply (e.g. after a ledger YAML error)
         text, out = (sdir / "reply.md").read_text(), json.loads((sdir / "lead.claude.json").read_text())
@@ -283,12 +351,28 @@ def cmd_lead(a):
     except Exception as e:                                  # keep the old ledger and the plan; save the raw text
         (sdir / "ledger.raw.yaml").write_text(ledger)
         print(f"lead ledger is not valid YAML ({str(e)[:200]}); kept the old ledger, raw text in {sdir / 'ledger.raw.yaml'}")
+    lins = None
+    if a.portfolio:
+        lin_text = next((v for k, v in blocks.items() if k.startswith("yaml") and "lineages" in k), None)
+        try:
+            lins = portfolio.save_lineages(load_ledger_text(lin_text)) if lin_text else None
+        except Exception as e:
+            (sdir / "lineages.raw.yaml").write_text(lin_text or "")
+            print(f"lead lineages block is not valid ({str(e)[:200]}); kept the old lineages, raw text in "
+                  f"{sdir / 'lineages.raw.yaml'}")
+        lins = lins if lins is not None else portfolio.load_lineages()
     tasks = []
     for e in json.loads(tasks_js)[:a.max_tasks]:
         best0 = planner.best_kernel(arc)
-        parents = [p for p in (e.get("parents") or []) if p in arc] or ([best0["id"]] if best0 else [])
+        lin = e.get("lineage") if a.portfolio else None
+        parents = [p for p in (e.get("parents") or []) if p in arc]
+        if lin:                                             # a lineage builds on its own kernels, or starts fresh
+            parents = [p for p in parents if portfolio.visible(arc[p], lin)]
+        elif not parents:
+            parents = [best0["id"]] if best0 else []
         tasks.append(dict(operation=e.get("operation") or "new_design", parents=parents, band=e.get("band") or "all",
-                          niche=f"exp:{e.get('id', '?')}:{e.get('hypothesis', '-')}", model=e.get("model"),
+                          niche=f"{'lin:' + str(lin) + ':' if lin else 'exp:'}{e.get('id', '?')}:"
+                                f"{e.get('hypothesis', '-')}", model=e.get("model"), lineage=lin,
                           instructions=(f"Experiment {e.get('id')} (tests {e.get('hypothesis')}): {e.get('title', '')}. "
                                         f"{e.get('instructions', '')} Success: {e.get('success', '')} Refuted if: "
                                         f"{e.get('refuted_if', '')}" + planner.explore_common() +
@@ -299,7 +383,8 @@ def cmd_lead(a):
                                             indent=1))
     print(text.split("```")[0].strip()[:3000])
     for i, t in enumerate(tasks):
-        print(f"  task {i}: {t['niche']} parents={t['parents']} band={t['band']} model={t.get('model')}")
+        print(f"  task {i}: {t['niche']} parents={t['parents']} band={t['band']} model={t.get('model')}"
+              + (f" lineage={t['lineage']}" if t.get("lineage") else ""))
     u = out.get("usage") or {}
     print(f"lead: {out.get('num_turns')} turns, {out.get('seconds')} s, API-equivalent ${out.get('total_cost_usd') or 0:.2f}")
     return dict(tasks=tasks)
@@ -450,8 +535,12 @@ def propose_tasks(round_id, tasks, a):
         if t.get("fresh"):
             dyn = prompts.fresh_prompt(arc, round_id, extra=t.get("instructions", ""))
         else:
+            extra = t.get("instructions", "")
+            if t.get("lineage"):
+                import portfolio
+                extra += portfolio.session_brief(t["lineage"])
             dyn = prompts.dynamic_prompt(arc, round_id, t["operation"], t["parents"], n=1, band=t.get("band", "all"),
-                                         niche=t.get("niche", "any empty niche"), extra=t.get("instructions", ""),
+                                         niche=t.get("niche", "any empty niche"), extra=extra,
                                          feedback=t.get("feedback", "none"))
         name = f"{stamp}_{slug(t, i)}"
         (d / "replies" / f"{name}.prompt.txt").write_text(dyn)
@@ -712,6 +801,12 @@ def main():
                        help="exploit: improve the best kernel band by band; explore: one big idea per session")
         q.add_argument("--gpus", help="where to test the final candidates: B200 (rented, Modal) and/or CSF3 GPUs; "
                        "default B200 with --tool-gpu B200, else A100,H200")
+        q.add_argument("--portfolio", action="store_true", help="lead: read the round's ideas pool and premise audit "
+                       "(round.py ideas) and manage 2-3 parallel lineages (loop/portfolio.py)")
+    q = sub.add_parser("ideas", parents=[llm_args], help="portfolio round: idea sessions + premise audit (no GPU)")
+    q.add_argument("--round", required=True)
+    q.add_argument("--idea-models", default="opus,sonnet,fable", help="one idea session per model (comma-separated)")
+    q.add_argument("--critic-model", default="opus", help="model for the premise audit ('' for none)")
     q = sub.add_parser("research", parents=[llm_args], help="research phase for a new problem")
     q.add_argument("--remeasure", action="store_true", help="redo the B200 copy-floor and reference measurements")
     q.add_argument("--from-reply", action="store_true", help="finish from the saved research reply (no agent run)")
@@ -729,8 +824,8 @@ def main():
         os.environ["SOLX_PROBLEM"] = f"{problem.get(a.problem).level}/{problem.get(a.problem).name}"
     if getattr(a, "round", None) and not re.fullmatch(r"[a-z0-9-]+", a.round):
         sys.exit("--round must be lowercase letters, digits and dashes")
-    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, research=cmd_research, test=cmd_test, status=cmd_status, collect=cmd_collect,
-         shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
+    dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, ideas=cmd_ideas, research=cmd_research,
+         test=cmd_test, status=cmd_status, collect=cmd_collect, shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
 
 
 if __name__ == "__main__":

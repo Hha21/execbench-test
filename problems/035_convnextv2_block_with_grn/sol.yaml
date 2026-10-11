@@ -1,0 +1,7 @@
+flops: "16 * batch_size * height * width * dim * dim + 98 * batch_size * height * width * dim"     # two pointwise GEMMs (C -> 4C -> C) + the 7x7 depthwise conv
+precision: tf32, fp16, bf16   # operator policy 2026-10-11: any precision that meets the tolerance; lint follows it
+note: >-
+  Precision (operator policy, 2026-10-11): any compute precision is fine if every workload meets its tolerance (atol
+  2.4e-3 to 3.8e-3, rtol 1e-5, 98% of elements); run_tests and the portal decide. Inputs and outputs stay fp32, and the
+  paper permits downcasting when input and output dtypes match and the tolerance is met. Check the error arithmetic
+  (or simulate against an fp64 reference) before relying on a reduced precision.

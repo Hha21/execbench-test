@@ -112,8 +112,10 @@ Output, in this order:
 ```markdown card
 (the problem card, in the style of the example card: 1. semantics; 2. numerics and tolerance; 3. the workloads
 table with bytes, FLOPs, band and the measured floor/reference times; 4. bounds and what dominates per band;
-5. where the reference loses and what a fast kernel must do; 6. design priorities; 7. results so far (your first
-kernel's bench numbers); 8. open questions)
+5. where the reference loses (facts: extra passes, materialised intermediates, launches); 6. the decisions any design
+must make, each with its options and their arithmetic, without choosing (independent idea sessions and the research
+lead choose later; a card that picks one design narrows every later session); 7. results so far (your first kernel's
+bench numbers); 8. open questions)
 ```
 ```yaml ledger
 (constraints copied unchanged, then 4-10 hypotheses H1..Hn about what will matter, each with status open and the

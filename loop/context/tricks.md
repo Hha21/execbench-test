@@ -51,6 +51,10 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
   GEMM tile needs them (2SM pairs) or on small one-wave grids.
 - Portal noise: memory-bound sizes repeat to ~0.1 µs, while compute-bound sizes vary 2-3% between submissions of
   the same code. Effects under ~1% are invisible.
+  - #35 r8 vs r9: byte-identical FP16 tensor-core code ran 4-7% apart (one submission to the next), costing ~0.01
+    of mean score. DRAM-bound sizes moved 1-2%.
+  - So one portal result cannot confirm a < 5% change on tensor-heavy sizes. Compare on the rented card in one
+    container.
 
 ## 3. Harness memory effects (every problem)
 

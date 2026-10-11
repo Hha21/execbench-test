@@ -1,0 +1,22 @@
+{
+ "best": "r8-e1-fused-emb-persist",
+ "best_score": 0.68534,
+ "tasks": [
+  {
+   "operation": "new_design",
+   "parents": [
+    "r9-e1-skew-uniform-s"
+   ],
+   "band": "all",
+   "niche": "exp:E1:H28-lean",
+   "model": "opus",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): reach 0.70+ on #35. That means beating 5th place (Databricks, 0.6910) by a margin larger than the portal noise. Start from r9-e1-skew-uniform-s: it holds r9's B <= 211 paths and r8's B > 256 paths. Read ledger H28/H29 and tricks.md sections 2 and 5 first.\n\nPortal facts: best per workload over r6-r9 would be 0.6889. B > 256 (portal best, us): 373/384 60.9/60.8, 449 66.4, 512 70.0, 691 103.8, 773 109.9, 853 114.8, 919 119.9. Byte-identical tc_h code ran 4-7% slower on the next submission (#65321): do not chase < 3% effects at B > 256, and compare only on the rented card in one container. If 2nd-4th place (0.725-0.744) score about like us at B <= 211 (we sit near the stream floor there), their B > 256 must average about 0.77-0.78: roughly 47 us at 373, 56 at 512 and 90 at 919. The remaining gap is in B > 256.\n\nThree levers, cheapest first:\n1. Library lens, 20 minutes at most. cuBLAS/cuBLASLt with fp32 A/B/C and CUBLAS_COMPUTE_32F_FAST_16F (NVIDIA's own fp32-in, FP16-tensor-core mode). Time it under harness_time at B = 373, 512, 691 and 919, and record max |err| against fp64. The conversion rounding mode is unknown: if the error exceeds 1.8e-3 at any B, drop it. Note which kernels the heuristic picks. If it is within 10% of tc_h anywhere, wire the bias and the six-way split: for example one cuBLASLt call per output chunk (N = 3072 W rows each) with the BIAS epilogue writing straight into that chunk's output, or a grouped GEMM. Then compare full calls.\n2. nb1 (373-512): tc_h is about 5 us further from its byte floor than tc_small is.\n   - r8 rented: 373 53.3 us for about 260 MB (W 226, output 27.5, emb and its fp16 copy 7) = 43.7 us at the 5.96 TB/s best stream, a gap of 9.6 us.\n   - tc_small at 131: 44.3 us for 237 MB (39.8 us), a gap of 4.5 us.\n   - Put globaltimer timelines side by side (CTA start, first full barrier, last full barrier, epilogue end, per CTA): tc_small at 131 against tc_h at 373 and 512. Find the extra ~5 us: the fused emb counter wait, cluster and TMEM setup, ring stalls while the MMA waits for emb, per-SM imbalance. Fix what it shows.\n3. nb2 (691-919): portal/rented is 1.33-1.42, so the portal is clock-bound here.\n   - Overlap the epilogue with the next tile: the accumulator is N1 = 256 + N2 = 208 columns. Drain range N1 first, so the next tile's N1 MMAs can start while N2 drains. Estimate how far the 3-stage ring lets it run ahead first.\n   - Diagnostic: run nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv -lms 50 in the background while looping each variant for ~2 s. This shows whether the rented card is power-capped under tc_h and whether variants that move fewer bytes hold a higher clock; if so, energy per k-block is a lever on the portal too.\n4. Keep B <= 211 as in r9. run_tests 16/16 x 10 rounds, recording max |err| per B, with r9-e1 as the control in the same container. Predict portal times as DRAM-bound x1.05-1.10 and nb2 x1.33-1.42.",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3; in the same container as r9-e1, >= 8% faster at 373-512 or at 691-919 (or a library path that wins by that much); predicted portal score >= 0.70.",
+   "refuted_if": "The library path is slower or less accurate, the nb1 timeline gap is compulsory (DRAM busy throughout) and the nb2 epilogue overlap saves < 3%: record each with its numbers."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

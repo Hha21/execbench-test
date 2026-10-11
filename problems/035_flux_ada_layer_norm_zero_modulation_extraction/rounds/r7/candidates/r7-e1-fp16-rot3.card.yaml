@@ -1,0 +1,155 @@
+id: r7-e1-fp16-rot3
+parents:
+  - r6-e1-fp16-tch-fwd
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  In r6 each converter thread's release arrive (or bar.arrive) waited for the load it had just issued. Each 64-k block
+  therefore cost one full load latency (about 800 ns), whatever the prefetch depth: ns-bound, which matches the
+  portal/rented ratios of 1.16-1.27. Here the 24 converter warps form 3 rotating groups. Each group loads a whole
+  32 KB k-block slice, converts it and stores it, bar.syncs, and one lane does the release.cluster arrive. The group's
+  next loads are issued only after the arrive, so nothing is in flight at the release, and 3 x 32 KB per SM stays in
+  flight. nb1 (373-512) becomes DRAM-bound in the main loop (about 763 ns per k-block = 6.2 TB/s). nb2 (691-919)
+  becomes L2->SM bandwidth-bound (about 13 TB/s: W read by both sibling pairs plus emb), about 600-680 ns per
+  k-block instead of r6's 850-900.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: medium
+  L:
+    pct: -8
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 56
+  smem_per_cta_bytes: 148480
+  threads_per_cta: 896
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 2
+knobs:
+  CVT_GROUPS: 3
+  GROUP_WARPS: 8
+  TCH_MAX_STAGES: 3
+  LOAD: "ld.global.nc.L1::no_allocate.L2::cache_hint.v4 (evict_first), lane = float4 (lane & 15) of rows rb + 2i"
+  HANDOFF: "per group: STS -> fence.proxy.async -> bar.sync (256 thr, id 1+g) -> elected release.cluster arrive -> next LDG"
+  NB: "1 for B <= 512, 2 above"
+  EMB: "fp16 pre-pass kernel into a torch::empty scratch, TMA FLOAT16 SW128"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+  - max_tokens: 512
+    kernel: emb_f16_kernel + tc_h_kernel
+    meta:
+      launches: 2
+      nb: 1
+      groups: 3
+  - max_tokens: null
+    kernel: emb_f16_kernel + tc_h_kernel
+    meta:
+      launches: 2
+      nb: 2
+      groups: 3
+tests:
+  - H28
+findings:
+  - "budget (per 64-k block, per SM): TMA fp32 staging or cp.async staging adds 32 KB of smem writes plus 32 KB of LDS, about 160 KB per k-block at Ntile 384 (A read twice + B + emb + STS + staging), about 1250 clk at about 128 B/clk: no better than r6 (1257). Both were dropped on paper. Rotation keeps the r6 smem traffic (about 96-112 KB per k-block) [analysis]"
+  - "run_tests final: 16/16 PASS (10 rounds). Rented us vs r6-e1 on the same GPU: 373 56.9 vs 58.5 (-2.7%), 384 57.0 vs 58.2 (-2.1%), 449 56.9 vs 59.7 (-4.8%), 512 57.9 vs 61.3 (-5.6%), 691 84.3 vs 94.9 (-11.2%), 773 88.0 vs 97.8 (-10.0%), 853 92.7 vs 101.8 (-8.9%), 919 95.7 vs 104.5 (-8.4%); B <= 256 unchanged code within +-0.9%. Bands S +0.4% M -1.2% L -8.2%; emulator 0.6767 +- 0.0076, P(beat 0.6680) 91% [run_tests]"
+  - "group count (harness_time, same container, 1956 MHz idle): G2S3 vs G3S3 384 64.5 vs 57.3, 512 66.7 vs 59.0, 691 102.4 vs 85.2, 919 110.4 vs 97.4. G = 2 is too few groups; G = 4 of 8 warps exceeds 1024 threads [probe_b200]"
+  - "stage count: G3S4 vs G3S3 384 59.2 vs 57.3, 512 60.3 vs 59.1, 691 88.3 vs 85.2, 919 96.7 vs 97.4. Deeper rings still cost (smaller L1 for in-flight LDGs), as in r6 [probe_b200]"
+  - "correctness rule: stages must be >= G. G3S2 hung/trapped (unspecified launch failure): with fewer stages than groups a group can wait on an empty-barrier parity two phases ahead, which aliases to the previous phase and is taken as complete [probe_b200]"
+  - "globaltimer timeline (G3S3, 252 MB flush, rented about 1.9 GHz). 384: pre-pass ends 2.05 us, tc_h CTAs start 4.6, prologue 0.8, first k-block 4.4-5.9 us after the prologue (all 3 groups' 96 KB/SM requested at once), main loop 763 ns/kb (4.72 MB/kb = 6.2 TB/s: DRAM-bound), epilogue 4.9 us. 512 same 763 ns/kb, epilogue 6.1. 691/919 nb2: 597/677 ns/kb per wave (MMA would be 370/490 ns), first k-block 3.8 us, epilogue 4.4/5.4 us, paid on both waves [probe_b200]"
+  - "nb2 bound: the L2->SM bytes per call are W 2 x 227 MB (sibling pairs) + emb 288 CTAs x 48 kb x ntile/2 x 128 B = 853 MB at 919 and 757 MB at 691. Against 2 x 31 / 2 x 28.7 us of main loop that is about 13 TB/s at both B, the same ceiling as the cuBLAS operand reads in H12. nb2 is now L2-bandwidth-bound, not latency-bound [analysis from probe]"
+  - "dead end: ld.global.nc.v8.f32 (LDG.E.NA.ENL2.256, 4 per thread, STS.128) equals v4 within 0.3% at 384/512/691/919 (G3S3) [probe_b200]"
+  - "dead end: dropping L1::no_allocate on the W loads was built (l1 variant) but never timed: the probe container lost /tmp first [probe_b200]"
+  - "dead end: in-kernel emb fp32->fp16 conversion (a deadlock-free ticket queue: 2 worker warps per CTA, cp.async.bulk into the still-free emb region of stage 0/1, cvt, STG, red.release.gpu; the emb producer acquire-spins plus fence.proxy.async.global; the last CTA resets the counters). It is correct (bit-identical outputs, one launch), but the harness shows -1.0 us at 384, 0 at 512/919, +1 at 691 vs the pre-pass. Under harness queueing the 2.5 us launch gap of the timeline probe does not appear. Not shipped: global counter state for no gain [probe_b200]"
+  - "dead end: 4-CTA clusters (to share W or multicast emb between two pairs) fit only 33 active clusters = 132 CTAs (cudaOccupancyMaxActiveClusters, 116-181 KB smem), so nb2's 72 clusters would need 3 waves. The 2-CTA cluster fits 74 [probe_b200]"
+  - "dead end: output store hints in the tc_h epilogue (st.global.L2::cache_hint evict_last, st.global.cs) are within +-0.5% of plain stores at every B in 373-919 [probe_b200]"
+  - "dead end: FP16 tc_h with n2 = 0 at 131 < B <= 256 is correct (1.54e-3 at 192) but slower than TF32 tc_pair: 192 53.2 us (G3S5) vs 45.9, 211 54.3 vs 48.4. Not dispatched; tc_pair stays [probe_b200, run_tests]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn), 3 draws: 373 1.51/1.55/1.62e-3, 384 1.75/1.52/1.62, 449 1.74/1.64/1.51, 512 1.61/1.55/1.64, 691 1.63/1.57/1.80, 773 1.60/1.65/1.71, 853 1.56/1.65/1.67, 919 1.73/1.56/1.70; 0 elements outside atol 2e-3 + rtol 1e-5 in every draw. The same arithmetic as r6 (identical cvt.rn operands and accumulation order); draw-dependent like every TF32/FP16 path. Single draws above the 1.7e-3 bar occur [probe_b200]"
+  - "static sm_100a (nvcc -Xptxas -v in probe): tc_h_kernel 56 regs, 0 stack/spill, 16 named barriers used, 896 threads, 1 CTA/SM; compile_b200 was not run (budget kept for tests) [probe_b200]"
+  - "portal prediction: nb1 is DRAM-bound now (ratio about 1.05-1.10), so 373-512 should come in about 2-6% under r6's portal (67.6/71.0/74.3), i.e. about 64-70 us. nb2 is L2-bound. If L2 bandwidth scales with the locked clock, expect a portal/rented ratio of about 1.2-1.27, so 691-919 at about 105-121 us vs r6's 119-130 (-8..-11%). Emulator 0.6767 [analysis]"
+  - "next levers: (1) nb2 L2 traffic (453 MB of W re-reads + 400 MB of emb) needs a structure without 4-CTA clusters, e.g. a persistent 72-pair kernel whose round-2 fill overlaps the round-1 epilogue (about 4-5 us at 691-919); (2) the unoverlapped epilogue, 4.4-6.1 us per wave, is store-bandwidth-bound and gains nothing from overlap at nb1 [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    w: ef
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 2
+    cluster: 2
+    w: ef
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 2
+    cluster: 2
+    w: ef
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "two launches per call for B > 256 (fp16 emb pre-pass + GEMM), as in r6, which passed the portal; PDL is lint-blocked"
+  - "stages >= groups is a hard correctness invariant (asserted statically and checked on the host, status 433); a later knob change to 2 stages would hang"
+  - "nb2 is L2-bandwidth-bound on the rented card; if the portal's L2 does not scale with the locked SM clock, the portal ratio could be lower (better) or the gain smaller than rented"
+  - "FP16 operands: max |err| up to 1.80e-3 on one draw (691) against atol 2e-3, the same class as r6/TF32; emb beyond about 65504 would overflow fp16 (randn inputs are about 6 at most)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

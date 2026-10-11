@@ -1384,6 +1384,29 @@
   }
  },
  "r6-e1-fp16-tch-fwd": {
+  "b200": {
+   "geomean_us": 66.353,
+   "score": 0.667992,
+   "submission": "65294",
+   "timings": {
+    "128": 47.300000000000004,
+    "131": 47.9,
+    "16": 44.3,
+    "192": 50.0,
+    "211": 53.900000000000006,
+    "32": 44.5,
+    "373": 67.6,
+    "384": 67.6,
+    "449": 71.0,
+    "5": 44.3,
+    "512": 74.30000000000001,
+    "691": 119.2,
+    "773": 123.2,
+    "853": 126.9,
+    "919": 130.1,
+    "96": 45.3
+   }
+  },
   "card": "id: r6-e1-fp16-tch-fwd\nparents:\n  - r5-e2-tc-ws-uniform-issue\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows128\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  The B > 256 band moves to tcgen05 kind::f16. W stays fp32 in global and is read once by 8 converter warps per CTA\n  (coalesced LDG.128, evict_first, 2 k-blocks of register prefetch). They round with cvt.rn.f16x2 and store into the\n  SW128 stage. emb is converted by a small pre-pass kernel and loaded by TMA. A release arrive from a thread that has\n  loads in flight waits for those loads, about one DRAM latency per k-block. So converters hand off through a named\n  barrier to a forwarder warp with no loads, and that warp does the release.cluster arrive. The kernel then waits on\n  load latency and DRAM, not on the MMA: 1150-1300 clk per 64-k block against 1600-2150 for r5 TF32 (-22..-40%). It\n  should lose less to the 1.5 GHz portal clock than r5's TF32 kernel did (r5: 1.36 portal/rented).\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -7\n    confidence: low\n  L:\n    pct: -28\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 149\n  smem_per_cta_bytes: 148480\n  threads_per_cta: 384\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 65536\n  launches_per_call: 2\nknobs:\n  TCH_MAX_STAGES: 3\n  TCH_PF: 2\n  CVT_WARPS: 8\n  LOAD_LAYOUT: \"coalesced, warp = 16 rows, lane = float4 (lane & 15) of rows rb + 2i\"\n  HANDOFF: \"bar.arrive (converters) + bar.sync and release.cluster arrive (forwarder warp 2)\"\n  W_HINT: evict_first\n  NB: \"1 for B <= 512, 2 above\"\n  EMB: \"fp16 pre-pass kernel into a torch::empty scratch, TMA FLOAT16 SW128\"\ndispatch:\n  - max_tokens: 131\n    kernel: tc_small_kernel\n    meta:\n      launches: 1\n  - max_tokens: 256\n    kernel: tc_pair_kernel\n    meta:\n      launches: 1\n      kbs: 2\n  - max_tokens: 512\n    kernel: emb_f16_kernel + tc_h_kernel\n    meta:\n      launches: 2\n      nb: 1\n  - max_tokens: null\n    kernel: emb_f16_kernel + tc_h_kernel\n    meta:\n      launches: 2\n      nb: 2\ntests:\n  - H19\n  - H22\nfindings:\n  - \"run_tests final: 16/16 PASS (10 rounds each). Rented us vs r5-e2 on the same GPU: 373 58.1 vs 57.2 (+1.5%), 384 57.8 vs 57.3 (+0.8%), 449 59.3 vs 67.2 (-11.7%), 512 60.5 vs 73.2 (-17.4%), 691 94.1 vs 101.2 (-7.1%), 773 97.0 vs 112.5 (-13.8%), 853 100.7 vs 120.1 (-16.2%), 919 102.8 vs 128.2 (-19.8%); B <= 256 unchanged code within +-1%. Bands S +0.1% M +0.8% L -14.4%; emulator 0.6525 +- 0.009 (P beat 100%) [run_tests]\"\n  - \"precision max |err| vs fp64 (W/sqrt(3072), bias randn, kind::f16 with cvt.rn operands): 384 1.54e-3, 512 1.56e-3, 691 1.65e-3, 919 1.65-1.68e-3, the same class as TF32. 0 elements outside atol+rtol over 3 calls per B. One draw per B; 3-draw statistics not collected [probe_b200]\"\n  - \"draft 1 (converter lane-0 arrive.release.cluster on the leader barrier, 8 warps, 16-B lane chunks, all stages that fit): 16/16 correct but 373/384 101 us, 773/853 177-182 us. Configs with 5 stages (smem >= 200 KB) were about 40% slower than those with 4 stages: deep smem rings starve the L1 that the in-flight LDGs need. Capping at 3 stages gives 1820 clk/kb [run_tests, probe_b200]\"\n  - \"clk per 64-k block is the same (1730-1850) for ntile 384/512/nb2 464 and for PF 2/3. At nb2 half the W reads hit L2 and the time is unchanged, and the no-MMA run gives the same time: the converter path, not DRAM or the MMA, sets the pace [probe_b200]\"\n  - \"dead end: fence.proxy.async is not the cost. Removing it gives 1816 vs 1845 clk/kb; issuing the prefetch loads after the arrive is worse (2193) [probe_b200]\"\n  - \"coalescing: 16-B lane chunks at a 32-B stride (2 LDG.128 per 32-B sector pair) cost 1840 clk/kb. Coalesced float4-per-lane loads with STS.64 and ld.global.v8.f32 (LDG.E.NA.ENL2.256) both cost 1730. Small gain; v8 equals coalesced v4 [probe_b200]\"\n  - \"ROOT CAUSE: mbarrier.arrive.release (cluster or cta scope) from a thread with LDGs in flight waits for those loads. clk/kb at 384: release.cluster 1737, local release.cta + forwarder 1509, relaxed.cluster 1145 (DRAM-bound, 53 us). Relaxed is formally unordered and is not shipped [probe_b200]\"\n  - \"fix: converters bar.arrive on a per-stage named barrier (ids 1-3, 288 threads), and forwarder warp 2 bar.syncs and does the release.cluster arrive (full count 3). clk/kb 1257 (384), 1287 (512), 1102 (691 nb2), 1180 (919 nb2) at about 1.5-1.56 GHz rented; 59.2/62.6/96.3/107.1 us. bar.arrive still pays part of the load wait (relaxed: 1097/1114/800/954) [probe_b200]\"\n  - \"dead end: L2 tensor prefetch of W (cp.async.bulk.prefetch.tensor.2d, distance 6 or 10 k-blocks, hinted or not) with converter PF 0/1/2 is 2-10% slower at every B than the plain bar version (384 60.6-65.7 vs 58.0) [probe_b200]\"\n  - \"dead end: PF 5 spills (256 B stack, 168 regs) and is about 30% slower; PF 3 is no better than 2; 4 stages equal 3 within 2% [probe_b200]\"\n  - \"per-k-block budget (64 k, per SM): MMA 2 x ntile clk (768 at 384, 1024 at 512, 928 at 464); SMEM per k-block (16 KB STS + emb TMA + MMA reads) equals the TF32 ring at the same clk; conversion ALU 128 F2FP + 64 LDG + 64 STS warp instructions (< 150 issue clk); W DRAM 32 KB/SM per k-block = about 1260 clk at 1.5 GHz and 5.8 TB/s. So nb1 should be DRAM-bound, and nb2 MMA-bound at about 930 clk. Measured 1100-1290: the converter load-to-handoff latency binds [analysis]\"\n  - \"the lint rejects PDL (griddepcontrol, ProgrammaticStreamSerialization) and __nanosleep, so the emb pre-pass is a separate plain launch. The epilogue stays unoverlapped (8.7-10.6k clk per CTA) [compile_b200]\"\n  - \"probe infra: /tmp in probe containers was wiped between every probe this session; each probe embedded and rebuilt its full source (nvcc of one TU about 2 s). harness_time once failed with 'Expected kernel activity sequence not found' on a 2-kernel variant (iteration 34, only the pre-pass seen); a retry worked; run_tests passed twice with 2 launches [probe_b200]\"\n  - \"portal prediction: tc_h waits on load latency (ns) more than on cycles. Rented runs at 1.5-1.7 GHz gave 57.8-60.5 us at 373-512 and 94-103 us at 691-919. Portal estimate x1.05-1.15: 373/384 about 61-66 us (r5 portal 77.8, -15..-22%), 449/512 about 63-69 (r5 91.8/100.7, -30..-37%), 691-919 about 99-118 (r5 138.6-176.2, -28..-35%). The emulator assumes r5-like ratios (0.6525) and is the conservative case [analysis]\"\n  - \"not done (budget): step 5 (FP16 for 131 < B <= 256; the n2 = 0 tc_h path is untested and not dispatched), the cycle-interleaved comparison against r5 in one container (r5 clk/kb from its card: 806 x 2 at 384, 968 x 2 at 449, 962 x 2 at nb2 464), and 3-draw max-error statistics [analysis]\"\npaths:\n  - max_tokens: 131\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 128\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 1\n    w: ef\n  - max_tokens: 256\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 256\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: 512\n    lang: cuda\n    width: 128\n    threads: 384\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 2\n    cluster: 2\n    w: ef\n  - max_tokens: null\n    lang: cuda\n    width: 128\n    threads: 384\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 2\n    cluster: 2\n    w: ef\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM/cta_group::2 are sm_100a only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"two launches per call for B > 256 (fp16 emb pre-pass + GEMM); the gap and the pre-pass are timed. PDL is lint-blocked. One harness_time CUPTI sequence-match failure was seen in a probe (retry passed; run_tests passed twice)\"\n  - \"373/384 are flat on the rented card (+1%); the portal gain there assumes the kernel scales with ns rather than SM cycles, which is unverified until the portal result\"\n  - \"the hand-off relies on bar.arrive/bar.sync memory ordering plus the forwarder's release.cluster; the faster relaxed arrive is not shipped because it is formally unordered\"\n  - \"FP16 operands: max |err| 1.54-1.68e-3 against atol 2e-3, the same margin as TF32. emb values beyond about 65504 would overflow fp16; randn inputs are about 6 at most\"\n  - \"the 131 < B <= 256 band stays on TF32 tc_pair (portal 50.9/54.3 us); FP16 there is untested\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r6-e1-fp16-tch-fwd",
   "language": "cuda_cpp",
@@ -1403,7 +1426,69 @@
   ],
   "round": "r6",
   "solution": "problems/035_flux_ada_layer_norm_zero_modulation_extraction/rounds/r6/candidates/r6-e1-fp16-tch-fwd.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN39_GLOBAL__N__842a04b2_7_tc_h_cu_a679bf8a11tc_h_kernelEPKf14CUtensorMap_stS2_S1_NS_7OutPtrsENS_7TileCfgE",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "LDG.CONSTANT.128": 2,
+     "LDG.NA.CONSTANT.128": 40,
+     "STG": 16,
+     "STG.128": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 2
+    },
+    "regs": 140,
+    "resident_per_sm": null,
+    "smem": 1088
+   },
+   {
+    "kernel": "_ZN39_GLOBAL__N__842a04b2_7_tc_h_cu_a679bf8a14emb_f16_kernelEPKfP5uint4i",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "LDG.CONSTANT.128": 2,
+     "LDG.NA.CONSTANT.128": 40,
+     "STG": 16,
+     "STG.128": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 2
+    },
+    "regs": 18,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_ZN44_GLOBAL__N__4d1ef227_11_tc_small_cu_b6cfd58e15tc_small_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 32
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 1296
+   },
+   {
+    "kernel": "_ZN43_GLOBAL__N__a778630f_10_tc_pair_cu_8feb229414tc_pair_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 32
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 1296
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): move #35's tensor-core maths from TF32 to FP16 (tcgen05 kind::f16, fp16 operands, fp32 accumulation), which runs at 2x the kind::tf32 rate. Read the problem note first: the operator now allows any precision that meets the tolerance, and on this problem's inputs FP16 operands round exactly like TF32 (simulated max err 1.51e-3, 0% of elements outside atol 2e-3; BF16 fails, 39%).\nWhy: r5-e2-tc-ws-uniform-issue (portal 0.6256) runs the B > 256 band at 95-96% of the kind::tf32 MMA ideal, so TF32 is at its ceiling. The portal leader's 0.795 implies ~1.2 PF/s at B=919, about 2x the portal TF32 peak (~0.62 PF/s at the lock). By the Tsol model, halving MMA time for B >= 373 (portal 77.8-176 us now) gives about 0.71-0.74.\nStart from r5-e2-tc-ws-uniform-issue. Keep its B <= 131 path (DRAM-bound, FP16 cannot help there) and its warp-uniform role structure: whole-warp TMA producer, whole-warp MMA warp with elect.sync around the issue, multicast commit. r5's lesson: a single-lane issuer costs ~300-400 clk per stage through an ELECT waterfall.\nSteps:\n1. Conversion design. W (18432 x 3072 fp32, 226 MB, read once, evict_first) and emb (B x 3072 fp32) must become fp16 (cvt.rn.f16x2.f32, round to nearest, never truncate) in the UMMA-ready swizzled smem layout.\n   Option A: converter warps load W straight from global (ld.global.nc.L1::no_allocate.L2::evict_first v4.f32), convert and st.shared into the swizzled fp16 stage (SMEM traffic: 8 KB written + 16 KB read by the MMA per 128x32 k-block per SM).\n   Option B: TMA fp32 staging plus an SMEM-to-SMEM convert (24 KB extra SMEM traffic per k-block, which may make the stage SMEM-bound: estimate it first).\n   For emb, prefer a tiny pre-pass kernel that writes an fp16 copy into a torch.empty scratch, then load fp16 emb by TMA (it is re-read by every CTA). Compare with in-kernel conversion if launch count matters (2 launches are fine).\n   Show the per-k-block budget in clocks (MMA vs SMEM bytes/clk vs conversion ALU) before coding.\n2. Build tc_ws_f16 for B > 256 (one batch tile up to 512, two above, as tc_ws). The instruction descriptor must select kind::f16 with fp16 A/B and an f32 accumulator. Fix the K step per UMMA (16 for f16 vs 8 for tf32) and the smem descriptors/swizzle for 2-byte elements (a 128-byte swizzle row is 64 fp16).\n3. Correctness first: run_tests 16/16 x 10 rounds, and record max |err| per B (expect ~1.5e-3, the same as TF32). If any element pattern looks off, check rounding mode and descriptor K-major layout.\n4. Measure in SM cycles (clock64 + %globaltimer, report the clock), interleaved against r5-e2 in one container, at B = 373, 384, 449, 512, 691, 773, 853, 919. Report clk per k-block against the kind::f16 MMA ideal and find what binds (MMA, SMEM, conversion, DRAM).\n5. If 131 < B <= 256 is cycle-bound (tc_pair at ~50-54 us on the portal), try the same FP16 conversion there and keep it where it wins in cycles.\n6. Ship a dispatcher that picks per B whichever path is faster in cycles. Predict the portal time as rented cycles / ~1.45 GHz for cycle-bound paths (portal/rented 1.35 at r5) and max(that, DRAM time x 1.05).",
@@ -1415,6 +1500,60 @@
    ],
    "refuted_if": "kind::f16 with on-the-fly conversion is within 10% of r5-e2's cycles at B >= 449: conversion or SMEM bandwidth, not the MMA, binds; record which and by how much.",
    "success": "16/16 x 10 rounds, max |err| < 1.8e-3 at every B; >= 25% fewer cycles than r5-e2 at B >= 373; predicted portal score >= 0.66."
+  },
+  "timings": {
+   "B200r": {
+    "128": 45.65,
+    "131": 44.13,
+    "16": 42.85,
+    "192": 46.2,
+    "211": 48.21,
+    "32": 42.4,
+    "373": 58.11,
+    "384": 57.8,
+    "449": 59.27,
+    "5": 42.77,
+    "512": 60.48,
+    "691": 94.07,
+    "773": 96.95,
+    "853": 100.65,
+    "919": 102.85,
+    "96": 43.31
+   }
+  }
+ },
+ "r7-e1-fp16-rot3": {
+  "card": "id: r7-e1-fp16-rot3\nparents:\n  - r6-e1-fp16-tch-fwd\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: ldg128\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows128\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  In r6 each converter thread's release arrive (or bar.arrive) waited for the load it had just issued. Each 64-k block\n  therefore cost one full load latency (about 800 ns), whatever the prefetch depth: ns-bound, which matches the\n  portal/rented ratios of 1.16-1.27. Here the 24 converter warps form 3 rotating groups. Each group loads a whole\n  32 KB k-block slice, converts it and stores it, bar.syncs, and one lane does the release.cluster arrive. The group's\n  next loads are issued only after the arrive, so nothing is in flight at the release, and 3 x 32 KB per SM stays in\n  flight. nb1 (373-512) becomes DRAM-bound in the main loop (about 763 ns per k-block = 6.2 TB/s). nb2 (691-919)\n  becomes L2->SM bandwidth-bound (about 13 TB/s: W read by both sibling pairs plus emb), about 600-680 ns per\n  k-block instead of r6's 850-900.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -2\n    confidence: medium\n  L:\n    pct: -8\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 56\n  smem_per_cta_bytes: 148480\n  threads_per_cta: 896\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 2\nknobs:\n  CVT_GROUPS: 3\n  GROUP_WARPS: 8\n  TCH_MAX_STAGES: 3\n  LOAD: \"ld.global.nc.L1::no_allocate.L2::cache_hint.v4 (evict_first), lane = float4 (lane & 15) of rows rb + 2i\"\n  HANDOFF: \"per group: STS -> fence.proxy.async -> bar.sync (256 thr, id 1+g) -> elected release.cluster arrive -> next LDG\"\n  NB: \"1 for B <= 512, 2 above\"\n  EMB: \"fp16 pre-pass kernel into a torch::empty scratch, TMA FLOAT16 SW128\"\ndispatch:\n  - max_tokens: 131\n    kernel: tc_small_kernel\n    meta:\n      launches: 1\n  - max_tokens: 256\n    kernel: tc_pair_kernel\n    meta:\n      launches: 1\n      kbs: 2\n  - max_tokens: 512\n    kernel: emb_f16_kernel + tc_h_kernel\n    meta:\n      launches: 2\n      nb: 1\n      groups: 3\n  - max_tokens: null\n    kernel: emb_f16_kernel + tc_h_kernel\n    meta:\n      launches: 2\n      nb: 2\n      groups: 3\ntests:\n  - H28\nfindings:\n  - \"budget (per 64-k block, per SM): TMA fp32 staging or cp.async staging adds 32 KB of smem writes plus 32 KB of LDS, about 160 KB per k-block at Ntile 384 (A read twice + B + emb + STS + staging), about 1250 clk at about 128 B/clk: no better than r6 (1257). Both were dropped on paper. Rotation keeps the r6 smem traffic (about 96-112 KB per k-block) [analysis]\"\n  - \"run_tests final: 16/16 PASS (10 rounds). Rented us vs r6-e1 on the same GPU: 373 56.9 vs 58.5 (-2.7%), 384 57.0 vs 58.2 (-2.1%), 449 56.9 vs 59.7 (-4.8%), 512 57.9 vs 61.3 (-5.6%), 691 84.3 vs 94.9 (-11.2%), 773 88.0 vs 97.8 (-10.0%), 853 92.7 vs 101.8 (-8.9%), 919 95.7 vs 104.5 (-8.4%); B <= 256 unchanged code within +-0.9%. Bands S +0.4% M -1.2% L -8.2%; emulator 0.6767 +- 0.0076, P(beat 0.6680) 91% [run_tests]\"\n  - \"group count (harness_time, same container, 1956 MHz idle): G2S3 vs G3S3 384 64.5 vs 57.3, 512 66.7 vs 59.0, 691 102.4 vs 85.2, 919 110.4 vs 97.4. G = 2 is too few groups; G = 4 of 8 warps exceeds 1024 threads [probe_b200]\"\n  - \"stage count: G3S4 vs G3S3 384 59.2 vs 57.3, 512 60.3 vs 59.1, 691 88.3 vs 85.2, 919 96.7 vs 97.4. Deeper rings still cost (smaller L1 for in-flight LDGs), as in r6 [probe_b200]\"\n  - \"correctness rule: stages must be >= G. G3S2 hung/trapped (unspecified launch failure): with fewer stages than groups a group can wait on an empty-barrier parity two phases ahead, which aliases to the previous phase and is taken as complete [probe_b200]\"\n  - \"globaltimer timeline (G3S3, 252 MB flush, rented about 1.9 GHz). 384: pre-pass ends 2.05 us, tc_h CTAs start 4.6, prologue 0.8, first k-block 4.4-5.9 us after the prologue (all 3 groups' 96 KB/SM requested at once), main loop 763 ns/kb (4.72 MB/kb = 6.2 TB/s: DRAM-bound), epilogue 4.9 us. 512 same 763 ns/kb, epilogue 6.1. 691/919 nb2: 597/677 ns/kb per wave (MMA would be 370/490 ns), first k-block 3.8 us, epilogue 4.4/5.4 us, paid on both waves [probe_b200]\"\n  - \"nb2 bound: the L2->SM bytes per call are W 2 x 227 MB (sibling pairs) + emb 288 CTAs x 48 kb x ntile/2 x 128 B = 853 MB at 919 and 757 MB at 691. Against 2 x 31 / 2 x 28.7 us of main loop that is about 13 TB/s at both B, the same ceiling as the cuBLAS operand reads in H12. nb2 is now L2-bandwidth-bound, not latency-bound [analysis from probe]\"\n  - \"dead end: ld.global.nc.v8.f32 (LDG.E.NA.ENL2.256, 4 per thread, STS.128) equals v4 within 0.3% at 384/512/691/919 (G3S3) [probe_b200]\"\n  - \"dead end: dropping L1::no_allocate on the W loads was built (l1 variant) but never timed: the probe container lost /tmp first [probe_b200]\"\n  - \"dead end: in-kernel emb fp32->fp16 conversion (a deadlock-free ticket queue: 2 worker warps per CTA, cp.async.bulk into the still-free emb region of stage 0/1, cvt, STG, red.release.gpu; the emb producer acquire-spins plus fence.proxy.async.global; the last CTA resets the counters). It is correct (bit-identical outputs, one launch), but the harness shows -1.0 us at 384, 0 at 512/919, +1 at 691 vs the pre-pass. Under harness queueing the 2.5 us launch gap of the timeline probe does not appear. Not shipped: global counter state for no gain [probe_b200]\"\n  - \"dead end: 4-CTA clusters (to share W or multicast emb between two pairs) fit only 33 active clusters = 132 CTAs (cudaOccupancyMaxActiveClusters, 116-181 KB smem), so nb2's 72 clusters would need 3 waves. The 2-CTA cluster fits 74 [probe_b200]\"\n  - \"dead end: output store hints in the tc_h epilogue (st.global.L2::cache_hint evict_last, st.global.cs) are within +-0.5% of plain stores at every B in 373-919 [probe_b200]\"\n  - \"dead end: FP16 tc_h with n2 = 0 at 131 < B <= 256 is correct (1.54e-3 at 192) but slower than TF32 tc_pair: 192 53.2 us (G3S5) vs 45.9, 211 54.3 vs 48.4. Not dispatched; tc_pair stays [probe_b200, run_tests]\"\n  - \"precision max |err| vs fp64 (W/sqrt(3072), bias randn), 3 draws: 373 1.51/1.55/1.62e-3, 384 1.75/1.52/1.62, 449 1.74/1.64/1.51, 512 1.61/1.55/1.64, 691 1.63/1.57/1.80, 773 1.60/1.65/1.71, 853 1.56/1.65/1.67, 919 1.73/1.56/1.70; 0 elements outside atol 2e-3 + rtol 1e-5 in every draw. The same arithmetic as r6 (identical cvt.rn operands and accumulation order); draw-dependent like every TF32/FP16 path. Single draws above the 1.7e-3 bar occur [probe_b200]\"\n  - \"static sm_100a (nvcc -Xptxas -v in probe): tc_h_kernel 56 regs, 0 stack/spill, 16 named barriers used, 896 threads, 1 CTA/SM; compile_b200 was not run (budget kept for tests) [probe_b200]\"\n  - \"portal prediction: nb1 is DRAM-bound now (ratio about 1.05-1.10), so 373-512 should come in about 2-6% under r6's portal (67.6/71.0/74.3), i.e. about 64-70 us. nb2 is L2-bound. If L2 bandwidth scales with the locked clock, expect a portal/rented ratio of about 1.2-1.27, so 691-919 at about 105-121 us vs r6's 119-130 (-8..-11%). Emulator 0.6767 [analysis]\"\n  - \"next levers: (1) nb2 L2 traffic (453 MB of W re-reads + 400 MB of emb) needs a structure without 4-CTA clusters, e.g. a persistent 72-pair kernel whose round-2 fill overlaps the round-1 epilogue (about 4-5 us at 691-919); (2) the unoverlapped epilogue, 4.4-6.1 us per wave, is store-bandwidth-bound and gains nothing from overlap at nb1 [analysis]\"\npaths:\n  - max_tokens: 131\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 128\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 1\n    w: ef\n  - max_tokens: 256\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 256\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: 512\n    lang: cuda\n    width: 128\n    threads: 896\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 2\n    cluster: 2\n    w: ef\n  - max_tokens: null\n    lang: cuda\n    width: 128\n    threads: 896\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 2\n    cluster: 2\n    w: ef\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM/cta_group::2 are sm_100a only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"two launches per call for B > 256 (fp16 emb pre-pass + GEMM), as in r6, which passed the portal; PDL is lint-blocked\"\n  - \"stages >= groups is a hard correctness invariant (asserted statically and checked on the host, status 433); a later knob change to 2 stages would hang\"\n  - \"nb2 is L2-bandwidth-bound on the rented card; if the portal's L2 does not scale with the locked SM clock, the portal ratio could be lower (better) or the gain smaller than rented\"\n  - \"FP16 operands: max |err| up to 1.80e-3 on one draw (691) against atol 2e-3, the same class as r6/TF32; emb beyond about 65504 would overflow fp16 (randn inputs are about 6 at most)\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r7-e1-fp16-rot3",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "ldg128",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows128"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r6-e1-fp16-tch-fwd"
+  ],
+  "round": "r7",
+  "solution": "problems/035_flux_ada_layer_norm_zero_modulation_extraction/rounds/r7/candidates/r7-e1-fp16-rot3.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): take the FP16 path of r6-e1-fp16-tch-fwd (portal 0.6680, our best) from load-latency-bound to MMA- or DRAM-bound for B > 256, then extend FP16 to 131 < B <= 256. Read ledger H28 and tricks.md section 5 first.\n\nPortal facts (#65294, r6-e1): 373/384 67.6, 449 71.0, 512 74.3, 691 119.2, 773 123.2, 853 126.9, 919 130.1 us (scores 0.57-0.68 for B > 256, 0.69-0.71 for B <= 211). Portal/rented was 1.16 at 373/384, 1.20 at 449, 1.23 at 512 and 1.26-1.27 at 691-919. The leader's 0.795, read as a uniform score, implies 46-56 us at 373-512 and 70-87 us at 691-919. So B > 256 holds most of the gap, and 691-919 (two passes at nb2) is the weakest band.\n\nWhat binds now (r6 findings): mbarrier.arrive.release from a thread with LDGs in flight waits for them, so the converters' register prefetch hides nothing. clk per 64-k block at 384/512/691 nb2/919 nb2: shipped forwarder 1257/1287/1102/1180; relaxed arrive (unordered, not shippable) 1097/1114/800/954; MMA ideal 768/1024/704/928. The relaxed numbers show 13-27% of headroom from ordering alone.\n\nSteps:\n1. Budget first. For each design below, write the per-64-k-block budget per SM: MMA clk (2 x Ntile), SMEM bytes (TMA writes, LDS, STS, UMMA operand reads) against ~128 B/clk, DRAM bytes against ~5.8-6 TB/s with 144 SMs, registers and bytes in flight. Drop designs that cannot beat the relaxed numbers on paper.\n2. Build and probe a correctly ordered handoff that keeps global loads out of the arriving threads. Candidates:\n   (a) Warp-group rotation: split the converter warps into G groups (e.g. 3-4 groups of 3-4 warps); group g takes k-blocks g, g+G, ... and for each one does LDG of its whole slice -> cvt.rn.f16x2 -> STS into the SW128 stage -> fence.proxy.async -> release arrive. Nothing is in flight at the arrive, and G groups in flight hide the latency (G x 32 KB per SM). Watch registers (a 32 KB slice over 96-128 threads is 64-85 data registers) and the L1 starvation seen in r6 with deep smem rings.\n   (b) TMA fp32 staging: the producer warp TMAs fp32 W into a staging ring (complete_tx on a raw barrier); converters wait, LDS -> cvt -> STS, then release-arrive with no global loads outstanding. It adds ~64 KB of SMEM traffic per k-block per SM; check it fits under the MMA time.\n   (c) cp.async (LDGSTS) staging issued by the converters: PTX orders async copies only through cp.async.wait_group or cp.async.mbarrier.arrive, so a later release should not wait for them. Measure that it really does not.\n   Any fence-plus-relaxed-arrive pattern must be justified from the PTX memory model (STS before the arrive must be visible to the MMA's async-proxy reads). Never ship a plain relaxed arrive.\n   Probe clk per k-block at Ntile 384, 512 and nb2 352/464, interleaved with r6-e1 as the control in the same container. Report the clock.\n3. Once the handoff is fixed, look at what binds next. If nb2 (691-919) becomes MMA-bound, the unoverlapped epilogue (8.7-10.6k clk per CTA, paid on both passes) is the next lever. Estimate it before building; TMEM has 512 columns.\n4. FP16 for 131 < B <= 256 (192/211: portal 50.0/53.9 us on TF32 tc_pair kbs2, rented 45.7/48.2 near the DRAM floor, portal/rented 1.09-1.12). Try the n2 = 0 tc_h path; dispatch it only where it wins in time on the same GPU.\n5. Keep B <= 131 unchanged (DRAM-bound, at the evict_first stream floor).\n6. run_tests 16/16 x 10 rounds. Record max |err| per B (expect 1.5-1.7e-3). Ship a per-B dispatcher. Predict portal times: latency-bound paths x1.16-1.27 (r6), MMA-bound paths x1.35 (r5), DRAM-bound x1.03-1.10.",
+   "model": "opus",
+   "niche": "exp:E1:H28-handoff",
+   "operation": "new_design",
+   "parents": [
+    "r6-e1-fp16-tch-fwd"
+   ],
+   "refuted_if": "No correctly ordered handoff gets within 10% of the relaxed-arrive clk per k-block (1097/1114/800/954 at 384/512/691/919): record which design was tried and what binds (SMEM, registers, DRAM, issue).",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3 at every B; in the same container as r6-e1, >= 15% fewer cycles at 691-919 and >= 10% at 373-512; predicted portal score >= 0.69."
   },
   "timings": {}
  }

@@ -1,0 +1,156 @@
+id: r8-e1-fused-emb-persist
+parents:
+  - r7-e1-fp16-rot3
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The FP16 tc_h path (B > 256) carried 3-5.4 us per call in its separate fp16 emb pre-pass and the launch gap that
+  follows it, and nb2 (691-919) also paid a second wave's CTA start, prologue and first-k-block fill. Here each of
+  the 144 CTAs bulk-copies its 1/144 slice of fp32 emb into the still-empty stage area. Warps 0-3 convert the slice
+  to the fp16 scratch and release a grid-wide counter. The emb TMA producer acquires the counter before its first
+  load, so the conversion is hidden behind the ~5 us W fill. nb2 runs as 72 persistent pairs whose converter ring
+  continues across the two batch tiles, so tile 2's fill overlaps tile 1's epilogue. The result is one launch for
+  every B. The gain is ns-scale latency (start-up and fill), so it should survive the portal clock lock.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2.4
+    confidence: medium
+  L:
+    pct: -5.7
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 148480
+  threads_per_cta: 896
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  CVT_GROUPS: 3
+  GROUP_WARPS: 8
+  TCH_MAX_STAGES: 3
+  PERSISTENT_PAIRS: 72
+  NB: "1 for B <= 512, 2 above (items per pair = nb)"
+  EMB: "fused: per-CTA cp.async.bulk of the fp32 slice into the stage area, warps 0-3 cvt.rn to the fp16 scratch, red.release.gpu counter, producer ld.acquire.gpu spin + fence.proxy.async.global; self-resetting 2-word counter; pre-pass fallback if cudaOccupancyMaxActiveClusters < 72"
+  EPILOGUE: "nb=1: 28 warps; nb=2: 24 converter warps, next item's first W loads in flight during the epilogue, tfree barrier (count 2) gates the next item's MMAs"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+  - max_tokens: 512
+    kernel: tc_h_kernel
+    meta:
+      launches: 1
+      nb: 1
+      groups: 3
+      fused_emb: true
+  - max_tokens: null
+    kernel: tc_h_kernel
+    meta:
+      launches: 1
+      nb: 2
+      persistent_pairs: 72
+      groups: 3
+      fused_emb: true
+tests:
+  - H28
+findings:
+  - "two-launch cost under harness_time (same container, 2 rounds): tc_h alone (stale emb16) vs pre-pass + tc_h: 384 50.5 vs 55.9, 512 54.8 vs 57.6, 691 80.9 vs 84.5, 773 84.5 vs 88.3, 853 87.6 vs 92.0, 919 90.6 vs 95.1 us, so the pre-pass and its gap cost 2.9-5.4 us. The pre-pass alone has a 3.5-5.3 us CUPTI span [probe_b200]"
+  - "timeline (globaltimer, flush then direct call, no harness queueing): tc_h CTAs start about 6.2 us after the pre-pass starts, whether the pre-pass ends at 2.4 us (384) or 4.1 us (919). At 384, W loads land 3.4 us after the prologue (median), but the first full barrier completes about 2 us later (it needs the slowest of 16 warps over 2 CTAs). The fill from prologue to first full is 5.4 us; 14 MB requested at once plus about 14 MB of dirty write-backs runs at about 2.8 TB/s of reads. The epilogue takes 4.7 us (384) and 5.2 us per round (919) [probe_b200]"
+  - "persistent nb2 alone (72 pairs, 2 items each, pre-pass kept): 691 81.5 vs 84.5, 773 85.3 vs 88.3, 853 89.2 vs 92.0, 919 92.0 vs 95.1 us (-3%). Round-2 MMAs start about 1.9 us after the round-1 epilogue ends (the pair waits for its slower CTA); the round-1 epilogue is store-bound at about 6.5 TB/s [probe_b200]"
+  - "fused emb + persistent vs r7-style control, same container, 2 rounds: 384 53.5 vs 57.2, 512 55.3 vs 58.4, 691 79.4 vs 85.9, 773 83.0 vs 89.9, 853 85.8 vs 94.0, 919 89.9 vs 97.4 us (-5.4..-8.7%) [probe_b200]"
+  - "run_tests final: 16/16 PASS (10 rounds). Rented us vs r7-e1 on the same GPU: 373 53.3 vs 56.7 (-6.0%), 384 53.3 vs 56.7 (-6.1%), 449 53.5 vs 56.6 (-5.4%), 512 55.1 vs 57.6 (-4.3%), 691 79.2 vs 83.9 (-5.6%), 773 82.7 vs 87.5 (-5.5%), 853 86.2 vs 92.5 (-6.7%), 919 89.8 vs 95.5 (-6.0%); B <= 256 unchanged code within +-0.6% except 128 +3.0% (noise, identical code). Bands S +0.6% M -2.3% L -5.6%; emulator 0.6894 +- 0.0074, P(beat 0.6848) 76% [run_tests]"
+  - "score model: S 0 / M -2.4 / L -5.7 gives 0.6962. A 10% cut is worth +0.0106 in M and +0.0163 in L [predict_score]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn, fused path, 3 draws each): 300 1.54/1.56/1.51e-3, 384 1.65/1.62/1.67, 512 1.59/1.53/1.58, 513 1.73/1.67/1.58, 691 1.59/1.57/1.53, 919 1.60/1.55/1.69, 1024 1.83/1.63/1.60. Arithmetic identical to r7 (same cvt.rn operands and accumulation order); the counter reset was verified across consecutive calls [probe_b200]"
+  - "dead end: issuing the converters' first W loads before mbarrier init / TMEM alloc / cluster sync (barrier.cluster.arrive.relaxed for the converters) changes nothing (384 56.2 vs 55.9, 919 95.3 vs 95.1). The fill is DRAM-throughput-bound, and the prologue stretched from 0.8 to 2 us [probe_b200]"
+  - "dead end: L2 prefetch (cp.async.bulk.prefetch.L2 with evict_first) of the first 3 or 6 W k-blocks of every row, issued from the pre-pass: 384 +1.4/+2.3 us, 919 -1.5 us non-persistent but +1.8 us on top of the persistent kernel. The pre-pass grows by 1-2.3 us and the first full barely moves [probe_b200]"
+  - "dead end: cudaFuncAttributePreferredSharedMemoryCarveout = 100 on the pre-pass (to avoid an L1/smem reconfiguration before tc_h) does not move the tc_h start [probe_b200]"
+  - "infra: harness_time again failed sporadically with 'Expected kernel activity sequence not found' on 2-kernel variants; retrying fixed it. The fused path is one kernel and avoids this. /tmp persisted between some probes in this session but not all [probe_b200]"
+  - "static sm_100a: tc_h_kernel 72 regs (the cap at 896 threads x 1 CTA), 0 spill/stack, UBLKCP x1, UTMALDG x2, LDG.NA.128 x24; tc_small 32, tc_pair 30 regs unchanged [compile_b200]"
+  - "portal prediction: nb1 is DRAM-bound (portal/rented about 1.09), so 373/384 should come in about 58 us (r7 62.0) and 449/512 about 58/60 (r7 66.4/70.0). nb2 at about 1.27 gives 691-919 about 100/105/109/114 (r7 106-121). Model 0.696, emulator 0.689 [analysis]"
+  - "next levers: the nb1 fill (CTA start to first full is about 5.5 us; dirty write-back of the first 14 MB in flight) and the epilogue (4.7-5.2 us, store-bound, cannot overlap MMA because the nb2 accumulator uses all 512 TMEM columns). nb2's main loop stays L2->SM bound (about 850 MB per call) [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    w: ef
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: persistent
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "grid-wide counter: a 2-word device scratch allocated and zeroed once (static); every call increments it and the last CTA to pass the wait resets it, so it is zero at each call's start (the ledger allows 'a scratch counter that is correct for every call'). The r7 session declined to ship this kind of state, but only because it gave no gain there; it is worth an operator legitimacy check before a portal slot"
+  - "the fused path needs all 144 CTAs (72 two-CTA clusters) co-resident; this is checked once with cudaOccupancyMaxActiveClusters at 225 KB smem (74 fit on B200). If fewer fit, the code falls back to the r7 pre-pass (2 launches). A spinning CTA traps after about 2^26 polls rather than hanging"
+  - "the first call does cudaMalloc + cudaMemset + cudaDeviceSynchronize (one-time setup during correctness round 0, not in timed calls)"
+  - "72 registers per thread is exactly at the cap for 896 threads x 1 CTA; any change to the converter epilogue may spill (check ptxas)"
+  - "stages >= groups invariant still holds (asserted statically, status 433 on the host)"
+  - "FP16 operands: max |err| up to 1.73e-3 on one draw at 513 (1.83e-3 at B = 1024, not a workload) against atol 2e-3, the same class as r6/r7"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

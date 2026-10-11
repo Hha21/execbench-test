@@ -1,0 +1,22 @@
+{
+ "best": "r6-e1-fp16-tch-fwd",
+ "best_score": 0.667992,
+ "tasks": [
+  {
+   "operation": "new_design",
+   "parents": [
+    "r6-e1-fp16-tch-fwd"
+   ],
+   "band": "all",
+   "niche": "exp:E1:H28-handoff",
+   "model": "opus",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): take the FP16 path of r6-e1-fp16-tch-fwd (portal 0.6680, our best) from load-latency-bound to MMA- or DRAM-bound for B > 256, then extend FP16 to 131 < B <= 256. Read ledger H28 and tricks.md section 5 first.\n\nPortal facts (#65294, r6-e1): 373/384 67.6, 449 71.0, 512 74.3, 691 119.2, 773 123.2, 853 126.9, 919 130.1 us (scores 0.57-0.68 for B > 256, 0.69-0.71 for B <= 211). Portal/rented was 1.16 at 373/384, 1.20 at 449, 1.23 at 512 and 1.26-1.27 at 691-919. The leader's 0.795, read as a uniform score, implies 46-56 us at 373-512 and 70-87 us at 691-919. So B > 256 holds most of the gap, and 691-919 (two passes at nb2) is the weakest band.\n\nWhat binds now (r6 findings): mbarrier.arrive.release from a thread with LDGs in flight waits for them, so the converters' register prefetch hides nothing. clk per 64-k block at 384/512/691 nb2/919 nb2: shipped forwarder 1257/1287/1102/1180; relaxed arrive (unordered, not shippable) 1097/1114/800/954; MMA ideal 768/1024/704/928. The relaxed numbers show 13-27% of headroom from ordering alone.\n\nSteps:\n1. Budget first. For each design below, write the per-64-k-block budget per SM: MMA clk (2 x Ntile), SMEM bytes (TMA writes, LDS, STS, UMMA operand reads) against ~128 B/clk, DRAM bytes against ~5.8-6 TB/s with 144 SMs, registers and bytes in flight. Drop designs that cannot beat the relaxed numbers on paper.\n2. Build and probe a correctly ordered handoff that keeps global loads out of the arriving threads. Candidates:\n   (a) Warp-group rotation: split the converter warps into G groups (e.g. 3-4 groups of 3-4 warps); group g takes k-blocks g, g+G, ... and for each one does LDG of its whole slice -> cvt.rn.f16x2 -> STS into the SW128 stage -> fence.proxy.async -> release arrive. Nothing is in flight at the arrive, and G groups in flight hide the latency (G x 32 KB per SM). Watch registers (a 32 KB slice over 96-128 threads is 64-85 data registers) and the L1 starvation seen in r6 with deep smem rings.\n   (b) TMA fp32 staging: the producer warp TMAs fp32 W into a staging ring (complete_tx on a raw barrier); converters wait, LDS -> cvt -> STS, then release-arrive with no global loads outstanding. It adds ~64 KB of SMEM traffic per k-block per SM; check it fits under the MMA time.\n   (c) cp.async (LDGSTS) staging issued by the converters: PTX orders async copies only through cp.async.wait_group or cp.async.mbarrier.arrive, so a later release should not wait for them. Measure that it really does not.\n   Any fence-plus-relaxed-arrive pattern must be justified from the PTX memory model (STS before the arrive must be visible to the MMA's async-proxy reads). Never ship a plain relaxed arrive.\n   Probe clk per k-block at Ntile 384, 512 and nb2 352/464, interleaved with r6-e1 as the control in the same container. Report the clock.\n3. Once the handoff is fixed, look at what binds next. If nb2 (691-919) becomes MMA-bound, the unoverlapped epilogue (8.7-10.6k clk per CTA, paid on both passes) is the next lever. Estimate it before building; TMEM has 512 columns.\n4. FP16 for 131 < B <= 256 (192/211: portal 50.0/53.9 us on TF32 tc_pair kbs2, rented 45.7/48.2 near the DRAM floor, portal/rented 1.09-1.12). Try the n2 = 0 tc_h path; dispatch it only where it wins in time on the same GPU.\n5. Keep B <= 131 unchanged (DRAM-bound, at the evict_first stream floor).\n6. run_tests 16/16 x 10 rounds. Record max |err| per B (expect 1.5-1.7e-3). Ship a per-B dispatcher. Predict portal times: latency-bound paths x1.16-1.27 (r6), MMA-bound paths x1.35 (r5), DRAM-bound x1.03-1.10.",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3 at every B; in the same container as r6-e1, >= 15% fewer cycles at 691-919 and >= 10% at 373-512; predicted portal score >= 0.69.",
+   "refuted_if": "No correctly ordered handoff gets within 10% of the relaxed-arrive clk per k-block (1097/1114/800/954 at 384/512/691/919): record which design was tried and what binds (SMEM, registers, DRAM, issue)."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

@@ -9,7 +9,7 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
 - **Read the LEADER GAP section first** (`poc/leader_gap.py`). It backs out the per-workload times implied by the public
   top scores and the best mean score reachable at the hardware ceilings for each precision. On #35, TF32 tops out at
   about 0.70, while the leader scores 0.795 and FP16 can reach 0.84. Five rounds of TF32 tuning could never have
-  closed that gap.
+  closed that gap; the first FP16 round gained +0.042 on the portal (0.626 to 0.668).
 - **Precision ladder** for fp32-in/fp32-out problems (operator policy 2026-10-11: any precision that meets the
   tolerance is fine; check the arithmetic first):
   - **TF32**: 10-bit mantissa. Use round-to-nearest (TMA tensor map `TFLOAT32`, or `cvt.rna.tf32.f32`). Truncation
@@ -36,6 +36,9 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
   - DRAM-bound: 1.03-1.10.
   - Clock-bound SIMT: about 1.2-1.3.
   - tcgen05 kernels at the MMA ideal: 1.35 (#35 r5).
+  - tcgen05 kernels bound by load latency (FP16 with in-kernel conversion): 1.16-1.27 (#35 r6). Latency in ns
+    does not stretch with the clock, so a rented tie can be a portal win: #35 r6 373/384 were flat rented and
+    13% faster on the portal.
   - cuBLAS at large M: 1.16-1.22.
   - Rented gains on clock-bound code can grow (#35 r3: -7% rented became -18% portal) or shrink (#35 r5: -16% became
     -6%) on the portal. Predict from cycles, not rented µs.
@@ -91,6 +94,13 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
 - **2SM pairs** (`cta_group::2`, cluster 2x1, M = 256 split 128 per SM) beat 1SM 128xN everywhere tested (#30 H4, #35):
   - Each SM loads half the B operand, which halves per-SM operand ingest.
   - Use two TMEM accumulators to cover N up to 512 in one pass.
+- **A release arrive waits for the thread's own loads** (#35 r6). `mbarrier.arrive.release` (cta or cluster scope)
+  from a thread that still has LDGs in flight (e.g. a register prefetch of the next k-block) stalls until those
+  loads land, so the prefetch hides nothing. Converter warps that LDG, convert and STS into a UMMA stage lost
+  13-27% per k-block to this. Hand off through a warp that has no loads in flight (a forwarder after a named
+  barrier recovered part of it), or keep global loads out of the arriving threads (TMA or cp.async staging,
+  or several warp groups taking k-blocks in turn with nothing prefetched at the arrive). A relaxed arrive is
+  fast but leaves the shared-memory writes unordered: do not ship it.
 - **Per-stage floor**: a rotating ring's stage costs max(MMA clk, ~565 clk fixed with uniform issue). Make stages carry
   ≥ ~600 clk of MMA, e.g. 2 k-blocks per stage, or 48-k stages via a 32-k plus a 16-k TMA box.
 - **Wave and tile quantisation**: 320 pair tiles over 74 SM pairs = 4.32 waves cost ~13% at L on #30. Pick tile counts

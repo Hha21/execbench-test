@@ -1,0 +1,156 @@
+id: r9-e1-skew-uniform-s
+parents:
+  - r8-e1-fused-emb-persist
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The S-band W stream (tc_small, B <= 131) is 4.3 us above the best read-only stream on this B200 under the harness flush
+  (42.4 vs 38.0 us). The causes are about 1.9 us of ring slots held during the MMA, about 2-3 us of static per-CTA
+  imbalance (per-SM DRAM rates differ by up to 15%, clustered by TPC), and a 4.6 us fill. Neither stealing nor L2
+  prefetch recovers this. What ships is r8 plus two small changes. (1) A per-CTA (tc_small) or per-pair (tc_pair)
+  starting k-stage, so the 144 CTAs do not hit the same emb k-block in L2 at once; this matters where emb is a large
+  part of each stage (B >= 128). (2) Warp-uniform producer and MMA roles in tc_pair with elect.sync issue. This trims
+  the per-stage ring floor by 2% (1092 -> 1066-1073 clk per kbs2 stage with W L2-resident). That floor, not DRAM,
+  limits 192/211 at the portal's 1.5 GHz.
+expected_effect:
+  S:
+    pct: -0.5
+    confidence: low
+  M:
+    pct: -0.8
+    confidence: low
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 32
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  SKEW: "start stage = (5 * blockIdx) mod (96 / kbs) for tc_small, (5 * pair) mod (96 / kbs) for tc_pair, wrapping"
+  PAIR_ISSUE: "warp-uniform loops, elect.sync issue (producer warp 0, leader MMA warp 1)"
+  TC_SMALL_ISSUE: "unchanged single-lane (uniform issue measured no gain or +0.5 us at B=128)"
+  B_GT_256: "tc_h exactly as r8-e1"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+      skew: true
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+      skew: true
+      uniform_issue: true
+  - max_tokens: 512
+    kernel: tc_h_kernel
+    meta:
+      launches: 1
+      nb: 1
+      groups: 3
+      fused_emb: true
+  - max_tokens: null
+    kernel: tc_h_kernel
+    meta:
+      launches: 1
+      nb: 2
+      persistent_pairs: 72
+      groups: 3
+      fused_emb: true
+tests:
+  - H16
+  - H23
+findings:
+  - "stream survey, reads-only 226.5 MB, harness_time (CUPTI, 252 MB zero flush), rented B200: LDG.128 nc+L1::no_allocate evict_first, 1184x256 thr, U=8: contiguous-per-CTA 39.52 us (5.73 TB/s) vs grid-stride interleaved 38.57 (5.87); 592x512 38.41 (5.90); same without the L2 hint 38.46 (5.89; the .nc no_allocate load does not need the hint, unlike r1's plain LDG); U=4 40.1-40.2; U=16 x 592 38.87; LDG.256 (v8) 39.3 (no gain). 1-D bulk ring 148x6x32 KB evict_first: contiguous 40.68, interleaved 39.23; 16 KB chunks 40.66; 296 CTAs 39.28; unhinted 44.81; 144 CTAs contiguous 40.03 [probe_b200]"
+  - "best stream: a bulk ring (148 CTAs, 3 x 64 KB, evict_first) with a dynamic global chunk counter (claim on slot free) runs 38.0 us = 5.96 TB/s, against 40.3-40.4 for the same ring with a static contiguous split (144 or 148 CTAs). Dynamic balancing, not per-SM rate, is the 2.3 us difference [probe_b200]"
+  - "read-pattern check: the 64-bit division in the segment-pattern probe made it issue-bound (43.9-45.2 us), so it says little; 512 B row segments at a 12 KB stride vs a linear sweep differ by at most 0.3 us there [probe_b200]"
+  - "tc_small breakdown at B=5 (same container): full 42.68 us, MMA skipped 40.81, MMA and epilogue skipped 40.32; B=128: 45.18 / 43.63 / 41.94 (epilogue 1.7 us at B=128). kbs 2 or 1 instead of 4 is slower at B=5 (44.5 / 45.3) [probe_b200]"
+  - "tc_small timeline (globaltimer, flush then a direct call): first full barrier 3-9 us after CTA start (median 4.6-6.1 at B=5, 3.3-4.1 at B=128); last full stage 34.6-40.7 us across CTAs at B=5 (38.1-41.5 at B=128). The spread is partly systematic by SM (corr 0.6-0.75 between runs on the same W buffer, 0.43 across buffers; late SMs come in TPC pairs 26/27, 28/29, 30/31) [probe_b200]"
+  - "dead end: tail work stealing for tc_small (148 CTAs; the owner keeps 2/3 of the K chunks, the last 1/3 is contested through a per-tile front/back claim word; thieves accumulate into 2 spare TMEM slots, drain warps write fp32 partials plus a release counter, the owner adds them after acquire; the last CTA resets the counters). It is correct (1.2-1.5e-3, reset verified across calls), but at B=5 it runs 43.6-46.1 us vs 42.4, and at B=128 59.5 vs 44.7 (partials of 64 KB per 32 KB W chunk). The same structure with stealing off costs +1.3-1.5 us, of which 1.2 us is the end-of-kernel finish atomic and reset. Stealing tightens the end spread (38.7-40.7) but raises the median end (37.4 -> 39.2) [probe_b200]"
+  - "dead end: L2 tensor prefetch ahead of the tc_small ring (cp.async.bulk.prefetch.tensor.3d.L2, distance 1/2/4 stages, evict_first or evict_last policy): B=5 47.8-52.3 us vs 42.3; B=128 49.7-53.1 vs 44.8 [probe_b200]"
+  - "dead end: warp-uniform roles in tc_small: B=5 42.89/42.68 vs 42.87/42.77; B=128 45.42/45.48 vs 45.13/44.50 (no gain, possibly worse). Kept single-lane [probe_b200]"
+  - "skew (start k-stage 5*cta mod nIt) in tc_small: B=5 42.47-42.90 vs 42.68-42.87 (neutral); B=128 43.98-44.58 vs 44.50-45.18 (-0.3..-1.2 us) [probe_b200]"
+  - "tc_pair ring floor with L2-resident W (W tile index (pair mod 4)): 1092 clk per kbs2 stage at both B=192 and 211 (546 clk per k-block); uniform issue 1066-1073 (-2%). Cold W at about 1.9 GHz: 1215-1300 clk per stage (DRAM-bound rented). At 1.5 GHz the floor (0.71 us per stage) exceeds the DRAM time (about 0.65 us), which explains the 1.11-1.13 portal/rented ratio at 192/211 [probe_b200]"
+  - "run_tests 1: 16/16 PASS. vs stored r8: 5 -0.5, 16 -0.8, 32 -1.7, 96 +0.1, 128 -4.0, 131 -1.6, 192 -3.0, 211 -5.5%; the unchanged B > 256 code moved -0.8..-5.4% (drift). Emulator 0.6940 [run_tests]"
+  - "run_tests 2: 16/16 PASS. 5 +0.7, 16 -0.3, 32 -0.2, 96 +1.9, 128 -3.0, 131 +0.4, 192 -0.7, 211 -2.6%; the unchanged B > 256 code moved -1.5..+1.6%. Emulator 0.6869. Net of the drift in the unchanged band, two runs: 211 about -3%, 128 about -2.5%, 192 about -1%, other S sizes within noise [run_tests]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn): skewed tc_small 1.36e-3 (B=5), 1.42-1.47e-3 (128), 1.50e-3 (16); tc_pair skew+uniform 1.64e-3 (192), 1.67e-3 (211). Same TF32 operands, only the K summation order changes [probe_b200]"
+  - "portal prediction: B <= 131 DRAM-bound (x1.03-1.08): 128 about 46.5 (r8 47.5), other S sizes unchanged. 192/211 partly clock-bound: about 50.3/53.0 (r8 50.9/54.5). B > 256 identical code. Score about +0.001-0.002 over r8 (0.685); the 2nd-place gap at S is not closable with static tiling [analysis]"
+  - "next levers for the S band: the 2.3 us that dynamic balancing buys on a pure stream needs work redistribution without fp32 partial traffic or end-of-kernel atomics, e.g. a host-side split of the K tail between SM pairs via cluster DSMEM reduction (no global counters), or a ring that frees W slots before the MMA completes (register or TMEM staging). The 192/211 floor needs the H25 ring structure (CUTLASS-like, about 600 clk per stage) [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    w: ef
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: persistent
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "gains are small (1-3% at 128/192/211, noise elsewhere) and at the edge of rented noise; the portal may show no change"
+  - "skew changes only the K summation order (fp32 accumulation in one TMEM accumulator over the full K); max |err| stays at 1.4-1.7e-3"
+  - "B > 256 inherits r8's grid-wide self-resetting emb counter (same legitimacy note as r8)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -250,3 +250,11 @@ hypotheses:
   - 'r8-e1: the nb1 fill (prologue to first full barrier about 5.4 us) is DRAM-throughput-bound: 14 MB of first loads plus about 14 MB of dirty write-backs at about 2.8 TB/s of reads. Early W loads before barrier init, an L2 prefetch from the pre-pass and a smem carveout attribute did not help. The epilogue (4.7-5.2 us) is store-bound and cannot overlap the nb2 MMAs (the accumulator uses all 512 TMEM columns) [r8-e1-fused-emb-persist]'
   - 'portal r8 (#65309): 0.6853 (+0.0005). 373/384 60.9/60.8 (-2%), 449/512 66.5/70.5 (flat), 691-919 103.8/109.9/114.8/119.9 (-1..-2%); the unchanged B <= 211 paths ran +1-2% slower (portal drift). The rented -5..-7% from the fused launch and persistence mostly did not transfer [r8-e1-fused-emb-persist]'
   - 'open: nb2 L2->SM traffic (about 850 MB per call at 919); the B > 256 band is past diminishing returns for overhead work'
+- id: H29
+  statement: 'The S band (B <= 211) can stream W faster: 2nd place (0.744, read as a uniform score) implies about 6.2 TB/s at B=5 against our 5.8.'
+  status: refuted
+  evidence:
+  - 'r9-e1 stream survey under the harness flush (226.5 MB reads-only, harness_time): LDG.128 nc no_allocate grid-stride 38.4-38.6 us (5.87-5.90 TB/s), contiguous-per-CTA 39.5, LDG.256 no gain; 1-D bulk ring interleaved 39.2, contiguous 40.0-40.7, unhinted 44.8. Best: a bulk ring with a dynamic global chunk counter, 38.0 us = 5.96 TB/s. Static splits lose about 2.3 us to per-SM DRAM rate differences (up to 15%, clustered by TPC) [r9-e1-skew-uniform-s]'
+  - 'r9-e1: tc_small at B=5 is 42.7 us; skipping the MMA gives 40.8 and skipping MMA plus epilogue 40.3. Tail work stealing (correct, with a self-resetting counter) was slower: 43.6-46.1 at B=5, 59.5 at B=128. L2 tensor prefetch ahead of the ring: +5-10 us. Warp-uniform roles in tc_small: no gain [r9-e1-skew-uniform-s]'
+  - 'r9-e1 ships a per-CTA k-stage skew (B=128 -0.3..-1.2 us) and warp-uniform tc_pair roles (ring floor 1092 -> 1066-1073 clk per kbs2 stage; at 1.5 GHz that floor, not DRAM, binds 192/211). Net of drift: 128 about -2.5%, 192 -1%, 211 -3%; predicted +0.001-0.002 [r9-e1-skew-uniform-s]'
+  - 'consequence: the gap to 2nd place at B <= 131 is about 4 us that static tiling cannot close; the pure-stream floor under the harness is about 38 us rented'

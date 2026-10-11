@@ -42,6 +42,10 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
   - cuBLAS at large M: 1.16-1.22.
   - Rented gains on clock-bound code can grow (#35 r3: -7% rented became -18% portal) or shrink (#35 r5: -16% became
     -6%) on the portal. Predict from cycles, not rented µs.
+- **Launch-gap and persistence savings shrink on the portal** (#35 r8). Fusing a pre-pass into the main kernel and making
+  a 2-wave kernel persistent gave -5..-7% rented under harness_time but only -1..-2% on the portal. In the same
+  rounds, gains in DRAM streaming rate carried over at 1.03-1.09 (r7). Prefer gains that move fewer bytes or use
+  the bandwidth better over gains that remove launch or synchronisation overhead.
 - The portal amplifies latency-tolerance gains: more resident warps lifted #88 by +16.7% portal against +6.7% bench.
 - Large **clustered** grids cost 2-5% on the portal and seem to slow later plain launches. Use clusters only where a
   GEMM tile needs them (2SM pairs) or on small one-wave grids.

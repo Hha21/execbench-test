@@ -1,0 +1,22 @@
+{
+ "best": "r8-e1-fused-emb-persist",
+ "best_score": 0.68534,
+ "tasks": [
+  {
+   "operation": "new_design",
+   "parents": [
+    "r8-e1-fused-emb-persist"
+   ],
+   "band": "S",
+   "niche": "exp:E1:H16-stream",
+   "model": "opus",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): the S band, B <= 211. These are 8 of the 16 workloads and have been untouched since r2/r3. Make the W stream as fast as the hardware allows under the harness. Read ledger H15/H16/H28 and tricks.md sections 2-4 first.\n\nPortal (#65309, r8-e1-fused-emb-persist, our best at 0.6853; 5th place is 0.6910):\n- B=5/16/32/96/128/131: 44.5/44.7/44.6/45.6/47.5/48.0 us (scores 0.697-0.713), tc_small (TF32, 144 one-SM CTAs, evict_first TMA ring). Rented 42.4-45.8, portal/rented 1.03-1.08 (DRAM-bound).\n- B=192/211: 50.9/54.5 us (0.703/0.688), tc_pair kbs2 (TF32 2SM). Rented 46.0/48.3, portal/rented 1.11-1.13 (partly clock-bound).\n\nWhat other scores imply. Read as uniform scores, 2nd place (0.744) means about 38.5 us at B=5, a 226 MB stream at about 6.2 TB/s plus launch; the leader means about 7.4 TB/s. Our reads-only floor from r1 probes was 39-40 us rented with evict_first (about 5.8 TB/s), and 38.9 us with a clean, read-based flush. So the stream rate itself, not the dirty-L2 write-back, caps us. Public B200 references: STREAM triad 7.48 TB/s; read+write 7.05-7.1 marginal. #85 saw read-only streams at about 5.3 TB/s against 7.0 for read+write. Each us at B <= 131 is worth about 0.007 per workload. 3 us on the six B <= 131 sizes plus 5-7 us at 192/211 would add about +0.01-0.015 to the mean.\n\nCalibration from r8: rented savings from removing launch gaps or adding persistence (-5..-7%) became only -1..-2% on the portal. DRAM-rate gains carried over at 1.03-1.09. Prefer gains in bytes and bandwidth.\n\nSteps:\n1. Find the fastest read-only stream of a 226 MB fp32 array on this B200 under the harness flush. Measure with harness_time and report TB/s. Vary:\n   - CTA count (144 vs 148, 1-4 per SM) and bytes in flight per SM (32-192 KB)\n   - the load path: TMA tensor vs cp.async.bulk 1D vs LDG.128/256 vs cp.async\n   - cache hints: evict_first, none, L2::256B prefetch size\n   - the access order: one contiguous row block per CTA vs chunks interleaved across CTAs, so concurrent requests spread over HBM channels and both dies\n   The deliverable is a table: the best read-only TB/s and what it depends on.\n2. If the best stream beats tc_small's effective rate (226 MB / (42.5 us - fixed)) by >= 5%, rebuild the B <= 131 path around that load pattern. The maths is tiny: B <= 131 fits one tile. Use kind::tf32 or kind::f16, whichever keeps the stream at full rate; the r7 rotating converter groups are the FP16 reference.\n3. 192/211: TF32 tc_pair is partly clock-bound on the portal. Try FP16 with the r7 rotating converter groups tuned for N = 192-224 (r7's untuned n2 = 0 attempt ran 53.2/54.3 us vs TF32 45.9/48.4), or any path that reaches the stream rate. Keep whichever wins in time on the same GPU.\n4. Keep B > 256 exactly as in r8-e1.\n5. run_tests 16/16 x 10 rounds, recording max |err| per B, with r8-e1 interleaved as the control. Predict portal times as DRAM-bound x1.03-1.08.",
+   "success": "16/16 x 10 rounds; in the same container as r8-e1, >= 5% faster at B <= 131 or >= 8% at 192/211, with B > 256 unchanged; predicted portal score >= 0.692.",
+   "refuted_if": "No read pattern beats about 5.9 TB/s under the harness flush: record the table of patterns and rates."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

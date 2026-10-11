@@ -45,3 +45,4 @@ r4-e1-tc-pair2-twoacc,0.075801,0.618482,13,1.456,64693,035_flux_ada_layer_norm_z
 r5-e2-tc-ws-uniform-issue,0.074265,0.625594,13,1.486,64927,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/64927_r5-e2-tc-ws-uniform-issue.txt
 r6-e1-fp16-tch-fwd,0.066353,0.667992,16,1.664,65294,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/65294_r6-e1-fp16-tch-fwd.txt
 r7-e1-fp16-rot3,0.063500,0.684794,16,1.738,65302,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/65302_r7-e1-fp16-rot3.txt
+r8-e1-fused-emb-persist,0.063492,0.685340,16,1.739,65309,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Private,AC,portal_html/65309_r8-e1-fused-emb-persist.txt

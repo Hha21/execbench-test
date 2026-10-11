@@ -1,0 +1,131 @@
+=== TASK ===
+Round: r11   Problem: L1/035_flux_ada_layer_norm_zero_modulation_extraction
+FRESH-EYES SESSION. You are deliberately given no earlier designs, notes or results beyond the times to beat below. Work from first principles and from your own measurements. Return the report described below.
+PAPER-DESIGN SESSION (no GPU, no code). Another session will build and test what you propose, so your job is ideas
+with honest arithmetic.
+
+Scope: only the 8 large workloads, batch_size 373, 384, 449, 512, 691, 773, 853 and 919. The sizes <= 211 are handled
+by a different kernel and are out of scope.
+
+Where the current best stands on the portal (locked SM clock, about 1.5 GHz):
+| B | 373 | 384 | 449 | 512 | 691 | 773 | 853 | 919 |
+| time us | 59.8 | 59.7 | 64.6 | 68.4 | 101.6 | 107.1 | 111.7 | 112.5 |
+| useful PF/s (2*B*3072*18432 per call) | 0.71 | 0.73 | 0.79 | 0.85 | 0.77 | 0.82 | 0.86 | 0.93 |
+
+Target: an average of at least 1.1 PF/s over these sizes (for example 919 in <= 95 us, 691 in <= 71 us, 512 in
+<= 53 us, 373 in <= 40 us). That is worth about +0.06 of mean score. The public leader's score implies roughly
+1.2 PF/s here.
+
+Settled facts; do not spend effort re-deriving them:
+- Precision: FP16 operands (cvt.rn from fp32) with fp32 accumulation pass the tolerance (max error 1.5-1.8e-3 vs atol
+  2e-3) and run on tcgen05 kind::f16 at 2x the kind::tf32 rate. BF16 and FP8 operands fail the tolerance. TF32
+  tops out near 0.65 PF/s at the portal clock, far below the target.
+- At the portal clock the kind::f16 ideal is about 1.3 PF/s over 148 SMs.
+- W (18432 x 3072 fp32, 226 MB) must be read from the fp32 input on every call; nothing may be cached between calls.
+  Our best measured pure read stream of W under the harness's L2 flush is 38 us (5.96 TB/s, rented card).
+- Converting W to fp16 in a separate pass first (read 226 MB, write 113 MB, then read 113 MB) costs at least
+  45-50 us more and is too slow. emb is small (B x 3072 fp32, at most 11 MB), so converting it in a pre-pass or
+  per CTA is cheap.
+- cuBLAS with fp32 inputs and CUBLAS_COMPUTE_32F_FAST_16F runs TF32 kernels, not FP16 ones.
+- The output is six fp32 tensors of shape [B, 3072] (columns j*3072..(j+1)*3072 of the GEMM result plus bias).
+
+Your report:
+1. Eight genuinely different designs for these sizes. At most two may be variations of the obvious design (whole
+   warps load fp32 W into registers, convert to fp16 and store into a shared-memory stage that the MMA reads).
+   At least three must differ in where operands live on their way to the tensor cores, or in which operand sits in
+   the MMA's M position, or in how the work is split across SMs (split-K, stream-K, other tile shapes, clusters
+   larger than 2 with multicast, ...). Anything inside the core brief's rules is allowed.
+2. For each design:
+   a. the idea in one or two lines;
+   b. the path each W byte and each emb byte takes from DRAM to the tensor cores, naming the unit that moves or
+      converts it (TMA, LSU/registers, shared memory, tensor memory, L2);
+   c. a per-SM budget at B = 919 and B = 512 at 1.5 GHz: DRAM bytes, L2-to-SM bytes, shared-memory bytes read and
+      written per k-block against 128 B/clk, issued warp-instructions per k-block against 4 per clk, MMA clocks per
+      k-block, tensor-memory columns used;
+   d. the binding limit and the estimated time at 919 and at 512;
+   e. the riskiest assumption, and a probe of at most 10 minutes on a B200 that would test it.
+3. A ranking by (estimated time) x (chance of working within one two-hour build session), and the two designs whose
+   probes you would run first.
+Keep it under about 2500 words. No code blocks longer than 15 lines. Do not return an OUTPUT CONTRACT candidate.
+
+
+=== PROBLEM DEFINITION ===
+name: 035_flux_ada_layer_norm_zero_modulation_extraction
+description: AdaLayerNormZero modulation parameter extraction for Flux dual-stream transformer. Projects timestep embeddings through a linear layer and chunks into 6 modulation parameters (shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp) that control attention and MLP paths.
+axes: {"batch_size": {"type": "var", "description": "Batch size"}, "inner_dim": {"type": "const", "value": 3072, "description": "Hidden dimension size"}, "output_dim": {"type": "expr", "expression": "inner_dim * 6", "description": "Output dimension of linear projection (6 * inner_dim)"}}
+inputs/outputs (shape, dtype): {"inputs": {"emb": [["batch_size", "inner_dim"], "float32"], "weight": [["output_dim", "inner_dim"], "float32"], "bias": [["output_dim"], "float32"]}, "outputs": {"shift_msa": [["batch_size", "inner_dim"], "float32"], "scale_msa": [["batch_size", "inner_dim"], "float32"], "gate_msa": [["batch_size", "inner_dim"], "float32"], "shift_mlp": [["batch_size", "inner_dim"], "float32"], "scale_mlp": [["batch_size", "inner_dim"], "float32"], "gate_mlp": [["batch_size", "inner_dim"], "float32"]}}
+
+reference:
+import torch
+
+@torch.no_grad()
+def run(emb: torch.Tensor, weight: torch.Tensor, bias: torch.Tensor):
+    """
+    AdaLayerNormZero modulation parameter extraction.
+    
+    Performs a linear projection followed by chunking into 6 modulation parameters.
+    
+    Args:
+        emb: Timestep embeddings of shape [batch_size, inner_dim]
+        weight: Linear weight matrix of shape [6 * inner_dim, inner_dim]
+        bias: Linear bias of shape [6 * inner_dim]
+        
+    Returns:
+        Tuple of 6 tensors, each of shape [batch_size, inner_dim]:
+        - shift_msa, scale_msa, gate_msa: for attention path
+        - shift_mlp, scale_mlp, gate_mlp: for MLP path
+    """
+    # Linear projection: [batch_size, inner_dim] @ [inner_dim, 6*inner_dim] + bias
+    # = [batch_size, 6*inner_dim]
+    emb_out = torch.matmul(emb, weight.t()) + bias
+    
+    # Chunk into 6 equal parts along the last dimension
+    # Each chunk has shape [batch_size, inner_dim]
+    shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = emb_out.chunk(6, dim=1)
+    
+    return shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp
+
+
+=== WORKLOADS AND TIMES TO BEAT (portal B200, µs) ===
+| workload | MB moved | band | Tb (S=0.5) µs | Tsol (S=1) µs | time to beat µs | its score |
+|---|---|---|---|---|---|---|
+| batch_size=5 | 227.0 | S | 82.8 | 15.2 | 44.4 | 0.698 |
+| batch_size=16 | 227.9 | S | 83.1 | 15.2 | 44.6 | 0.698 |
+| batch_size=32 | 229.3 | S | 84.8 | 15.3 | 44.7 | 0.703 |
+| batch_size=96 | 234.8 | S | 90.1 | 15.6 | 45.2 | 0.716 |
+| batch_size=128 | 237.6 | S | 90.7 | 15.9 | 46.8 | 0.707 |
+| batch_size=131 | 237.8 | M | 93.8 | 15.8 | 47.1 | 0.714 |
+| batch_size=192 | 243.1 | M | 98.4 | 16.1 | 48.4 | 0.718 |
+| batch_size=211 | 244.7 | M | 100.8 | 16.2 | 52.4 | 0.700 |
+| batch_size=373 | 258.7 | M | 110.2 | 23.7 | 59.8 | 0.705 |
+| batch_size=384 | 259.6 | M | 110.5 | 24.4 | 59.7 | 0.709 |
+| batch_size=449 | 265.2 | L | 119.1 | 28.5 | 64.6 | 0.715 |
+| batch_size=512 | 270.6 | L | 123.0 | 32.4 | 68.4 | 0.716 |
+| batch_size=691 | 286.0 | L | 145.0 | 43.6 | 101.6 | 0.636 |
+| batch_size=773 | 293.1 | L | 151.7 | 48.7 | 107.1 | 0.638 |
+| batch_size=853 | 299.9 | L | 164.3 | 53.8 | 111.7 | 0.656 |
+| batch_size=919 | 305.6 | L | 169.8 | 57.9 | 112.5 | 0.672 |
+
+The score is the mean over workloads of S = (Tb - Tsol) / ((t - Tsol) + (Tb - Tsol)). The 'time to beat' is the current best submission (portal score 0.6939). On the rented B200 the reference and your kernel are timed side by side; run_tests reports both.
+
+=== RULES OF THIS PROJECT (on top of the core brief's forbidden list) ===
+- bf16 is this problem's own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).
+- No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness's measurement, not kernel speed. Off-limits unless NVIDIA approves.
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- No overlap with the harness's own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.
+- Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call's own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).
+- Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).
+- The loop's lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the operator whitelists the type name for this problem (dtype is bf16 by definition).
+- Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 / 8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs which variant and all 10 rented per-size times per variant, measured interleaved in one probe.
+- Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented, plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.
+- #35 precision (operator policy, 2026-10-11: any precision that meets the tolerance): TF32 and FP16 tensor-core compute with fp32 accumulation are allowed (tcgen05 kind::tf32 / kind::f16, cuBLAS fast-TF32 or FP16 inputs inside our own call). FP16 operands round exactly like TF32 on these inputs (simulated max err 1.51e-3, 0% of elements outside atol 2e-3) and run at 2x the TF32 tensor rate; BF16 operands fail (39% of elements outside). Convert fp32->fp16 with round-to-nearest, keep fp32 accumulation, never round outputs; verify every candidate on all 16 workloads x 10 rounds and record max |err|.
+- #35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.
+- #35 TF32 margin (operator, r1): accumulate in fp32 over the full K = 3072 inside one tensor-core accumulator; no split-K whose partials are stored or re-fed below fp32; no rounding of outputs or intermediates. Every candidate records max |err| vs fp64 per B (must stay <= 1.7e-3 against atol 2.0e-3; single draws of 1.73-1.79e-3 have been seen for every TF32 path including CUTLASS and are draw-dependent, so report 3 draws) in its findings. TMA tensor maps must use CU_TENSOR_MAP_DATA_TYPE_TFLOAT32 (round on load); FLOAT32 truncates and fails (r2).
+- #35 cache hints (r2): L2 evict_first is used only on the TMA/bulk loads of this call's own weight buffer and evict_last/evict_first only on this call's outputs; no applypriority, no persisting-L2 windows. Record the hint in the card's paths (w: ef) so the emulator can learn the portal ratio of hinted paths.
+- #35 portal ratios (r2, H15): emulator predictions for tensor-core-bound paths must use 1.21-1.31 portal/rented (1.10-1.15 for hand-written tcgen05 kernels that throttle the rented card to 1.64-1.75 GHz, r4); DRAM-bound paths 1.03-1.08. The r1 emulator overpredicted L (0.603 predicted vs 0.5884 portal) by ignoring this.
+- #35 measurement (r3, operator): judge B >= 192 designs by SM cycles (clock64 in-kernel, with %globaltimer to recover the rented SM clock, which drifts 1350-1965 MHz between runs) or by tensor-pipe efficiency per clock, not by rented microseconds alone. Predict the portal time as max(1.05 x rented DRAM-bound time, rented compute cycles / ~1.55 GHz). Every probe records the clock it ran at. Cycle counts of tcgen05 rings are clock-invariant (r4-e3: identical at 1.14 and 1.9 GHz), so cycles are the portable quantity.
+- #35 dispatch (r3, operator): the r2 B <= 131 path (tc_small, evict_first, 144 one-SM CTAs) stays unchanged; new work targets 131 < B <= 512 first, then L.
+- #35 comparison baseline (r4): a hand-written kernel for B > 256 must be compared, in the same probe and in SM cycles, against the CUTLASS tile it replaces (256x192 for 373/384 and 691+, 256x256 for 449/512), not against tc_small or tc_pair. CUTLASS's clock is read with a tiny clock64/globaltimer kernel launched immediately before and after it in the same probe (pynvml is missing in the containers).
+- #35 cycle accounting (r5, replaces r4): per-stage time of a tcgen05 ring is max(MMA clk per stage, per-stage floor), where the floor is about 950-1200 clk (about 575 ns) in our hand-written rotating rings and at most about 600 clk in CUTLASS's warp-specialised pipeline. There is no ingest ceiling (H24 refuted: feed-only reaches 93-100 B/clk per SM). Every probe reports MMA clk per stage, the measured per-stage time and which term binds. Design stages so that MMA work per stage >= the floor.
+- #35 hand-written epilogues (r4-e2 lesson): check ptxas output for stack frame / local memory after any change to the TMEM -> register -> global remap; a per-column remap put a 16-element array in local memory and cost 22-33k clk per CTA. Remap per 8- or 16-column group only.
+- #35 probe infrastructure (r4): /tmp in probe containers is not reliably kept between probes; every timing probe rebuilds the CUTLASS TUs (18-39 s) and the hand kernels (1.5 s) and interleaves all variants in 3 rounds inside one process.

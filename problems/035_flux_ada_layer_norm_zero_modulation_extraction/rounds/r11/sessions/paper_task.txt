@@ -1,0 +1,46 @@
+PAPER-DESIGN SESSION (no GPU, no code). Another session will build and test what you propose, so your job is ideas
+with honest arithmetic.
+
+Scope: only the 8 large workloads, batch_size 373, 384, 449, 512, 691, 773, 853 and 919. The sizes <= 211 are handled
+by a different kernel and are out of scope.
+
+Where the current best stands on the portal (locked SM clock, about 1.5 GHz):
+| B | 373 | 384 | 449 | 512 | 691 | 773 | 853 | 919 |
+| time us | 59.8 | 59.7 | 64.6 | 68.4 | 101.6 | 107.1 | 111.7 | 112.5 |
+| useful PF/s (2*B*3072*18432 per call) | 0.71 | 0.73 | 0.79 | 0.85 | 0.77 | 0.82 | 0.86 | 0.93 |
+
+Target: an average of at least 1.1 PF/s over these sizes (for example 919 in <= 95 us, 691 in <= 71 us, 512 in
+<= 53 us, 373 in <= 40 us). That is worth about +0.06 of mean score. The public leader's score implies roughly
+1.2 PF/s here.
+
+Settled facts; do not spend effort re-deriving them:
+- Precision: FP16 operands (cvt.rn from fp32) with fp32 accumulation pass the tolerance (max error 1.5-1.8e-3 vs atol
+  2e-3) and run on tcgen05 kind::f16 at 2x the kind::tf32 rate. BF16 and FP8 operands fail the tolerance. TF32
+  tops out near 0.65 PF/s at the portal clock, far below the target.
+- At the portal clock the kind::f16 ideal is about 1.3 PF/s over 148 SMs.
+- W (18432 x 3072 fp32, 226 MB) must be read from the fp32 input on every call; nothing may be cached between calls.
+  Our best measured pure read stream of W under the harness's L2 flush is 38 us (5.96 TB/s, rented card).
+- Converting W to fp16 in a separate pass first (read 226 MB, write 113 MB, then read 113 MB) costs at least
+  45-50 us more and is too slow. emb is small (B x 3072 fp32, at most 11 MB), so converting it in a pre-pass or
+  per CTA is cheap.
+- cuBLAS with fp32 inputs and CUBLAS_COMPUTE_32F_FAST_16F runs TF32 kernels, not FP16 ones.
+- The output is six fp32 tensors of shape [B, 3072] (columns j*3072..(j+1)*3072 of the GEMM result plus bias).
+
+Your report:
+1. Eight genuinely different designs for these sizes. At most two may be variations of the obvious design (whole
+   warps load fp32 W into registers, convert to fp16 and store into a shared-memory stage that the MMA reads).
+   At least three must differ in where operands live on their way to the tensor cores, or in which operand sits in
+   the MMA's M position, or in how the work is split across SMs (split-K, stream-K, other tile shapes, clusters
+   larger than 2 with multicast, ...). Anything inside the core brief's rules is allowed.
+2. For each design:
+   a. the idea in one or two lines;
+   b. the path each W byte and each emb byte takes from DRAM to the tensor cores, naming the unit that moves or
+      converts it (TMA, LSU/registers, shared memory, tensor memory, L2);
+   c. a per-SM budget at B = 919 and B = 512 at 1.5 GHz: DRAM bytes, L2-to-SM bytes, shared-memory bytes read and
+      written per k-block against 128 B/clk, issued warp-instructions per k-block against 4 per clk, MMA clocks per
+      k-block, tensor-memory columns used;
+   d. the binding limit and the estimated time at 919 and at 512;
+   e. the riskiest assumption, and a probe of at most 10 minutes on a B200 that would test it.
+3. A ranking by (estimated time) x (chance of working within one two-hour build session), and the two designs whose
+   probes you would run first.
+Keep it under about 2500 words. No code blocks longer than 15 lines. Do not return an OUTPUT CONTRACT candidate.

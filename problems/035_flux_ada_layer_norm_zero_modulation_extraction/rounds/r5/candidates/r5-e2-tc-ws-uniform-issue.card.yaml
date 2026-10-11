@@ -1,0 +1,165 @@
+id: r5-e2-tc-ws-uniform-issue
+parents:
+  - r4-e3-ingest-probe-pair-parent
+  - r3-e2-tc-pair-kbs2
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The 950-1200 clk per-stage floor of our hand-written tcgen05 rings comes from code generation (H25 supported,
+  source named). A single-lane MMA issuer (warp == 1 && lane == 0) makes nvcc wrap every UTCHMMA in an
+  ELECT + BRA.U.ANY uniformity loop. A CUTLASS-style ring removes it: whole-warp producer and MMA loops, an elected
+  issue, and the commit multicast to the empty barriers. The 2SM ring then runs at the MMA ideal (N=384 kbs1: 770
+  clk vs 768). The new two-accumulator kernel serves B > 256 (one batch tile to 512, two above). It replaces CUTLASS
+  and the floor-bound rings: rented -16/-18/-16/-9% at 373/384/449/512 and -8/-13/-8/-2% at 691/773/853/919. The
+  kernel is cycle-bound (about 1.6 GHz rented vs CUTLASS's 1.96), so the portal gain should be larger: 384 about
+  90k clk = 60 us vs 83 portal CUTLASS, and 919 about 215k clk = 143 us vs 168.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -9
+    confidence: medium
+  L:
+    pct: -13
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 48
+  smem_per_cta_bytes: 230400
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  WS_THREADS: 256
+  WS_KBS_NTILE_LE_256: 2
+  WS_KBS_NTILE_GT_256: 1
+  WS_NB: "1 for B <= 512, 2 above"
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+  - max_tokens: 512
+    kernel: tc_ws_kernel
+    meta:
+      launches: 1
+      nb: 1
+      kbs: 1
+  - max_tokens: null
+    kernel: tc_ws_kernel
+    meta:
+      launches: 1
+      nb: 2
+      kbs: 1
+tests:
+  - H25
+  - H23
+  - H19
+  - H22
+findings:
+  - "VERDICT H25: supported, source named. The per-stage floor is a codegen artefact. With the issuer as a single lane in a divergent branch (warp==1 && lane==0), nvcc wraps every tcgen05.mma in an ELECT + BRA.U.ANY waterfall (SASS: 15-16 ELECT, 43 PLOP3 in the kernel). With warp-uniform roles (warp index via __shfl_sync, whole-warp loop, one elect.sync around the issue) the 8 UTCHMMA are issued back to back (4-5 ELECT). Neither the commit form, the barrier scope, the rotation nor the TMA causes the floor [probe_b200]"
+  - "ablation, 2SM 256xN resident ring (no TMA unless noted), kbs1, nk 384, one container at 1614-1842 MHz, 3 rounds identical to 1 clk. clk/stage lane0 | uniform. N=192 (MMA 384): a fixed stage, no barriers 629 | 565; b rotating, no barriers 800 | 565; c MMA thread waits empty S back 1272 | 879; d same, wait every 2nd 1126 | 783, every 4th 1054 | 735; e 2-warp ring (producer warp arrives full) 1069 | 682; f 2-warp ring with L2-hot TMA feed 1072 | 686. N=384 = 256+128, two accumulators (MMA 768): a 769 | 769; b 801 | 770; c 1276 | 898; d2 1130 | 803; d4 1058 | 770; e 1073 | 770; f 1075 | 773 [probe_b200]"
+  - "ablation readout: rotation costs 170 clk only with the lane-0 waterfall (800 vs 629) and nothing with uniform issue (565 = 565). An empty wait inside the MMA thread still costs about 130-310 clk with uniform issue (c 879/898 vs e 682/770), so the producer must be a separate warp. A floor of about 565 clk per commit group of 4 N=192 UMMAs remains even fixed and barrier-free; the 2-warp ring then sits at 682-686 at N=192 (success target <= 650 missed by 5%) and 770-773 at N=384 (target <= 850 met) [probe_b200]"
+  - "1SM 128xN CTA-local ring (no cluster): uniform issue does not help. N=192: e 1071 | 1008, f 1073 | 1011; N=384 (256+128 per CTA): a 769 | 789, b 896 | 974, e 1170 | 1145, f 1176 | 1149. Rotation costs 1SM 100-185 clk even with uniform issue (probably smem operand bandwidth: 1SM N=384 reads 2x the B rows per SM). The CTA-local barrier scope gives no advantage; 2SM is the shape to use [probe_b200]"
+  - "step 5 real W from DRAM (252 MB zero flush, evict_first, 72 pairs, nk 96, 2-warp fed ring kbs1), clk per k-block lane0 | uniform: Bpad192 S4 1110-1119 | 777-810; Bpad384 S4 1117-1121 | 837-929; Bpad384 S5 1119-1126 | 830-833 (target <= 900 met); Bpad464 S4 1123-1130 | 976-987 (ideal 928); Bpad512 S4 1123-1127 | 1076-1081 (ideal 1024). Event wall at 384 S5: 71.7 vs 57.3 us [probe_b200]"
+  - "CUTLASS 4.4 PipelineTmaUmmaAsync read: consumer_release -> umma_arrive_multicast_2x1SM(empty, block_id_mask), the same commit form as ours; producer_acquire waits empty and the leader arrive_and_expect_tx carries both CTAs' bytes, as ours; the waits run on the whole warp and the issue is under cute::elect_one_sync inside warp-uniform role branches. The only structural difference that matters is warp-uniform issue. Not tested (moot after the fix): acquire.cluster vs acquire.cta try_wait, leader-only commit plus a local arrive, removing fence::before_thread_sync [probe_b200]"
+  - "run_tests 16/16 PASS (10 rounds each), one launch. Rented us vs r3-e2-tc-pair-kbs2 on the same GPU: 373 57.8 vs 68.6 (-15.8%), 384 56.3 vs 68.3 (-17.6%), 449 67.8 vs 80.5 (-15.7%), 512 73.9 vs 80.7 (-8.5%), 691 102.2 vs 110.6 (-7.7%), 773 114.0 vs 130.6 (-12.7%), 853 122.3 vs 132.3 (-7.6%), 919 130.1 vs 133.3 (-2.4%); B <= 256 unchanged code within +-1.6%. Bands S -0.5% M -6.9% L -9.2%; emulator 0.6399 +- 0.012 (P beat 98%, no paths passed) [run_tests]"
+  - "first version (tc_ws for every B > 131, CUTLASS removed) also 16/16: 192 46.2 vs 45.5 (+1.5%), 211 49.7 vs 48.3 (+2.9%), so 131 < B <= 256 was routed back to r3 tc_pair [run_tests]"
+  - "B <= 256 regression isolated in cycles (span main loop -> accum, real W, flush). Power-capped clock 1.13-1.27 GHz: tc_pair (lane0, 3D W box, kbs2) 514-546 clk/kb at 192 and 572-627 at 256; tc_ws kbs2 or kbs1 612-615 and 727-742. Burst clock 1.66-1.76 GHz: both DRAM-bound (pair 674-726, ws 674-732). tc_ws is cycle-bound at ntile <= 256, scaling about 1.9 clk per column per k-block. Not the cause: 128 vs 256 threads, idle warps nanosleep vs spin, kbs1 vs kbs2. Untested difference: 2D W map with one TMA per k-block vs the 3D kbs-box map [probe_b200]"
+  - "tc_ws at power-capped clock (1.13-1.27 GHz), clk per k-block for one tile: Bpad 384 806 (ideal 768, 95%), 464 (B=449) 968 (ideal 928, 96%), nb2 464 (B=919) 962 per pass (96%). Cycles are clock-invariant; the B > 256 kernel is MMA-bound within 4-5% [probe_b200]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn), tc_ws: 132 1.57e-3, 192 1.58e-3, 211 1.46e-3, 256 1.68e-3, 257 1.70e-3, 373 1.64e-3, 384 1.57-1.63e-3, 449 1.63-1.67e-3, 512 1.60e-3, 513 1.60e-3, 691 1.61e-3, 773 1.58e-3, 853 1.54e-3, 919 1.60-1.72e-3 (one draw at 919 above the 1.7e-3 bar, below atol 2e-3; same class of draw dependence as every TF32 path); bad fraction 0 at every B [probe_b200]"
+  - "static: tc_ws 48 regs, 48 B stack (the OutPtrs param array is indexed dynamically: 6 STL + 1 LDL per thread, once), 0 spills, 272 B static smem; 1 CTA/SM through dynamic smem (>= 150 KB at every B > 256) so the 512-column TMEM allocation never contends [probe_b200]"
+  - "portal prediction (cycles / 1.5 GHz + fixed costs): 373/384 about 78k main loop + 10-12k ramp and epilogue = 60 us vs 83 portal CUTLASS (-25%); 449 93k + 12k = 70 us vs 101 (-30%); 512 104k + 12k = 77 us vs 102 (-24%); 919 two waves of about 105k = 143 us vs 168 (-15%); 691 about 125 us vs 138 (-9%). Rented run_tests understates these because CUTLASS runs at 1.96 GHz there and the hand kernels throttle to about 1.6 GHz [analysis]"
+  - "consequence for H26: 48-k stages are no longer needed to hide the floor; the floor is gone at N >= 384. For H22, the nb2 L tiles are MMA-bound per pass (962 clk at 464); the remaining L loss is the second wave plus the unoverlapped 8-warp epilogue (about 15-18k clk per wave by rented wall time) [analysis]"
+  - "lesson for every hand-written tcgen05 kernel (tc_small and tc_pair still use lane-0 issue): put role branches on a warp-uniform warp index (__shfl_sync) and issue under elect.sync; check the SASS for ELECT/BRA.U.ANY around UTCHMMA [probe_b200]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "B > 512 runs two waves (144 pairs on 74 slots), with the epilogue not overlapped; at 919 the rented gain is only -2.4% against CUTLASS at a higher clock, so the portal L gain depends on the hand kernel being cycle-bound (predicted -15%)"
+  - "One max-error draw at B=919 reached 1.72e-3 (above the 1.7e-3 bar, below atol 2e-3), the same class as the other TF32 paths; the 10-round harness check passed"
+  - "tc_ws is slower in cycles than tc_pair at ntile <= 256 for an unresolved reason (2D vs 3D W TMA box suspected); that range stays on tc_pair"
+  - "CUTLASS is removed from the solution; any B > 256 shape now depends on the hand-written kernel (correct on 14 B values 132-919 in the probe plus the 16 workloads x 10 rounds)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

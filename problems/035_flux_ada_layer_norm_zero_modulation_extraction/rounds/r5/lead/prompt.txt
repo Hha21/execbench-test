@@ -1,0 +1,390 @@
+=== TASK ===
+Round r5: update the hypothesis ledger and design 3 experiments.
+
+BRIEF FROM THE OPERATOR FOR THIS ROUND:
+r4 outcome:
+- r4-e1-tc-pair2-twoacc has been sent to the portal (result pending). It contains r3's pair path for 131<B<=256 plus tc_pair2 for 256<B<=512. Net of clock drift it is about -11% at 449 and -6% at 512, and about 0% at 373/384, where 1-k-block stages pay the ~575 ns per-stage fixed cost.
+- r4-e2 built an independent 2-CTA pair kernel. Its nb=2 version (two batch tiles per W tile) is -6.5/-6.8% at 773/853, +1% at 919 and +8% at 691 vs CUTLASS in the same container. Its nb=1 version beats the best CUTLASS tile by 8-15% at B=373-512. That version was not shipped because its task said to leave that band alone.
+- r4-e3 probes: the per-stage floor is hidden for N>=464 and not at N=384; feed-only throughput exceeds 90 B/clk; cycle counts are identical at 1.14 and 1.8-1.96 GHz.
+
+Priority for r5 is a merge, plus fixing 373/384.
+- One task should build a single per-B dispatcher from the existing kernels: r4-e1's paths, r4-e2's nb=1 kernel at 373/384 (and compare it with tc_pair2 at 449/512), r4-e2's nb=2 kernel at 773/853, and CUTLASS at 691/919 unless beaten. Choose each B's winner from interleaved runs in one container, with the clock reported.
+- Expected value by the Tsol model: roughly +0.012 on the mean over r2 if all of these gains land.
+- A second task can attack the per-stage fixed cost at Bpad 384, for example kbs=2 stages with a smaller W tile or fewer stages, or by splitting N.
+- Keep r2's B<=131 path unchanged.
+
+=== PROBLEM ===
+L1/035_flux_ada_layer_norm_zero_modulation_extraction: 16 workloads, variable axes ['batch_size']; bands by size: S <= 237.6 MB < M <= 259.6 MB < L
+                 5     227.00 MB  band S
+                16     227.94 MB  band S
+                32     229.32 MB  band S
+                96     234.82 MB  band S
+               128     237.58 MB  band S
+               131     237.83 MB  band M
+               192     243.08 MB  band M
+               211     244.72 MB  band M
+               373     258.65 MB  band M
+               384     259.60 MB  band M
+               449     265.19 MB  band L
+               512     270.61 MB  band L
+               691     286.00 MB  band L
+               773     293.06 MB  band L
+               853     299.94 MB  band L
+               919     305.61 MB  band L
+note: Precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation IS allowed on this problem: inputs and outputs stay fp32, the tolerance is met, the paper permits downcasting when input and output dtypes match, and the portal's own scoring baseline runs at TF32 speed (613 TFLOP/s at B=919). bf16/fp16 operands stay forbidden (they also fail the tolerance), and so does BF16x9 emulation. Keep a margin: TF32's max error is 1.6e-3 against atol 2e-3, so accumulate in fp32 and never round outputs or intermediates. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 would pass it (measured max error 1.6e-3, typical ~3e-4) and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match and the tolerance is met.
+
+=== HYPOTHESIS LEDGER (problems/035_flux_ada_layer_norm_zero_modulation_extraction/ledger.yaml) ===
+# Hypothesis ledger for #35 (035_flux_ada_layer_norm_zero_modulation_extraction). Seeded 2026-10-10 (research round r0); updated r1 2026-10-10; updated r2 2026-10-10; updated r3 2026-10-10; updated r4 2026-10-10.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells, TMA multicast of a GEMM operand); inherited from #38: clustered row-wise grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 / 8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented, plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3 vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
+- '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
+- '#35 TF32 margin (operator, r1): accumulate in fp32 over the full K = 3072 inside one tensor-core accumulator; no split-K whose partials are stored or re-fed below fp32; no rounding of outputs or intermediates. Every candidate records max |err| vs fp64 per B (must stay <= 1.7e-3 against atol 2.0e-3) in its findings. TMA tensor maps must use CU_TENSOR_MAP_DATA_TYPE_TFLOAT32 (round on load); FLOAT32 truncates and fails (r2).'
+- '#35 cache hints (r2): L2 evict_first is used only on the TMA/bulk loads of this call''s own weight buffer and evict_last/evict_first only on this call''s outputs; no applypriority, no persisting-L2 windows. Record the hint in the card''s paths (w: ef) so the emulator can learn the portal ratio of hinted paths.'
+- '#35 portal ratios (r2, H15): emulator predictions for tensor-core-bound paths must use 1.21-1.31 portal/rented; DRAM-bound paths 1.03-1.08. The r1 emulator overpredicted L (0.603 predicted vs 0.5884 portal) by ignoring this.'
+- '#35 measurement (r3, operator): judge B >= 192 designs by SM cycles (clock64 in-kernel, with %globaltimer to recover the rented SM clock, which drifts 1350-1965 MHz between runs) or by tensor-pipe efficiency per clock, not by rented microseconds alone. Predict the portal time as max(1.05 x rented DRAM-bound time, rented compute cycles / ~1.55 GHz). Every probe records the clock it ran at.'
+- '#35 dispatch (r3, operator): the r2 B <= 131 path (tc_small, evict_first, 144 one-SM CTAs) stays unchanged; new work targets 131 < B <= 512 first, then L.'
+- '#35 comparison baseline (r4): a hand-written kernel for B > 256 must be compared, in the same probe and in SM cycles, against the CUTLASS tile it replaces (256x192 for 373/384 and 691+, 256x256 for 449/512), not against tc_small or tc_pair.'
+- '#35 cycle accounting (r4): per-stage time of a tcgen05 ring is modelled as max(MMA clk per stage, commit-chain floor 551-674 clk, stage bytes / ingest ceiling 50-65 B/clk per SM); every probe reports which of the three terms it hit, so the archive learns the model rather than isolated times.'
+hypotheses:
+- id: H1
+  statement: The reference's cuBLAS SIMT sgemm is within 25-30% of the FFMA peak at M/L, so FFMA-only designs cannot gain more than about 1.3x there; packed fma.f32x2 adds no throughput.
+  status: supported
+  evidence:
+  - 'probe: cutlass3x_sm100_simt_sgemm 55-57 TF/s at B=384/919 vs 74.4 TF/s peak at 1965 MHz [probe_b200]'
+  - 'probe: FFMA 67.6 TF/s vs FFMA2 (fma.rn.f32x2) 73.5 TF/s on 148x8 CTAs: same 128 FMA/clk/SM datapath [probe_b200]'
+  - 'r1: moot since the TF32 ruling and Tb = TF32 speed; FFMA paths cannot score anywhere (B=5 skinny 76.1 us portal vs Tb 82.8)'
+- id: H2
+  statement: 3xTF32 (hi/lo split, three TF32 tensor-core GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster than the reference at L even with a separate split pass and scatter.
+  status: parked
+  evidence:
+  - 'probe: max error vs fp64 4.3e-5 (fp32 cuBLAS 1.6e-5, tolerance atol 2e-3) at B=919; gemms 415 us + split 112 + scatter [probe_b200]'
+  - 'run_tests r0: 575 us at 919 vs 1882 reference, 345 at 384 vs 762, 16/16 pass on 10 random rounds [r0-adamod-dispatch-skinny-fp32-3xtf32]'
+  - 'portal r0: 688.9 us at 919 scores 0.151 against Tb 169.8 (TF32 speed); retired by the 2026-10-10 TF32 ruling'
+- id: H3
+  statement: A fused tcgen05 3xTF32 kernel (TMA load, hi/lo split in shared memory, 3 MMAs per k-block, bias + six-way split in the epilogue, one launch) removes the 107-112 us split pass and the 7-47 us scatter and reaches max(3 x FLOPs / 588 TF/s, memory floor).
+  status: parked
+  evidence:
+  - 'estimate: 531 us at 919 at the lock vs r0 575 rented (~690 at the lock); 76-222 us at M vs 272-345; ~55-75 us at S vs 256'
+  - 'r1: superseded by plain TF32 (ruling); 3 MMAs per k-block can never reach Tb (169.8 us at 919 = 613 TF/s). The fused-epilogue part lives on as H14'
+- id: H4
+  statement: For B <= 128 one M-tile covers all rows, so a tensor-core TF32 kernel streams W exactly once and the S band is memory-bound; the S floor is the evict_first reads-only stream (39-40 us rented, H16), not the 50 us plain stream cuBLAS sits at.
+  status: supported
+  evidence:
+  - 'probe: plain cuBLAS TF32 runs 50-51 us at B=5..128 rented, i.e. at the dirty-L2 plain stream floor [probe_b200]'
+  - 'portal r0: Tb 82.8-90.7 us at B<=128, Tsol about 15 us; t = 50 us scores 0.66, t = 40 us 0.73'
+  - 'portal r1: CUTLASS 128x64/256x64 at 57.0/50.4/50.5/59.5/59.9 us (B=5..128) score 0.62-0.66; r1-ef mma.sync stream kernel 41.6/43.6 rented at B=5/16 shows the hinted floor is reachable with a GEMM attached'
+  - 'portal r2: tc_small 44.1/44.1/44.5/45.2/47.1/47.8 us at B=5..131 (scores 0.70-0.72), ratio 1.03-1.08 vs rented: DRAM-bound as predicted [r2-e1-tc05-ef-small]'
+- id: H5
+  statement: The skinny SIMT kernel (lane = W row, cp.async-staged 128x64 tiles, emb broadcast from smem) is at the copy floor at B=5 but issue/latency bound at B=16 and 32; 2 CTAs/SM and 2-row-per-lane register tiling recover the 32-64 us FFMA floor.
+  status: parked
+  evidence:
+  - 'probe: 54.6 / 88.8 / 145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs, 108-129 KB smem); run_tests 60.6 / 88.3 [probe_b200, r0]'
+  - 'dead end: skinny<32> loses to cuBLASLt fp32 (122 us) so B=32 stays on the library path in r0'
+  - 'portal r0: 76.1 us at B=5 (x1.26 vs rented: it scales with the SM clock, so it is issue-bound, not DRAM-bound); cuBLAS TF32 at 50 us beats it. Parked'
+- id: H6
+  statement: cuBLAS BF16x9 emulation is a legitimate one-call fp32-level path (error 3.4e-6) but is slower than 3xTF32 at L and falls back to SIMT below B~64.
+  status: refuted
+  evidence:
+  - 'probe: 117 / 131 / 177 / 358 / 754 us at B=5/32/128/384/919, maxerr 3.4e-6; r0 3xTF32 path 575 at 919 [probe_b200]'
+  - 'operator ruling 2026-10-10: BF16x9 emulation stays forbidden; and it is 4x slower than Tb at 919 anyway'
+- id: H7
+  statement: SOLAR's Tsol for this problem uses the FP32 CUDA-core peak, so 3xTF32 designs can go below Tsol at M/L (scores above 0.5 come cheaply there and the S band decides the ranking).
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol = (Tb - S t - S Tb)/(1 - 2S) gives 15.0 us at B=5, 23.7 at 373, 57.9 at 919 = FLOPs / 1.8 PF/s (bf16-like dense rate, 2x the TF32 peak), floored at about 15 us for B <= 211'
+  - 'consequence: no TF32 kernel can reach Tsol; the lock-time TF32 peak (909 TF/s, 115 us at 919) scores at most 0.66 there'
+  - 'r2: the Tsol model reproduces the r2 portal score 0.610 from the per-workload times; 75% of TF32 peak at every B would score about 0.68, 85% about 0.71 [operator brief r3]'
+- id: H8
+  statement: The hidden Tb is close to the fp32 reference (~2.4 ms at 919 at the lock), not a TF32-enabled PyTorch solution (~180 us).
+  status: refuted
+  evidence:
+  - 'portal r0: Tb = 82.8 / 83.1 / 84.8 / 90.1 / 90.7 (B=5..128), 93.8-110.5 (M), 119.1-169.8 (L) us; 169.8 at 919 = 613 TF/s: a TF32 PyTorch matmul at the lock, slightly faster than our rented cuBLAS TF32 scaled by 1.31 (177 us)'
+- id: H9
+  statement: The separate scatter and any tmp[B,18432] round trip cost 5 us at B=5 and 22 us at 919 (3-13% of Tb, not the 28% first estimated); a fused epilogue that adds the bias and picks the output tensor by column chunk gains that much and no more before the GEMM itself improves.
+  status: supported
+  evidence:
+  - 'probe r1-e1: GEMM alone 49.5 vs 55.1 with scatter at B=5; 135 vs 157 at 919. r0''s 47 us figure was inflated by the 453 MB scratch traffic [probe_b200]'
+  - 'portal r1: fused CUTLASS 167.9 us at 919 vs Tb 169.8 (cuBLAS TF32 + bias pass): the fused epilogue is worth about the scatter and the GEMM rate is identical to Tb''s'
+- id: H10
+  statement: 'L2 evict_first on the W stream removes most of the dirty-L2 write-back penalty from the timed window (reads-only 45.9 -> 39.9 us plain LDG, 45.0 -> 38.7 bulk ring); store hints on the outputs are not a lever (<= 0.5 us).'
+  status: supported
+  evidence:
+  - 'probe r1-ef: with the harness zero-flush, plain LDG.128 45.9 us, evict_first 39.9; bulk ring 45.0, bulk + evict_first 38.7; ld.global.v8 256-bit 41.5 (no gain) [probe_b200]'
+  - 'probe r1-ef: read-based flush gives 38.9 us for every variant; so the dirty write-back costs 6-12 us for plain reads and 4-5 us with evict_first [probe_b200]'
+  - 'probe r1-ef: reads + six outputs at B=128: st default 40.3, evict_last 39.8, evict_first 40.3 us [probe_b200]'
+  - 'probe r2-e1: evict_first on the W TMA loads saves 6-9 us at every B <= 256 inside one container (45.5 vs 51.7 at B=5, 48.1 vs 57.0 at 211); the saving varied 1.5-9 us between containers [r2-e1-tc05-ef-small]'
+  - 'portal r2: the hinted path landed at 44.1-47.8 us for B <= 131 vs 50.4-59.9 unhinted CUTLASS in r1 (-12..-24%) [r2-e1-tc05-ef-small]'
+- id: H11
+  statement: cuBLASLt CUBLAS_COMPUTE_32F_FAST_TF32 with a bias epilogue plus a scatter is a 16/16-correct path at 55-177 us rented (score about 0.54); cuBLAS 13's batched pointer-array mode over the six chunks removes the scatter at no GEMM cost.
+  status: refuted
+  evidence:
+  - 'run_tests r1-e1: 55.5/54.1/54.8/59.5/60.4 (S), 62.7-94.5 (M), 99.3-177.0 (L) us, 16/16, emulator 0.537 [r1-e1-lt-fasttf32-bias-scatter]'
+  - 'refuted part: pointer-array batched GEMM (bias via C broadcast, pinned pointer arrays) is 12-43% slower than big GEMM + scatter at every B; bias epilogue + pointer array is NOT_SUPPORTED; the pointer arrays must change per call and reach the GPU over PCIe [probe_b200]'
+  - 'superseded: the CUTLASS fused epilogue (H14) is faster at every B and needs no library heuristics'
+- id: H12
+  statement: 'tcgen05 TF32 stops at about 68% of the 909 TF/s lock-time peak (cuBLAS 613 TF/s = Tb; our 2SM 256x192/256x256 the same) because of operand traffic through shared memory: a 2SM 256x256x8 MMA needs 8 KB of TMA writes and 12 KB of MMA reads per CTA per 128 clk (160 B/clk against 128 B/clk), a hardware ceiling no tile beats. The alternative is that the loss is shape-specific (72 W tiles, 1-5 batch tiles, K loop of 96 stages, W from DRAM) and a square hot GEMM shows >= 85%.'
+  status: refuted
+  evidence:
+  - 'probe r0: cuBLAS TF32 770 TF/s unlocked at 919 = 65-67% of the 1.19 PF/s TF32 peak at 1965 MHz [probe_b200]'
+  - 'probe r1: swapped 2SM 256x256 142 us, 256x192 135.5, 1SM 128x256 161 at 919: 2SM is 1.13-1.19x 1SM but the best core is 780 TF/s rented, the same as cuBLAS which already uses 2SM 256x256 [probe_b200]'
+  - 'portal r1: L ratio portal/rented 1.25-1.27 (clock ratio 1.31): SM-clock-bound, not DRAM-bound'
+  - 'probe r2-e3: cuBLAS TF32 on hot 4096^3 / 8192x8192x2048 / 8192^3 reaches 69-72 / 75 / 71% of the clock peak, BF16 71 / 79 / 69%: TF32 is not uniquely capped. Power-capped runs at 1190-1330 MHz reach 89-96% per clock, so the ceiling does not scale with the SM clock: not smem-port or issue-rate bound; likely L2/fabric operand bandwidth (~13 TB/s in both dtypes) [r2-e3-tf32-ceiling-r1tiles]'
+  - 'probe r2-e3: cuBLAS on our shape at B=1024 (no padding) gets 75% per clock; B=919 gets 68.5% only because of N padding to 960. Both halves of the statement are refuted; what remains is a ~75% practical ceiling at 1965 MHz plus padding and quantisation losses [r2-e3-tf32-ceiling-r1tiles]'
+  - 'r4 re-reading: the ~75% ceiling is explained by H24 (per-SM TMA ingest of 50-65 B/clk): 256x256 needs 64 B/clk, 256x192 73 B/clk per SM'
+- id: H13
+  statement: Re-reading W from L2 once per 128- or 256-row M-tile is the second limiter at L; a cluster of 2-4 CTAs along M with TMA multicast of the W tile cuts it to 1-2 passes.
+  status: refuted
+  evidence:
+  - 'probe r1: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]'
+  - 'probe r1: raster AlongN (batch tiles of one W tile together) already reads W from DRAM once; AlongM re-reads it and costs 306 vs 148 us [probe_b200]'
+  - 'probe r2-e3: cluster 2x2 (W multicast to two pairs along batch) 20-30% slower at 384-919 [r2-e3-tf32-ceiling-r1tiles]'
+- id: H14
+  statement: 'A one-launch CUTLASS sm100 TF32 kernel with the bias and the six-way split in the epilogue (output pointer picked by N-tile) removes the scatter and the tmp round trip and matches cuBLAS GEMM-only time at every B.'
+  status: supported
+  evidence:
+  - 'run_tests r1: 51.0/48.8/49.0/55.5/56.0 (S), 57.0-68.5 (M), 79.6-133.6 (L) us rented, 16/16, one launch, builds in 31-39 s per variant [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'portal r1: 0.5884; S/M/L 55.3/69.6/136.9 us; predicted 0.603 (L overpredicted: the GEMM rate did not beat Tb''s, see H12/H15)'
+  - 'dead end: 2SM 128xN tiles with N >= 128 trip a device assertion in the no-smem epilogue TMEM load; 128x64 is fine [probe_b200]'
+  - 'probe r2: among tiles that build, the r1 dispatch (256x192 for 131-384 and 691+, 256x256 for 449/512) is already the per-B minimum; K tile 16/64, swizzle 2/4 and clusters 2x2/4x1 all lose [r2-adamod-stream16-cutlass-tf32, r2-e3-tf32-ceiling-r1tiles]'
+- id: H15
+  statement: Portal/rented time ratios on #35 are 1.21-1.31 for SM-clock-bound paths (tensor core, issue-bound SIMT) and 1.03-1.08 for DRAM-bound paths; the emulator must use the path's bound, not the language, to predict the portal time. The portal SM clock is about 1.55 GHz against the rented card's ~1.97 GHz in short runs.
+  status: supported
+  evidence:
+  - 'portal vs rented r0: skinny B=5 76.1/60.6 = 1.26; cuBLASLt fp32 B=32 142.3/123.7 = 1.15; 3xTF32 B=919 688.9/574.6 = 1.20'
+  - 'portal vs rented r1 (CUTLASS): B=16/32 1.03, B=96/128 1.07, B=5 1.12 (128x64 tile, 2 waves), M 1.07-1.19 rising with B, L 1.25-1.27'
+  - 'portal vs rented r2 (tc_small): B <= 131 1.03-1.08 (DRAM-bound); B=192/211 1.26/1.26 (62.2/64.0 vs 49.3/50.6 rented): the kernel is compute-bound at the lock from B=192, and its rented -14/-16% gain vanished (r1 was 61.3/65.6 there). B >= 373 1.21-1.28 as in r1 [r2-e1-tc05-ef-small]'
+  - 'probe r2-e3: the rented clock drifts 1349-1965 MHz with sustained load, so rented differences of ~7% between sessions with identical code are clock, not kernel [r2-e3-tf32-ceiling-r1tiles]'
+  - 'dead end: nvidia-smi -lgc is not permitted on the rented card; the ratio comes from portal pairs only'
+  - 'r3: the cycles/1.55 GHz rule underpredicts tc_small at 192/211 by about 11% (86k cycles -> 55.5 us predicted, 62.2/64.0 measured); the pending r3-e2-tc-pair-kbs2 portal result is the next calibration point [r3-e3-tc05-emb-mcast2]'
+- id: H16
+  statement: Any kernel that reads W once pays the dirty-L2 write-back (about 126 MB) on top of 227 MB, so the S/M floor under harness conditions is 45-53 us.
+  status: refuted
+  evidence:
+  - 'probe r1-ef: reads-only floor with the harness flush is 39-40 us with evict_first (38.9 with a read-based flush): the hinted reads recycle their own lines and the write-back leaves the timed window [probe_b200]'
+  - 'consequence: S scores can reach about 0.73 (t = 40 us vs Tb 83); portal r2 reached 44.1-47.8 us (0.70-0.72) [r2-e1-tc05-ef-small]'
+- id: H17
+  statement: 'A fused tcgen05 TF32 kernel whose W loads carry L2 evict_first (one N tile for B <= 128: 144 one-SM CTAs of 128 W rows, N = B padded to 16, >= 96 KB of W in flight; N = 256 tiles for 131-256) reaches 42-45 us rented at every B <= 128 and about 45-50 us at 131-211, against 49-61 us for the unhinted CUTLASS tiles; portal ratio about 1.05 (DRAM-bound). Worth about +0.03.'
+  status: supported
+  evidence:
+  - 'probe r1-ef: reads-only evict_first floor 39-40 us; mma.sync version 41.6/43.6 at B=5/16 but 63 at B=32 (mma.sync is compute/issue-bound above B ~ 16) [r1-ef-bulk-tf32-stream-b16]'
+  - 'run_tests r2: 42.7/42.0/42.4/43.5/45.7/44.1 us at B=5..131 rented, 49.3/50.6 at 192/211; 16/16 [r2-e1-tc05-ef-small]'
+  - 'portal r2: 0.6108 (+0.022 vs r1); B <= 131 44.1-47.8 us (-12..-24% vs r1, ratio 1.03-1.08). Supported for B <= 131. The 192/211 part is refuted at the portal: 62.2/64.0 us (ratio 1.26), the one-SM kernel at kbs=1 runs about 440 TF/s rented = 40% of the TF32 peak and is clock-bound at the lock [r2-e1-tc05-ef-small, operator brief r3]'
+- id: H18
+  statement: 'Batch-side tile quantization costs 6-24% at L: the r1 dispatch pads B=449/691/773/853 to 512/768/960/960 columns; per-B N tiles of 240/240/208/224 (multiples of 16, 4 or fewer batch tiles) pad to 480/720/832/896 and gain 6-13% there, about +0.01, provided CUTLASS 2SM 256xN builds and passes for those N.'
+  status: refuted
+  evidence:
+  - 'portal r1: 449 101.4 us = 512 101.9 (same padded work); 691 138.0; 773 164.9 = 853 166.7 = 919 167.9 (all padded to 960): times follow padded N, not B'
+  - 'probe r2: CUTLASS 2SM 256x144/160/176/208/224/240 fail static divisibility asserts in the B-operand smem layout; only batch tiles that are multiples of 64 build [r2-adamod-stream16-cutlass-tf32]'
+  - 'probe r2: 128-wide tiles cost about 5% more per padded column than 192/256, so the reachable padding cut (960 -> 896 at 773/853) is worth 0.7-1.2 us, noise. The padding lever needs a hand-written kernel with N = Bpad (H19) [r2-adamod-stream16-cutlass-tf32]'
+- id: H19
+  statement: 'A hand-written 2SM tcgen05 TF32 kernel for 131 < B <= 512, where one CTA pair (cluster 2, cta_group::2, M = 256 W rows) computes the whole batch in one pass (N = Bpad <= 512 as two UMMAs of N1 = 256 and N2 = Bpad - 256 into two TMEM accumulators, each CTA supplying N/2 emb rows and 128 W rows, full K = 3072 in the accumulators), with evict_first on the W TMA stream, removes N padding beyond 16, wave quantisation (72 pairs on 74, one wave) and the unhinted write-back. For B <= 256 (one accumulator) 2-k-block stages run at the DRAM floor (r3). For 256 < B <= 512 the MMA work per 1-k-block stage (768-1024 clk) exceeds the commit floor (H23) and the stage bytes (40-48 KB per CTA) sit under the ingest ceiling (H24), so kbs = 1 with 4-5 stages is MMA-bound: predicted 77k clk at Bpad 384 and 98k at 512 at 100%, 85-100k and 105-120k at 80-90%, i.e. 54-65 us portal at 373/384 (vs 83) and 68-80 us at 449/512 (vs 103-104). Worth about +0.035 over the four workloads (score model 0.648 with M -15.7%, L -13.4%).'
+  status: open
+  evidence:
+  - 'estimate: compute per SM at 100% is 2 x 128 x Bpad x 3072 FLOP / 4096 FLOP/clk = 73.7k clk at Bpad=384 (37.5 us at 1.965 GHz, 49 at 1.5 GHz) and 98k clk at 512 (50 / 65.6 us); at 75-85% this is 44-50 us rented at 384 vs 68.8 today, 59-67 at 512 vs 81.2 [analysis r3]'
+  - 'r3: the B <= 256 half is built and 16/16 correct: r3-e2-tc-pair-kbs2, 749 clk per k-block at 192/256 real W (DRAM floor), 45.7/48.2 us rented at 192/211 (-7.3/-3.6%); portal result pending [r3-e2-tc-pair-kbs2]'
+  - 'r3: the ingest per SM for the pair at Bpad 384 is 16 KB W + 24 KB emb per k-block = 40 KB per 768 MMA clk = 52 B/clk, and 48 KB per 1024 clk = 47 B/clk at 512, under the measured 50-65 B/clk ceiling; the 1SM alternative (full emb per CTA) needs 83 B/clk at 384 and is ingest-bound, so 2SM is required above 256 [r3-e3-tc05-emb-mcast2, analysis r4]'
+  - 'r3 open note: a kbs2 ring of 3 stages (80 KB per CTA per stage at 384) does not fit; r4 argues kbs1 x 4-5 stages suffices because the MMA work per stage (768+ clk) hides the commit floor (H23) [r3-e2-tc-pair-kbs2, analysis r4]'
+  - 'E1 (r3) never ran (session cut off); E1 (r4) builds the 256 < B <= 512 half'
+- id: H20
+  statement: 'The one-SM kernel''s 40% efficiency at B = 192-256 comes mainly from emb: every one of the 144 CTAs re-reads the same B x 12 KB of emb from L2 (340 MB at B=192, more than W) and all CTAs hit the same 128 B lines at the same time. TMA multicast of each emb k-block across a 2-CTA cluster (each CTA loads half the rows to both) halves that traffic and gains >= 10% in cycles at 192/211/256; the alternative explanation is ring depth (5 stages of 40 KB at kbs=1 cover only ~1 us of DRAM latency) or the 1SM UMMA shape itself (H21).'
+  status: refuted
+  evidence:
+  - 'r2: at B=192/211 the coupled ring runs kbs=1 with 5 stages because emb fills shared memory; 2x2 stages at 211 cost 63.3 vs 50.6 us: strongly stage-count sensitive [r2-e1-tc05-ef-small]'
+  - 'r3-e3: emb multicast across a 2-CTA cluster costs +2-4% cycles at 192/211 (80.1-80.8k vs 82.0-83.2k), within noise at 132/256; 1 to 36 private emb copies change the warm time by < 1.5% (1072 vs 1086 clk per k-block): neither L2 hot-spotting nor emb bytes are the limiter [r3-e3-tc05-emb-mcast2, r3-e2-tc-pair-kbs2]'
+  - 'r3-e2: ring depth is flat from 3 to 5 stages at kbs1 (1115/1108/1108 clk per k-block real W); the limiter is the per-stage commit chain (H23) [r3-e2-tc-pair-kbs2]'
+  - 'r3-e3: hot-W vs cold-W cycles 80.7-82.3k vs 85.5-87.5k at 192-256: DRAM is not the M-band limit; feed-only (no MMA) 62-64k cycles = 63-74 B/clk per SM of TMA ingest, which with the MMA overlaps only partly (81k vs max(63k, 43k)) [r3-e3-tc05-emb-mcast2]'
+- id: H21
+  statement: 'From shared-memory-resident operands (no TMA), 1SM tcgen05 128xN kind::tf32 reaches >= 90% of 4096 FLOP/clk/SM for N = 128-256, and 2SM 256xN the same per SM; adding the TMA feed costs the 1SM shape more than the 2SM shape because it moves N emb rows per CTA instead of N/2 (operand bytes per FLOP 1.5x at N=192). If instead the 1SM shape is already below 70% with resident operands, the UMMA shape itself is the M-band limiter and only 2SM designs can reach 75%.'
+  status: supported
+  evidence:
+  - 'r1: CUTLASS 2SM 256x256 is 1.13-1.19x faster than 1SM 128x256 at B=919 with TMA feed; no resident-operand measurement exists [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'r2-e3: the cuBLAS 2SM ceiling (~75% at 1965 MHz, 90%+ when power-capped to 1.2-1.3 GHz) does not scale with the SM clock, so the portal at ~1.55 GHz may sit nearer 80% for the same kernel: the rented card understates the portal efficiency of 2SM tiles [r2-e3-tf32-ceiling-r1tiles]'
+  - 'r3-e2 (a): resident 1SM 128xN and 2SM 256xN give identical per-SM rates: 551 clk per commit group of 4 UMMAs for every N <= 256 (46.5/69.7/92.6% at N=128/192/256), and 98.6-99.1% at N=192/256 once a commit covers >= 8 UMMAs; UMMAs below N=128 are issue-bound at 64-77 clk each. The UMMA shape is not the limiter; the 2SM shape has no rate advantage with resident operands [r3-e2-tc-pair-kbs2]'
+  - 'r3-e2 (b): L2-fed rings: 1SM N=192 kbs1 48.5%, 2SM kbs2 75-86%, 2SM N=256 kbs2 96%: with the feed, 2SM wins only because halving emb per CTA lets 2-k-block stages fit (second clause supported through the stage size, not through operand bytes per se) [r3-e2-tc-pair-kbs2]'
+- id: H22
+  statement: 'The same two-accumulator pair kernel extended to nb = 2 batch tiles of N = roundup(ceil(B/2), 16) <= 464 (691 -> 2 x 352, 773 -> 2 x 400, 853 -> 2 x 432, 919 -> 2 x 464; one pass over K per tile, W tile re-read by the sibling pair from L2 under a batch-adjacent cluster order, grid 144 pairs = 2 waves on 74 pair slots) covers 691-919 at >= 85% per-clock efficiency because its ingest is 45-48 B/clk per SM (H24) against 73 for CUTLASS 256x192: about 100/114/123/132 us portal at 691/773/853/919 vs 138/165/167/168 (-21..-31%), worth about +0.03 with 449/512 from H19 (score model 0.685 for both halves).'
+  status: open
+  evidence:
+  - 'estimate: 919 -> 928 columns as 2 x 464 (vs 960 padded today), one accumulator pass each; MMA 928 clk per k-block per pass, 2 passes = 178k clk at 100%, 198k at 90% = 132 us at 1.5 GHz; CUTLASS today 5 waves x 256x192 at ~73% = 252k clk = 168 us [analysis r4]'
+  - 'W from L2 for the sibling: 227 MB of W does not fit the 126 MB L2 across a whole pass, so the two batch tiles of a W tile must run concurrently (adjacent cluster ids, as CUTLASS AlongN rastering does, r1 probe 148 vs 306 us); a second DRAM read of W (454 MB over ~130 us = 3.5 TB/s) would also be affordable if the ordering fails [analysis r4]'
+  - 'E2 (r4) builds it; E1 (r3) never ran'
+- id: H23
+  statement: 'The per-stage time of a tcgen05 ring is max(MMA clk per stage, commit-chain floor of 551-674 clk, stage bytes / ingest ceiling). The floor is paid once per commit group regardless of N <= 256, so stages whose MMA work is >= ~700 clk (N >= 384 at kbs = 1, or N >= 192 at kbs = 2) hide it entirely and run at >= 95% of the UMMA rate with resident operands. Its source (commit, the full-barrier wait + fence, or the single-thread issue loop) is unresolved and does not matter for N >= 384 designs.'
+  status: open
+  evidence:
+  - 'r3-e2 (a): resident commit groups of 4 UMMAs: 551 clk at N=128/192/256 (MMA 256/384/512 clk) in one container, 674 in another; groups of 8 UMMAs: 388 clk per k-block at N=192 (98.8%), 517 at N=256 (99%) [r3-e2-tc-pair-kbs2]'
+  - 'r3-e2 (b): ablation at N=192 kbs1: no-MMA 687, MMA-only 844, barrier ping-pong 652, full 852 clk per stage; removing tcgen05.fence no change; committing every second stage 906 -> 865 only: the floor is not the commit instruction count alone [r3-e2-tc-pair-kbs2]'
+  - 'untested: the max() form at N >= 384 (two accumulators, 8 UMMAs per 1-k-block stage, 768+ clk MMA work); E1/E3 (r4) measure it'
+- id: H24
+  statement: 'Per-SM TMA ingest from L2 into shared memory saturates at about 50-65 B per SM-clock on the rented card (15-17 TB/s aggregate, the L2/fabric rate), and this ceiling, not the tensor pipe, sets the 73-75% efficiency of every TMA-fed tcgen05 GEMM measured so far: CUTLASS/cuBLAS 256x192 needs 73 B/clk per SM, 256x256 64 B/clk, tc_small at 192 kbs1 51-58 B/clk, the r3 pair at 192/256 kbs2 55-63 B/clk. Designs below ~50 B/clk (one-pass pair with N >= 384: 45-52 B/clk) are MMA-bound. The ceiling is in bytes per second, not per SM clock, so at the portal''s 1.5 GHz it is 20-25% looser per clock (consistent with cuBLAS reaching 90% per clock when power-capped to 1.2-1.3 GHz), which is why ingest-bound paths show portal/rented ratios of 1.21-1.27 rather than the clock ratio 1.31.'
+  status: open
+  evidence:
+  - 'r3-e3: feed-only (no MMA, hot W) 62-64k cycles for 3.9-4.6 MB per CTA = 63-74 B/clk per SM at 192-256; B=16 hot feed-only 75 B/clk; full kernel 81k vs max(63k feed, 43k MMA): partial overlap [r3-e3-tc05-emb-mcast2]'
+  - 'r3-e2 (b): every L2-fed ring lands at 51-68 B/clk per SM when converted (1SM N=192 kbs1 40 KB/791 clk = 51; kbs2 68; 2SM kbs2 N=192 28 KB/512 = 55; kbs4 63; N=256 kbs2 32 KB/532 = 60); the warm no-MMA ring at N=192 is 40 KB/687 clk = 58 B/clk [r3-e2-tc-pair-kbs2, analysis r4]'
+  - 'r2-e3: cuBLAS TF32 and BF16 both stop at 69-79% at 1965 MHz on hot square GEMMs and reach 89-96% per clock at 1190-1330 MHz: a bytes-per-second ceiling [r2-e3-tf32-ceiling-r1tiles]'
+  - 'untested: direct measurement of the ceiling at N >= 384 stage sizes, and its scaling with the SM clock (power-capped vs burst runs of the same ring); E3 (r4) measures both'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r0-adamod-dispatch-skinny-fp32-3xtf32 (portal 0.2349) vs r2-e1-tc05-ef-small: S bench +210.2% / portal +246.5%; M bench +442.7% / portal +400.3%; L bench +332.6% / portal +308.3%
+- r1-adamod-cutlass-tf32-2sm-chunkepi (portal 0.5884) vs r2-e1-tc05-ef-small: S bench +20.2% / portal +22.9%; M bench +12.2% / portal +4.5%; L bench -0.7% / portal -1.8%
+Findings recorded by design sessions, newest round first:
+Round r4:
+- [r4-e1-tc-pair2-twoacc] run_tests 16/16 PASS (10 rounds each), one launch. Rented us vs r2-e1-tc05-ef-small on the same GPU: 373 67.3 vs 69.0 (-2.4%), 384 67.3 vs 68.9 (-2.3%), 449 70.0 vs 81.5 (-14.1%), 512 74.2 vs 81.8 (-9.2%); 192/211 45.7/48.2 (r3 pair, unchanged); unchanged CUTLASS L paths 691-919 moved -2.2..-3.0% (drift), so the net tc_pair2 gain is about 0/-11/-6% at 384/449/512. Band change S -1.1% M -3.5% L -5.9%; emulator 0.6270 +- 0.012 (no paths were passed to it) [run_tests]
+- [r4-e1-tc-pair2-twoacc] precision, max |err| vs fp64 (W/sqrt(3072), bias randn, one draw per B): B=257 1.54e-3, 373 1.56e-3, 384 1.54e-3, 449 1.51-1.56e-3, 512 1.63e-3, 0 elements outside atol+rtol; all <= 1.75e-3. The n1 = 192 split gives 1.58e-3 at 373 [probe_b200]
+- [r4-e1-tc-pair2-twoacc] first build correct: two accumulators at TMEM cols 0 and 256, 512-col cta_group::2 alloc, emb per CTA as 128 rows (rank*128) then N2/2 rows (256 + rank*N2/2) via two TMA maps, second B desc = first + 16 KB, idescs differ only in N, (i|j|k) zero-init for both [probe_b200]
+- [r4-e1-tc-pair2-twoacc] cycles per k-block (kbs=1, real W from DRAM after a 252 MB zero flush, evict_first, clock64 + globaltimer, rented SM 1.64-1.72 GHz), container 1: Bpad 384 st3/4/5 = 1004/954/956 (ideal 768: 76-80%); 464 st3/4/5 = 1072/954/955 (ideal 928: 97%); 512 st3/4 = 1107/1028 (ideal 1024: 100%). kbs=2 st2: 1127/1216/1265 (exposed latency with 2 stages). Span per CTA: 106.7k (384), 108.2k (449), 116.4k (512) cycles [probe_b200]
+- [r4-e1-tc-pair2-twoacc] classification (H23/H24): resident operands (no TMA after warm-up), kbs1: 950 (384), 952-955 (449), 1027 (512); resident kbs2 st2: 771 (384) = ideal, 931 (449), 1027 (512). Feed only (no MMA, clock rises to 1.96 GHz): kbs1 st5 767 (384), 795 (449), 870 (512, st4) = 53-58 B/clk/SM, i.e. about 6 TB/s DRAM, not an L2 ingest ceiling. So 384 is chain/floor-bound, 449 is floor and MMA almost equal, 512 is MMA-bound; ingest (H24) is not binding anywhere [probe_b200]
+- [r4-e1-tc-pair2-twoacc] H23 floor at N >= 384: the kbs=1 per-stage floor is 950-1200 clk depending on the container (990/970/1200 in three later probes), constant at about 575 ns. It is larger than the 551-674 clk seen for 4-UMMA resident groups in r3. It is the same with 4 UMMAs per stage (UMMA2 skipped: 994 vs 995), with N1/N2 = 192/192 vs 256/128 (999 vs 995), and with interleaved or sequential UMMA order (1005). So it does not depend on MMA work or UMMA count [probe_b200]
+- [r4-e1-tc-pair2-twoacc] dead ends on the floor (Bpad 384, kbs1 st4, clk/k-block in one container): test_wait spin instead of try_wait 971 vs 970; commit every 2nd stage 1060 (worse, coarser refill; resident 970: no gain); idle warps nanosleep on accum 978; epilogue 2 tcgen05.ld per wait 971; removing tcgen05.fence::after_thread_sync 1198 vs 1197; waiting for 3 stages at a time 1161-1241. Only waiting for 2 stages per 16 UMMAs (shipped) helps: 1167 vs 1197 (-2.5%) in the 1200-clk container [probe_b200]
+- [r4-e1-tc-pair2-twoacc] CUTLASS comparison, interleaved harness_time, same probe (wall us; CUTLASS clock not measured: pynvml missing, nvidia-smi run aborted): 373 mine 68.3 vs 256x192 68.2 / 256x256 79.2; 384 68.4 vs 68.1 / 79.3; 449 70.9 vs 87.2 / 79.7; 512 74.2 vs 87.9 / 80.0. The best CUTLASS tile per B is the r1 table. My kernel ran at 1.64-1.72 GHz (globaltimer), so CUTLASS's 68.1 us at 384 is about 116k cycles at the same clock: about -5% cycles at 384, -11% at 449, -7% at 512 under the same-clock assumption. Success criterion (>= 20% fewer cycles) not shown [probe_b200]
+- [r4-e1-tc-pair2-twoacc] fixed costs per CTA outside the K loop: first full barrier at 5.8-6.8k clk (cold DRAM W plus setup), epilogue 6.9k (384) / 8.3k (449) / 9.1k (512) clk, about 12-14% of the span. The 8-warp epilogue stores 28-38 MB in about 4-5 us (about 7 TB/s); a TMA-store epilogue is the next lever there [probe_b200]
+- [r4-e1-tc-pair2-twoacc] targets: <= 100k cycles at 384 missed (106.7-111k); <= 125k at 512 met (116k); per-stage within 15% of MMA ideal met at 449/512, missed at 384 (+26-30%). Refutation clause half-true: the 384 ring is pinned at the floor at every stage count (3-5), 449/512 are not [probe_b200]
+- [r4-e1-tc-pair2-twoacc] portal prediction (operator rule max(1.05 x DRAM, cycles/1.55 GHz) + 11%): 373/384 108-111k -> 78-79 us (vs 83.0 portal CUTLASS, -5%), 449 112k -> 80 us (vs 101.4, -21%), 512 116k -> 83 us (vs 101.9, -18%). If the floor is in ns (about 575 ns per stage, as the cross-container numbers suggest) and not in clocks, 373/384 do better at the 1.5 GHz lock (about 64-70 us). The tensor-heavy kernel throttles to 1.64-1.75 GHz on the rented card, so its portal/rented ratio should be about 1.1-1.15, not 1.31 [analysis]
+- [r4-e1-tc-pair2-twoacc] probe infra: probe containers change between calls (/tmp kept in about half the calls); each measurement probe must rebuild CUTLASS (18-39 s for 2 TUs on 8 cores) and the kernel (1.5 s). Once (after 2 CUTLASS rebuilds) harness_time raised 'No timing results for methodology: cupti' [probe_b200]
+- [r4-e1-tc-pair2-twoacc] open: at Bpad 384 the only way past the floor is more MMA work per wait group with >= 3 stages of refill: a 48-wide k stage (SW128 32 + SW64 16 boxes, 60 KB per CTA, 3 stages, 1152 clk MMA per stage) or a 3-CTA-per-cluster split. The floor source (not commit count, wait count, fence, spin vs suspend, idle warps or UMMA count) is still unknown; it is about 575 ns per 1-k-block stage in this kernel [analysis]
+- [r4-e2-tc-pair2-nb2] VERDICT H22: refuted as stated. Same-container harness_time, 3 interleaved rounds, us pair2 (fixed epilogue) vs CUTLASS 256x192 / 256x256: 691 117.0 vs 108.7 / 108.7 (+8%); 773 120.2 vs 128.4 / 133.4 (-6.4%); 853 121.2 vs 129.9 / 135.8 (-6.7%); 919 129.5 vs 130.8 / 136.9 (-1.0%). Needed >= 15% at 773-919 and >= 10% at 691 [probe_b200]
+- [r4-e2-tc-pair2-nb2] run_tests 16/16 PASS, one launch. us vs r2-e1-tc05-ef-small on the same GPU: 773 123.9 vs 130.7 (-5.2%), 853 125.5 vs 133.1 (-5.7%), 919 133.2 vs 134.2 (-0.8%); every other B is the r3 code (192 -6.2%, 211 -3.6%, rest within +-1.8%); band S -0.2% M -1.6% L -1.2%; emulator 0.6164 +- 0.012 (P beat 69%) [run_tests]
+- [r4-e2-tc-pair2-nb2] main-loop floor: in-kernel clock64/globaltimer, harness flush, real W, rented clock 1.63-1.78 GHz. Main loop per 1-k-block stage with 8 UMMAs: 958-985 clk at Ntile 352/400/432/464 and also at nb=3 (Ntile 320). MMA ideal per stage is 2*Ntile = 640-928 clk, so it is MMA-bound only at 464 (94%) [probe_b200]
+- [r4-e2-tc-pair2-nb2] floor ablation (B=919 nb2 / 691 nb2 / 919 nb3, clk per k-block): base 985/977/972; second accumulator removed (MMA work halved) 982/981/974; no MMA (TMA + barriers only) 646/641/619 at 1.96 GHz; warm W (4 W tiles) 967/958/957; warm W + no MMA 607/605/601; test_wait spin instead of try_wait 985/980/970. The ~970 floor depends on neither MMA work, stage bytes (33-46 KB), DRAM, nor the wait instruction: H23's max() model fails (floor ~960, not 551-674, at 8 UMMAs per stage with rotating stages) [probe_b200]
+- [r4-e2-tc-pair2-nb2] H24 not the limiter here: stage bytes 36 KB (nb3) and 46 KB (nb2 at 919) give the same ~970 clk per stage, so ingest bytes/clk does not set the pace of this ring. CUTLASS 256x192 runs about 460-550 clk per 4-UMMA k-block stage on the same shape (134 us at 919 over ~4.9 tiles per pair), so the hand-written ring's per-stage chain costs about 2x CUTLASS's; cause unresolved [probe_b200, analysis]
+- [r4-e2-tc-pair2-nb2] epilogue bug (also a lesson for all hand-written kernels): a per-column piecewise remap of TMEM column -> emb row made ptxas place r[16] in local memory (48 B stack). The epilogue then took 22-33k clk per CTA (1050 clk per 16 columns) even with stores disabled. TMEM loads alone take 1.4k clk for 464 columns; batching 4-8 x16 loads per wait changed nothing. Remapping once per 8-column group (boundaries 128/256/256+h2 are multiples of 8) brings it to ~8k clk with stores: 919 155 -> 129.5 us, 691 139 -> 117 us [probe_b200]
+- [r4-e2-tc-pair2-nb2] cluster order: W-tile-adjacent (a) vs batch-major (b, the sibling reads W from DRAM again): 691 139.2 vs 141.2, 773 145.8 vs 147.2, 853 148.7 vs 150.0, 919 154.6 vs 156.4 us (pre-fix epilogue): (a) wins by about 1% only; this kernel is not DRAM-bound, so the second W read costs about 2 us [probe_b200]
+- [r4-e2-tc-pair2-nb2] W hint: evict_first vs evict_normal on W within 1% at 691-919 (139.2 vs 139.1, 154.6 vs 154.1) [probe_b200]
+- [r4-e2-tc-pair2-nb2] nb=3 at 773/853/919 (Ntile 272/288/320, 3 waves): 193.9/196.7/201.4 us vs nb=2 145-155: +30%. The stage floor is paid per wave, so more tiles only add waves [probe_b200]
+- [r4-e2-tc-pair2-nb2] M-band side result for E1/H19: the same kernel with nb=1 (one pass, one wave of 72 pairs) at 373/384/449/512 gives 62.3/62.4/67.1/72.6 us vs the best CUTLASS tile 67.9 (192)/67.9 (192)/79.0 (256)/79.6 (256): -8/-8/-15/-9% in one container, max err 1.53-1.73e-3. Not shipped (task: keep other paths); a strong candidate for the next M-band round [probe_b200]
+- [r4-e2-tc-pair2-nb2] precision: max |err| vs fp64 (W/sqrt(3072), bias randn) 691 1.54-1.66e-3, 773 1.63e-3, 853 1.53e-3, 919 1.54-1.64e-3, nb3 919 1.67e-3, nb1 384 1.60-1.73e-3, 449 1.53-1.55e-3, 512 1.59-1.60e-3; one draw at 384 reached 1.73e-3 (above the 1.7e-3 bar, below atol 2e-3) [probe_b200]
+- [r4-e2-tc-pair2-nb2] per-clock efficiency (MMA-ideal 2 passes x 96 x 2*Ntile clk / span cycles at ~1.7 GHz): fixed kernel 691 ~68%, 773 ~75%, 853 ~81%, 919 ~81%; CUTLASS 256x192 on its padded work about 77-83% at the same clock. Success needed >= 85% [probe_b200, analysis]
+- [r4-e2-tc-pair2-nb2] portal prediction (r3 rule cycles/1.55 GHz): 773/853/919 about 205/207/220k clk -> 132/134/142 us vs CUTLASS portal 164.9/166.7/167.9 (-15..-20%); with the rule's observed +11% underprediction, 147/149/158 us (-6..-11%); with a flat 1.31 clock ratio against CUTLASS's 1.25-1.27, -2/-2/+4%. Central estimate L -3% on the band (3 of 6 workloads) [analysis]
+- [r4-e2-tc-pair2-nb2] dead end: kbs=2 does not fit more than 2 stages at Ntile 352-464 (77-91 KB per stage per CTA), and r3 showed 2-stage rings are latency-bound; nb=3 adds a wave [analysis]
+- [r4-e2-tc-pair2-nb2] infra: /tmp in probe containers persisted between 2-3 consecutive probes and was then lost (CUTLASS .so had to be rebuilt; 18-28 s for 2 TUs in parallel). Rebuild everything inside the timing probe [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] VERDICT: Step 1 passes for N >= 464 (98-99.8% of MMA-ideal, floor hidden) and fails for N = 384 at kbs=1 (81%, chain-bound at 948 clk vs ideal 768). Step 2 is refuted: feed-only B/clk scales with stage size and reaches 93-100 B/clk (> 90), so H24's 50-70 B/clk ceiling does not exist for L2-hot pair rings. Step 3 is refuted: clk per k-block is identical at 1.14 GHz and 1.8-1.96 GHz (<= 0.2%), so there is no bytes-per-second ceiling that loosens per clock. H24 is refuted; H23 is refined [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] method: 2SM cta_group::2 ring, grid 148 (74 pairs), cluster 2, 128 threads, tcgen05.mma kind::tf32, TFLOAT32 maps, 128B swizzle, nk = 384 k-blocks (4 passes over K), clk = clock64 delta of the leader's issue thread, MHz = clock64/globaltimer. W from 16 distinct hot 128-row tiles (evict_first), emb from the same hot rows for every pair, 2 launches per config (first warms L2), 3 interleaved rounds, spread < 0.5% unless noted. Per CTA two accumulators: UMMA1 N1 = 256 (128 emb rows per CTA) + UMMA2 N2 = 2 x e2 (e2 rows per CTA), TMEM 512 columns [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 1 resident operands (no TMA), kbs=1 (4 K-steps x two UMMAs, one commit per stage), burst clock 1.75-1.82 GHz, clk per k-block / ideal(2N) / eff: floor N=192 single accumulator 943 / 384 / 40.7%; N=384 (256+128) 948 / 768 / 81.0% at 3, 4 and 5 stages (947.2-948.2); N=464 (256+208) 947 / 928 / 98.0% at 3/4/5 stages; N=512 (256+256) 1025.6 / 1024 / 99.8% at 3 and 4 stages (5 does not fit). Stage count has no effect [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 1 bound per config: N=192 and N=384 at kbs=1 hit the commit chain (about 940-948 clk per stage in this container, the same for 4 and 8 UMMAs and for N=192 to 384); N=464 and N=512 hit the MMA (ideal 928 / 1024). The floor is hidden only when MMA work per stage is >= about 950 clk, i.e. N >= about 475; N=464 is at the crossover. The floor is container-dependent (551-674 clk in r3 probes with fixed stages, 840 rotating, 938-948 here with a ring), so compare only inside one probe [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2a feed-only (TMA ring, L2-hot, no UMMA, release by commit-only multicast to both CTAs), kbs=1, 4 stages (3 at 64 KB), clk per stage / B/clk per SM: 24 KB 642 / 38; 32 KB 642 / 51; 40 KB 705 / 58; 48 KB 705 / 70; 64 KB 707 / 93. At the 1.95 GHz idle clock. Per-stage time is flat at 642-707 clk across 24-64 KB: B/clk scales with stage size, it is not a ceiling [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2b feed-only kbs=2: 48 KB (4 stages) 709 clk/stage = 69 B/clk; 64 KB (3 stages) 715 = 92; 96 KB (2 stages) 1006 (+-5%) = 98 (about 28 TB/s aggregate at 1.95 GHz; every pair reads the same 16 W tiles and the same emb rows, so the L2 pattern is friendlier than a real kernel's, caveat). Ring depth at 40 KB kbs=1: 2 stages 863 clk (47.5 B/clk), 3 stages 706, 5 stages 705: saturates at 3 stages [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] dead end: releasing the ring with two remote mbarrier.arrive.release.cluster (mapa to both CTAs) instead of the tcgen05 commit costs 1880-2050 clk per stage (12-35 B/clk): a cluster-scope remote arrive round trip of about 1000 clk. That made the first feed-only numbers look like a 13-35 B/clk ceiling; it is an artefact of the release path, not ingest [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2c fed + MMA (same TMA ring, UMMAs on), burst clock, clk per k-block / eff / B/clk: kbs1 E=64 (N=128) 924 / 27.7% / 27; E=128 (N=256) 928 / 55.2% / 35; E=192 (N=384) 931 / 82.5% / 44; E=256 (N=512) 1029 / 99.5% / 48; kbs2 E=64 671 / 38.2%; E=128 698 / 73.4% / 47; E=256 1030 / 99.4% / 48; kbs2 N=384 2 stages (80 KB) 843 / 91.1% (811 / 94.7% capped). Fed equals resident to within 2% (N=384 931 vs 943, N=512 1029 vs 1026): time is max(MMA, chain), with feed (642-705 clk per stage) fully hidden, not the sum [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 3 clock scaling: the card is power-capped to 1.11-1.19 GHz as soon as a bf16 8192^3 matmul loop runs (first sample 1145 MHz) and stays there; idle bursts run 1.66-1.96 GHz (the clock sags to 1.66 GHz under a fed N=512 ring). Same configs, burst vs capped (200 matmuls queued before every run): resident N=192 937.9 vs 937.9 clk/kb; resident N=384 942.8 vs 942.8; fed N=384 kbs1 927.0 vs 926.1; fed N=512 kbs1 1029.4 vs 1028.5; feed-only E=128/192/256 kbs1 642.4/705.0/704.7 vs 641.8/704.2/704.7; feed-only kbs2 E=128 357.6 vs 355.0. B/clk is the same at both clocks, i.e. GB/s per SM scales with the clock (feed-only 40 KB: 114 vs 70 GB/s/SM). Only the 2-stage rings gain: fed N=384 kbs2 st2 843 -> 811 (-3.8%) and feed-only 96 KB kbs2 529 -> 492 (-7%), L2 latency exposure. No >= 15% rise at the low clock: the success criterion for H24 is not met [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] CUTLASS 256x192 (r1 tile, W cold via the 252 MB flush, events around one launch, includes about 3 us of event/launch gap) at B=384: 72.0 us at 1962 MHz = 141k clk (50.8% of the 71.7k-clk MMA ideal per 148 SMs); 94.2 us at 1215-1241 MHz = 114-117k clk (61-63%); 93.2 us at 1275 MHz (60%). So CUTLASS cycles fall 19% at the low clock (partly ns-bound: DRAM W and flush interaction) but stay at 62-65% at best; the portal clock (1.5 GHz) interpolates to about 128k clk = 85 us, matching the portal's ~83 us at B=373/384. The hand-written ring at N=384 kbs2 needs 81k clk (843 x 96) at 91-95%: about 35% fewer cycles than CUTLASS at the same clock [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] consequence for H19: one-pass pair kernel for 256 < B <= 512 with two accumulators is MMA/chain-bound, not ingest-bound. Per-k-block cycles from the probe: Bpad 384 kbs2 2 stages 811-843; Bpad 464 kbs1 4 stages 947 (kbs2 2 stages = 90 KB x 2 not probed); Bpad 512 kbs1 or kbs2 1029-1030. Times 96 k-blocks plus about 8k clk for ramp and epilogue, at 1.5 GHz: about 59 / 66 / 71 us for Bpad 384 / 464 / 512 against portal CUTLASS 83 (373/384) and 103-104 (449/512): about -29% / -36% / -31%. Not yet built; E1 (r4) builds it, with real W from DRAM (hot-L2 W here) so the DRAM floor (about 42 us rented) must be rechecked [analysis from probe]
+- [r4-e3-ingest-probe-pair-parent] consequence for H22: if the same ring holds for nb = 2 batch tiles of N <= 464 the L band is also MMA-bound (947 clk x 96 x 2 passes = 182k clk = 121 us at 1.5 GHz at 919 vs CUTLASS portal 168 us), but the probe did not test the W re-read from L2 by the sibling pair or wave quantisation [analysis]
+- [r4-e3-ingest-probe-pair-parent] open: why CUTLASS 256x192 K-tile 32 sits at 51-65%. Its stage is 4 UMMAs of N=192 (384 clk), the same cadence as the 943-clk floor config here, so the same commit-chain floor is a candidate; this probe cannot separate it from DRAM/epilogue effects. The earlier ingest attribution (73 B/clk needed vs 50-65 'ceiling') is not supported: feed-only reaches 93-100 B/clk [analysis]
+- [r4-e3-ingest-probe-pair-parent] open: kbs=2 at Bpad 464 and 512 is untested with the extra variant matrix (resident kbs2 N=384 and N=464 were queued but the e3.so did not persist between probes: /tmp is wiped per probe container, builds take 1.4 s for the ring and 17-28 s for the CUTLASS TU, so each probe must rebuild)
+Round r3:
+- [r3-e2-tc-pair-kbs2] VERDICT B=192-256: the limiter of tc_small is the per-stage MMA -> commit -> mbarrier chain at kbs=1 (about 840 clk/stage warm, 1108 with DRAM W), not ring depth >= 3, not the UMMA shape, not the smem port and not emb L2. A 2SM pair with kbs=2 fits and runs at the DRAM stream rate. H20 refuted, H21 first clause true only with >= 8 UMMAs per commit, 2SM-fed beats 1SM-fed only because it allows kbs=2 [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) resident operands, 1SM 128xN kind::tf32, 96 k-blocks x 4 UMMAs, commit per k-block, 144 CTAs, rented clock 1.62-1.70 GHz (globaltimer): N=128/192/256 = 551/551/553 clk per k-block = 46.5/69.7/92.6% of 4096 FLOP/clk/SM. Every N <= 256 is floored at about 551 clk per commit group [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) same, 2SM cta_group::2 256xN (cluster 2, leader issues, multicast commit): 552/552/554 clk per k-block = 46.4/69.6/92.4% per SM: identical per SM to 1SM with resident operands, so 2SM has no UMMA-rate advantage [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) commit every 8 or more UMMAs (kbs>=2): N=192 388 clk = 98.8% (1SM) and 390 = 98.6% (2SM), N=256 517 = 99.0%/99.1%, N=128 307 (kbs4) = 83.4%, 290 (kbs6) = 88.3%, N=64 kbs8 255 = 50%: the UMMA itself delivers 99% at N=192/256 and is issue-bound (about 64-77 clk per UMMA) below N=128, clk 1.62-1.83 GHz. Literal H21 refutation test (resident 1SM 128x192 <= 70%) trips only at the shipped one-commit-per-k-block cadence, so the cause is the commit cadence, not the shape [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) another container (clk 1.70-1.82 GHz): resident N=192 kbs1 fixed stage 674 clk (57%), N=256 676 (75.7%); rotating the stage address per k-block (as a ring does) 839 / 844 clk (45.8 / 60.7%) at 2, 4 or 5 stages; kbs2 rotating 539 / 551. The commit floor drifts 551-674 between containers, so compare only inside one probe [probe_b200]
+- [r3-e2-tc-pair-kbs2] (b) TMA ring fed from L2 (every CTA the same 128 W rows, or 16 distinct tiles: identical), clk 1.58-1.82 GHz, clk/k-block and eff: 1SM N=192 kbs1 st5 791 (48.5%); 1SM kbs2 st2 587 (65.4%); 2SM kbs1 st5/st8 792 (48.5%, no gain from depth or 2SM); 2SM kbs2 st4 512 (75.0%); 2SM kbs4 st2 446 (86.2%); N=256: 1SM kbs1 st4 794 (64.5%), 2SM kbs1 st4/st7 796, 2SM kbs2 st3 532 (96.3%); N=128 kbs2 1SM and 2SM 507 (50.5%, issue-bound). 2SM-fed kbs2 >= 75% and 1SM-fed kbs1 48.5% (<= 60%) as H21 predicted; the 2SM advantage is the larger stage, not operand traffic [probe_b200]
+- [r3-e2-tc-pair-kbs2] (b) ablation, warm, N=192 kbs1 st4 (clk/k-block): base 852, no MMA (TMA + barriers only) 687, no W 851, no emb 850, no W and no emb (MMA + barriers only) 844, nothing (pure barrier ping-pong) 652; 2SM 853/712/852/852/846/656; N=256 856/689/856/854/848/652. TMA bytes cost nothing: the MMA + commit + mbarrier chain sets the pace. Removing tcgen05.fence from the loop: no change; committing every second stage (shared empty barrier): 906 -> 865 only [probe_b200]
+- [r3-e2-tc-pair-kbs2] (c) ring-depth slope, real W from DRAM with the 252 MB harness flush, evict_first, clk 1.74-1.82 GHz, 1SM kbs1: B=192 stages 2/3/4/5 = 1300/1115/1108/1108 clk per k-block (71.7/61.7/59.8/60.6 us wall); B=256 stages 2/3/4 = 1420/1128/1115 (78.6/63.2/59.6 us). Steep only from 2 to 3 stages, flat from 3 to 5: ring depth is not the limiter at 4-5 stages [probe_b200]
+- [r3-e2-tc-pair-kbs2] (c) real W, 2SM: B=192 kbs1 st3/4/6/8 = 1123/1119/1121/1123 (60.8-61.1 us); kbs2 st3 749 (42.5 us, 51.2%); kbs4 st2 780 (43.6 us); B=256 kbs1 st3/4/6 1129/1122/1123, kbs2 st3 748 (44.0 us, 68.4%). 1SM kbs2 st2 (the only fit): 928 (50.9 us) at 192, 1043 (57.0 us) at 256. No-MMA floors with W from DRAM: 1SM kbs1 st4 922 clk (46.6 us), 2SM kbs2 st3 788 (40.2 us at 1.955 GHz); hint vs no hint: 1108 vs 1136 (1SM kbs1), 749 vs 924 (2SM kbs2) [probe_b200]
+- [r3-e2-tc-pair-kbs2] (d) emb hot-spotting: warm L2, N=192 kbs1 st4, copies 1/2/4/8/16/36: 1072/1072/1072/1072/1079/1086 clk per k-block; N=256 copies 1/2/4/8/16: 1079/1078/1079/1079/1088. Real W: B=192 copies 1/16 1106/1112, B=256 1116/1127; 144 private copies 1857 (B=192) and 2131 (B=256) clk, but that variant adds 340-453 MB of cold emb DRAM traffic, so it measures DRAM not contention. Private copies are not >= 10% faster: H20 refuted, E3 multicast of emb is not the fix [probe_b200]
+- [r3-e2-tc-pair-kbs2] run_tests (rented B200, same GPU as r2-e1-tc05-ef-small, interleaved by the harness): 16/16 pass, one launch. B=192 45.7 vs 49.3 us (-7.3%), B=211 48.2 vs 50.0 (-3.6%), B=131 44.0 vs 44.3, all other B within +-1.6% (S +0.4%, M -2.4%, L -0.9%); emulator 0.6162 +- 0.012. The first try of the cta_group::2 pipeline (TMA .cta_group::2 with mapa leader barrier, multicast commit mask 3, leader-only MMA, both-CTA epilogue) was correct on all 16 workloads x 10 rounds [run_tests]
+- [r3-e2-tc-pair-kbs2] portal prediction by the operator's rule: tc_small B=192 at 1108 clk x 96 = 106k clk = 68 us at 1.55 GHz (portal measured 62.2); the pair kernel at 749 clk x 96 = 72k clk = 46 us at 1.55 GHz plus ramp, so expect about 48-52 us at B=192/211, i.e. -15..-20% vs 62.2/64.0 (about +0.01 on the problem score); B=131 not changed (operator ruling) [analysis from probe cycles]
+- [r3-e2-tc-pair-kbs2] precision: not re-measured; the maps use TFLOAT32 as in r2, same operands and fp32 accumulation, 16/16 x 10 rounds pass, expected max |err| 1.5-1.65e-3 at B=192/211 as r2 recorded [run_tests]
+- [r3-e2-tc-pair-kbs2] dead end: pair-commit (one commit per two 1-k-block stages) 906 -> 865 clk only; 2SM at kbs1 gives no gain over 1SM (792 vs 791 warm, 1119 vs 1108 real); the 1SM kbs2 variant fits only 2 stages at B=192 (928 clk) [probe_b200]
+- [r3-e2-tc-pair-kbs2] open: B=373/384 would need N=384 (two TMEM accumulators of 192, 2SM, kbs2 ring of 3 stages at 80 KB per CTA does not fit; kbs1 stages would pay the 840-clk chain) so the CUTLASS tiles stay; the per-stage fixed chain cost (about 250-300 clk, source unresolved) is the lever for every hand-written variant [analysis]
+- [r3-e3-tc05-emb-mcast2] H20 refuted (probe, interleaved, harness flush, 3 rounds, rented SM clock 1.66-1.78 GHz from clock64/globaltimer): cycles base vs emb-multicast B=132 74.3-76.2k vs 74.9-75.3k; 192 80.1-80.8k vs 82.0-83.2k (+2-4%); 211 80.9-81.4k vs 82.8-83.5k (+2-3%); 256 85.8-87.6k vs 86.6-87.7k. Per-clock efficiency 2*128*Bpad*3072/(cyc*4096): 132 0.37/0.37, 192 0.46/0.45, 211 0.53/0.52, 256 0.57/0.56 [probe_b200]
+- [r3-e3-tc05-emb-mcast2] harness_time (same probe) us base vs mc: 132 44.1-44.4 vs 44.6-44.9; 192 48.9-49.0 vs 49.6-49.9; 211 49.7-50.0 vs 50.5-50.6; 256 53.1-53.8 vs 53.5-53.6 [probe_b200]
+- [r3-e3-tc05-emb-mcast2] kbs=2 at B=192 does not fit 3 stages (2 x 2 stages only): base 2x2 98-105k cycles (57-60 us), mc 2x2 87.5-90.6k (53.6-54.0 us). Multicast cuts cycles 10-15% with a 2-deep ring (emb L2 latency exposed), but both lose to the 1x5 ring [probe_b200]
+- [r3-e3-tc05-emb-mcast2] limiter isolated (probe, W tile index blockIdx%8 so W is L2-hot, and/or MMAs skipped): B=192/211/256 hot-W 80.7-82.3k cycles vs 85.5-87.5k cold: DRAM is not the M-band limit. Feed only (no MMA, hot W) 62-64k cycles = 3.9-4.6 MB per CTA at 63-74 B/clk/SM; B=16 hot feed-only 23.3k (75 B/clk). MMA ideal 37-49k. So TMA ingest per SM (L2 -> SM bytes per SM clock) bounds the kernel, and MMA + feed overlap only partly (81k vs max(63k, 43k)) [probe_b200]
+- [r3-e3-tc05-emb-mcast2] consequence: the 1.26 portal/rented ratio at 192/211 (H15) is the SM-clock-bound ingest. A cta_group::2 pair (H19/E1) reduces landing bytes per SM from 16 KB W + Bpad*128 B emb to 16 KB + Bpad*64 B per k-block (-30% at 192, -33% at 256); multicast of emb on top of the pair is not needed [INFERRED from the probes]
+- [r3-e3-tc05-emb-mcast2] B=132 cold 75k cycles = hot-W 53.5k + DRAM: at 132 the kernel is still DRAM-bound at the rented clock (span 42 us); feed-only cold 79-81k cycles at 1.96 GHz [probe_b200]
+- [r3-e3-tc05-emb-mcast2] max |err| vs fp64 (W/sqrt(3072), bias randn): B=132 1.45e-3, 192 1.64e-3, 211 1.54e-3, 256 1.49e-3, identical for base and multicast (same operands, same accumulation order) [probe_b200]
+- [r3-e3-tc05-emb-mcast2] cudaOccupancyMaxActiveClusters = 74 clusters of 2 at 225 KB smem for Bpad 144-256: the 72 clusters fit in one wave [probe_b200]
+- [r3-e3-tc05-emb-mcast2] run_tests 16/16 PASS. Rented us vs parent same GPU: 131 44.1 vs 44.1, 192 49.4 vs 48.9 (+0.9%), 211 50.7 vs 50.2 (+0.9%); S unchanged; L -1.4% is drift (identical CUTLASS code). Emulator 0.6117 +- 0.012 (P beat 53%), not a real gain [run_tests]
+- [r3-e3-tc05-emb-mcast2] predicted portal time = max(1.05 x 42 us DRAM part, cycles/1.55 GHz): base 192 86k -> 55.5 us, mc 87.7k -> 56.6 us; base 211 86k -> 55.5, mc 88.5k -> 57.1. The portal measured base 62.2/64.0, so this model underpredicts the parent by about 11% at 192/211 [analysis]
+- [r3-e3-tc05-emb-mcast2] Bpad rounding: multicast halves only need Bpad/2 to be a multiple of 8 rows (Bpad multiple of 16); 192/211/256 keep Bpad 192/224/256, so the N of the comparison is identical [design]
+Round r2:
+- [r2-e3-tf32-ceiling-r1tiles] H12 step 1 (harness mode: flush + CUPTI, clock read in-kernel at 1960-1975 MHz, 3 rounds, spread < 3%): cuBLAS TF32 4096^3 822-854 TF/s (69-72% of clock peak), 8192x8192x2048 894-897 (75%), 8192^3 846-847 (71%); BF16 4096^3 1692-1697 (71%), 8192x8192x2048 1890 (79%), 8192^3 1640-1652 (69%). TF32 is NOT uniquely capped: BF16 stops at the same fraction [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] H12: same shapes under sustained back-to-back load are power-capped (throttle reason 0x4 SW power cap, ~1000 W) to 1190-1330 MHz and then reach 89-91% (TF32 8192^3 716 TF/s at 1330 MHz) and 94-96% (BF16 1361 TF/s at 1200 MHz) per clock: the ceiling does not scale with the SM clock, so it is not SM-side shared-memory traffic or the TF32 issue rate; likely L2/fabric (~13 TB/s operand reads in both dtypes) [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] H12 verdict: refuted as a TF32-specific hardware cap and as a shape-specific loss. cuBLAS on our shape at B=1024 (no padding) gets 75% per clock at 1965 MHz, the same as square. B=919 gets 68.5% only because of N padding [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] probe: the rented card's clock state drifts. The same cuBLAS L919 GEMM ran 128-136 us in short-burst runs at ~1965 MHz and 167-175 us after sustained loops (1349-1427 MHz). Rented time differences of ~7% between sessions with identical code are clock or thermal, not kernel changes [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] run_tests (code identical to r1, comments only): 16/16 PASS; B=5..128 51.8/48.9/49.0/55.3/55.8, M 56.9/57.1/60.5/66.9/66.5, L 75.7/76.6/103.1/122.6/124.1/125.2 us. The L -7% vs the stored r1 times is clock drift (same binary), so the emulator's 0.615 is spurious: expect the portal to repeat r1's 0.588 [run_tests]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: cluster 2x2 (W tile multicast to two pairs along the batch dim) is 20-30% slower: 919 153.6-159.7 vs 125.2 us; 691 118-150 vs 101.6; 512/449 99-118 vs 75.7; 384 82.7-98 vs 66.3 [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: K-tile 16 (16/14 stages) is 10-19% slower and K-tile 64 (4/3 stages) is 2-7% slower than K-tile 32 at B=449-919; max_swizzle 2/4 is +0.5-1.5% slower than 1 [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] tile check (harness mode, interleaved x3): 256x192 vs 256x256 at 919 125.0 vs 130.9, at 691 101.6-103.3 vs 102.4-103.5, at 512 83.7 vs 75.6, at 449 83.3 vs 75.7, at 384 66.3 vs 75.1 us: the r1 dispatch table is already optimal among the tiles that build [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: 2SM 256x240 does not build in CUTLASS 4.4.1 (B-operand smem layout/TMA static assert; 120 batch rows per CTA) [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] max |err| vs fp64 (W/sqrt(3072), bias randn) at B=919: 1.58e-3 on one draw, 1.79e-3 on another (above the 1.7e-3 bar, under atol 2e-3). Identical for every tile, cluster and K-tile variant (same tf32 truncation). The margin depends on the draw; the harness passed 16/16 x 10 rounds [probe_b200, run_tests]
+- [r2-e3-tf32-ceiling-r1tiles] method: CUTLASS variants build in a probe with nvcc -c in parallel (~30 s for 4-6 TUs on 24 cores) into /tmp/*.so loaded by ctypes; /tmp persists between probes, so build and time can be split [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] consequence: any remaining L gain needs fewer L2 bytes per FLOP without 4-CTA clusters, or less N padding (E2/H18: 208/224-wide tiles). The tcgen05 rate itself cannot be raised by tile, stage or scheduler knobs [INFERRED]
+Round r1:
+- [r1-e1-lt-fasttf32-bias-scatter] dead end: profiler kernel names are not retrievable inside the probe after the first torch.profiler call; use CUBLASLT_LOG_LEVEL=5 instead [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: reads-only 226.5 MB with the harness flush (zero_ 252 MB), CUPTI: plain LDG.128 1184x256 thr 45.9 us (4.9 TB/s), L2::cache_hint evict_first 39.9 us (5.7 TB/s), 1-D bulk ring 148 CTAs x 4 x 32 KB 45.0 us, same ring with evict_first 38.7 us (5.85 TB/s), 256-bit ld.global.v8 with evict_first 41.5 us (no gain over 128-bit) [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: same variants, own event loop (events add about 5 us), read-flush vs zero-flush: plain 38.9 vs 51.2, evict_first 38.9 vs 44.1, bulk 38.9 vs 49.2, bulk evict_first 38.9 vs 43.0, ldg256 41.0 vs 50.1. The dirty write-back penalty is 6-12 us for plain reads and 4-5 us for evict_first. Both land at 38.9 with a read-based flush [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] H16 refuted: the reads-only floor with the harness flush is 39-40 us (cap was 45-53). Mechanism: evict_first reads recycle their own L2 lines instead of evicting the dirty flush lines, so the write-back leaves the timed window
+- [r1-ef-bulk-tf32-stream-b16] probe: reads + six outputs for B=128 (9.4 MB written): st default 40.3, evict_last 39.8, evict_first 40.3 us. Store hints change the time by at most 0.5 us (about 1%), so a store hint is not a lever
+- [r1-ef-bulk-tf32-stream-b16] probe: cuBLAS TF32 addmm (bias in, harness protocol): 52.4 / 51.0 / 46.4-48.4 / 135.7 us at B=5/128/32/919; B=32 gemm + scatter 53.7 (+5-7 us for the extra launch + scatter), B=919 gemm + scatter 159.0 (+23 us)
+- [r1-ef-bulk-tf32-stream-b16] dead end: nvidia-smi -lgc 1500,1500 is not permitted on the rented card (no permission), so the portal/rented ratio for DRAM-bound vs tensor-core paths could not be measured directly. Estimate from r0 pairs (H15 text): DRAM-bound ~1.0-1.15, SM-clock-bound ~1.26-1.31
+- [r1-ef-bulk-tf32-stream-b16] probe: the harness weight input is N(0,1)/sqrt(fan_in) (io.py _is_weight_matrix), not randn. Plain TF32 is then within tolerance: cuBLAS TF32 max err 1.5e-3 vs atol 2e-3, 100% of elements pass at B=128. With unscaled randn weights only 12% would pass
+- [r1-ef-bulk-tf32-stream-b16] dead end: v1 of the streaming kernel with 256 B bulk copies (128 rows x 64 k per stage) ran 170-207 us at B=5/16/32, 3-4x slower than the stream floor. Small 1-D bulk copies cost about 30-40 clk each in the TMA unit. v2 uses 2 KB row segments (16 rows x 512 k per stage), emb chunk shared by 8 row groups: 41.5 / 43.4 us at B=5/16
+- [r1-ef-bulk-tf32-stream-b16] dead end: v2 at B=32 (NB=4, 3 W stages + 2 x 66 KB emb buffers, 168 regs) 63.2 us vs cuBLAS TF32 + scatter 54.5; the B=17..32 band stays on cuBLAS. Cause not isolated (3-deep ring, emb conversion barriers or LDS pressure)
+- [r1-ef-bulk-tf32-stream-b16] run_tests (final): 16/16 PASS. B=5 41.6, 16 43.6, 32 54.5, 96 59.5, 128 60.5, 131 64.2, 192 66.7, 211 67.5, 373 92.5, 384 93.0, 449 99.1, 512 101.7, 691 137.4, 773 167.2, 853 172.4, 919 175.1 us. Band change vs r0: S -61.6%, M -74.8%, L -71.3%. Emulator 0.546 vs r0 0.235. Max |err| vs fp64 per B was NOT recorded (the margin constraint asks for it); the harness's 99% matched rule passed
+- [r1-ef-bulk-tf32-stream-b16] open: B=32..128 (8 workloads) sit at 54-64 us on cuBLAS + scatter vs a 39-40 us streaming floor. The same evict_first bulk ring with tcgen05 TF32 (single M tile for B<=128) is the round-2 target; mma.sync would be compute-bound above B~32. M/L bands are still cuBLAS 2-launch (scatter 7-23 us)
+Round r0:
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]
+(45 older findings not shown; the hypothesis ledger summarises them, and get_kernel returns any kernel's full card)
+
+=== PORTAL RESULTS (best first) ===
+- r2-e1-tc05-ef-small: portal 0.6108, S/M/L 45.0/66.6/139.3 µs
+- r1-adamod-cutlass-tf32-2sm-chunkepi: portal 0.5884, S/M/L 55.3/69.6/136.9 µs
+- r0-adamod-dispatch-skinny-fp32-3xtf32: portal 0.2349, S/M/L 155.9/333.4/569.0 µs
+
+=== EMULATOR: portal minus bench, by design feature ===
+| change from the best kernel's main path | smallest (5) | middle (373) | largest (919) |
+|---|---|---|---|
+| x: ef | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| w: nc | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| w: el | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| st: ef | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| st: none (vs el) | +0.0% ± 6.0 | +0.0% ± 6.0 | +0.0% ± 6.1 |
+| width 128 | +0.0% ± 6.0 | +0.0% ± 6.0 | +0.0% ± 6.1 |
+| threads 512, rows 32 | -1.9% ± 6.2 | -1.9% ± 6.2 | -1.9% ± 6.2 |
+| threads 128, rows 8 | -3.4% ± 6.2 | -3.4% ± 6.2 | -3.3% ± 6.2 |
+| grid persistent | +0.0% ± 6.0 | +0.0% ± 6.0 | +0.0% ± 6.1 |
+| prefetch L2 | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| mem tma | +0.0% ± 6.0 | +0.0% ± 6.0 | +0.0% ± 6.1 |
+| lang triton | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+| lang cute | -1.2% ± 6.1 | -1.2% ± 6.1 | -1.1% ± 6.1 |
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r2-e1-tc05-ef-small | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.2/55.4/109.8 | -/-/- | -/-/- | -/-/- | 45.0/66.6/139.3 | 0.610767 | 32/1296/None | passed |
+| r1-adamod-cutlass-tf32-2sm-chunkepi | tma-tensor/persistent/dispatch:size | cuda_cpp | 52.0/62.2/109.1 | -/-/- | -/-/- | -/-/- | 55.3/69.6/136.9 | 0.588448 | - | passed |
+| r0-adamod-dispatch-skinny-fp32-3xtf32 | cpasync/oneshot/dispatch:size | cuda_cpp | 134.1/300.5/475.2 | -/-/- | -/-/- | -/-/- | 155.9/333.4/569.0 | 0.234899 | 128/1024/None; 108/1024/None | passed |
+| r1-e1-lt-fasttf32-bias-scatter | tma-tensor/oneshot/all | cuda_cpp | 56.8/75.3/138.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 20/0/None | passed |
+| r1-ef-bulk-tf32-stream-b16 | bulk1d/oneshot/dispatch:size | cuda_cpp | 51.3/75.7/138.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 140/1152/None; 90/1152/None | passed |
+| r2-adamod-stream16-cutlass-tf32 | tma-tensor/persistent/dispatch:size | cuda_cpp | 48.7/62.3/109.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 140/1152/None; 90/1152/None | passed |
+| r2-e3-tf32-ceiling-r1tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 52.1/61.4/102.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | - | passed |
+| r3-e2-tc-pair-kbs2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.4/53.8/108.0 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+| r3-e3-tc05-emb-mcast2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.4/55.2/107.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/1296/None; 32/1296/None | passed |
+| r4-e1-tc-pair2-twoacc | tma-tensor/oneshot/dispatch:size | cuda_cpp | 42.9/53.5/103.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+| r4-e2-tc-pair2-nb2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.2/54.1/107.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+| r4-e3-ingest-probe-pair-parent | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.3/53.9/108.1 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |

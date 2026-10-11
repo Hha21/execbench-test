@@ -1,0 +1,206 @@
+id: r5-e3-tc-k48-pair
+parents:
+  - r4-e1-tc-pair2-twoacc
+  - r4-e2-tc-pair2-nb2
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E3/H26: each K stage is 48 k instead of 32 (an SW128 32-k box plus an SW64 16-k box per operand, 12 UMMAs and one
+  commit per stage, a 3-stage ring of 58-66 KB). This puts 1.5x the MMA work behind each commit and hides the
+  ~900-1200 clk per-stage floor of 32-k rings wherever N < ~470. One kernel (two TMEM accumulators, nb = ceil(B/512)
+  batch tiles, no CUTLASS) covers every B > 256. With L2-hot W, the 48-k stage at Bpad 384 runs at the MMA ideal
+  (1175 vs 1152 clk). With real W, a 3-deep ring exposes about 10% DRAM latency (1290-1340 clk). That exposure is set
+  in ns, so it should cost fewer cycles at the portal's 1.5 GHz lock. Rented, same GPU vs r3-e2: 373 -7.8%,
+  384 -4.7%, 449 -11.3%, 512 -4.0%, 691 -0.9%, 773 -8.8%, 853 -4.1%, 919 +1.3%.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -8
+    confidence: low
+  L:
+    pct: -6
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 38
+  smem_per_cta_bytes: 217088
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 122880
+  launches_per_call: 1
+knobs:
+  KS_RULE: "48 if Ntile <= 432 else 32"
+  NB_RULE: "ceil(B / 512); Ntile = roundup16(ceil(B / nb))"
+  STAGES_RULE: "(226 KB - 1 KB) / roundup1024(stage bytes): ks48 -> 3 (Ntile 272-432), ks32 -> 5 (448-464), 4 (480-512)"
+  STAGE_LAYOUT: "[W128 16 KB][E128 half x 128 B][W64 8 KB][E64 half x 64 B]"
+  SW64_DESC: "SBO 512 B, layout type 4, start advanced 32 B per K-step"
+  EPILOGUE_WARPS: 8
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel (unchanged r2 path)
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel (unchanged r3 path)
+    meta:
+      launches: 1
+  - max_tokens: 432
+    kernel: tc_k48_kernel<48>
+    meta:
+      nb: 1
+      stages: 3
+      launches: 1
+  - max_tokens: 512
+    kernel: tc_k48_kernel<32>
+    meta:
+      nb: 1
+      stages: 5-4
+      launches: 1
+  - max_tokens: 864
+    kernel: tc_k48_kernel<48>
+    meta:
+      nb: 2
+      stages: 3
+      launches: 1
+  - max_tokens: 1024
+    kernel: tc_k48_kernel<32>
+    meta:
+      nb: 2
+      stages: 5-4
+      launches: 1
+  - max_tokens: null
+    kernel: tc_k48_kernel<48|32>
+    meta:
+      nb: ceil(B/512)
+      launches: 1
+tests:
+  - H26
+  - H23
+  - H22
+  - H19
+findings:
+  - "run_tests 16/16 PASS (10 rounds each), one launch, no CUTLASS. Rented us vs r3-e2-tc-pair-kbs2 on the same GPU: 373 63.0 vs 68.3 (-7.8%), 384 64.8 vs 67.9 (-4.7%), 449 70.6 vs 79.7 (-11.3%), 512 77.0 vs 80.2 (-4.0%), 691 108.7 vs 109.6 (-0.9%), 773 118.5 vs 129.9 (-8.8%), 853 126.1 vs 131.5 (-4.1%), 919 134.2 vs 132.5 (+1.3%); B <= 256 unchanged code within +-1.9%. Band S -0.4% M -2.3% L -4.7%; emulator 0.6291 +- 0.012 (P beat 88%) [run_tests]"
+  - "SW64 UMMA descriptor (start>>4, LBO 1, SBO 512 B, version bit 46, layout type 4 at bits 61-63, advanced by 32 B per K=8 step) with a TMA SWIZZLE_64B 16-float box is correct on the first build. Max |err| vs fp64 (W/sqrt(3072), bias randn) is bit-identical to the 32-k ring (same accumulation order): 373 1.56e-3, 384 1.53-1.56e-3, 449 1.51-1.68e-3, 512 1.63e-3, 691 1.59-1.62e-3, 773 1.62e-3, 853 1.59e-3, 919 1.53e-3; 0 elements outside atol+rtol, 4 draws [probe_b200]"
+  - "cycles per stage, real W after the 252 MB zero flush, evict_first, clock64 + globaltimer, rented 1.61-1.74 GHz, 3 interleaved rounds, two containers. Bpad 384 nb1: k32 st4/5 893-908 (container A) and 932-936 (B); k48 st3 1307-1341 (A, 871-894 per 32-k) and 1281-1301 (B, 854-868 per 32-k); MMA ideal 1152 per 48-k. So -2.5% (A) and -7.5% (B) per K; span 97.5-100k vs 100-104k clk. Success target (span <= 90k) missed. Refutation threshold (>= 1350 clk) not reached [probe_b200]"
+  - "classification at Bpad 384 k48: with L2-hot W (4 W tiles) 1175 clk = 98% of MMA ideal, so the per-stage floor is hidden; with real W 1290-1300, so about 10% is exposed DRAM latency of the 3-deep ring. Feed-only (no MMA) with real W runs 1208 clk at 1.96 GHz = 617 ns per stage = the 40 us evict_first stream floor, against MMA 707 ns at 1.63 GHz: feed and MMA overlap only partly with 2 stages of lead. k32 with hot W stays at 930 (floor-bound whatever W does) [probe_b200]"
+  - "k48 at 449/512 nb1 loses: 449 1430-1510 per 48-k (953-1007 per 32-k) vs k32 st5 941-947; 512 1569-1587 vs 1037-1044. Both are MMA-bound already at k32, and 3 stages expose latency (hot W 449 k48 1418 = k32). Shipped: k32 at Ntile > 432 [probe_b200]"
+  - "L band nb2 per 48-k stage (per 32-k) vs k32 st5: Ntile 352 (691) 1145-1166 (763-777) vs 891 (-13%, span 86-87k vs 98k); Ntile 400 (773) 1234-1250 (823-834) vs 892 (-7.5%); 432 (853) 1318-1331 (879-888) vs 894 (-1%); 464 (919) 1418 vs 940 (0%). nb2 tiles are not DRAM-bound (sibling pair re-reads W from L2), so k48 reaches 91-97% of MMA ideal [probe_b200]"
+  - "2-stage k48 ring at Bpad 384: 1736-1799 clk per stage (+35%). The 3-stage requirement holds [probe_b200]"
+  - "dead end: decoupled rings (separate W and emb rings, separate full/empty barriers and producer threads, two commits per stage) cost +390-430 clk per stage at every shape. k32 1322 vs 896-947 at 384/449/512/919; k48 per 32-k 1023-1038 vs 763-935 at 384/691/773/853; deeper W rings (4-6) change nothing. The per-stage floor scales with the number of tcgen05.commit per stage, not ring depth [probe_b200]"
+  - "dead end: L2 prefetch of W ahead of the ring (cp.async.bulk.prefetch.tensor.2d.L2, distance 3/4/6 stages, unhinted or evict_first-hinted) is +18-23% at Bpad 384 k48 (1518-1643 vs 1281-1324 clk) and +3-4% at k32 384/449 [probe_b200]"
+  - "dead end: L2 promotion NONE/128B/256B on the W maps changes nothing (k48 384: 1315-1326 vs 1290-1301; k32 932-940). W evict_normal instead of evict_first: k48 384 +15% (1468-1484), k32 +3% [probe_b200]"
+  - "epilogue: indexing the OutPtrs kernel parameter with the runtime chunk c made ptxas create a 48-B stack frame (the 6 pointers copied to local memory). A select loop over the 6 pointers removes it (0 B stack, 38 regs). The epilogue costs 8.4-11.3k clk per CTA at 373-512 and 8.1-10.1k at nb2, about 7-10% of the span; it is bound by store bandwidth (about 5-6 TB/s) [probe_b200, compile_b200]"
+  - "static sm_100a: tc_k48_kernel<48> and <32> 38 regs, 0 local, UTMALDG x6, STG x32; dynamic smem 181 KB (ks48 Bpad 384), 205 KB (ks48 Ntile 432), 201-212 KB (ks32) [compile_b200]"
+  - "portal prediction: rented cycle gains are -5..-8% at 373/384 (DRAM-latency-exposed, ns-bound), -11% at 449, -7..-9% at 773 over CUTLASS. At the 1.5 GHz lock the 48-k ring's DRAM exposure costs fewer cycles (617 ns feed vs 768 ns MMA per stage), so 373/384 should approach 64 x ~1190 + ~13k = ~89k clk = ~60-66 us vs portal CUTLASS 83 (-20..-28%). By the operator rule max(1.05 x DRAM, cycles/1.55 GHz) + 11% it is about 70 us (-15%). 691/919 are about even with CUTLASS rented; the r3 calibration (hand-written kernels gained more on the portal than rented) favours keeping them hand-written [analysis]"
+  - "score model: M -8% / L -6% vs r3-e2 gives 0.6333 (current 0.6166); a 10% cut is worth +0.0105 in M and +0.0145 in L [predict_score]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 432
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 864
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "The 373/384 gain on the rented card is only -5..-8% because the 3-deep 48-k ring exposes DRAM latency. The larger portal gain rests on that exposure being ns-bound (fewer cycles at 1.5 GHz); if the portal DRAM sits further away in cycles, 373/384 land near -5%"
+  - "691 and 919 move from CUTLASS to the hand-written kernel at roughly rented parity (-0.9% / +1.3%); if hand-written kernels scale worse to the portal than CUTLASS (ratio 1.31 vs 1.25-1.27), these two could lose 2-4%"
+  - "Two waves of 74 pairs at nb2 assume 74 co-resident 2-CTA clusters at up to 217 KB smem (true on the rented card)"
+  - "kSmemDyn 226 KB leaves under 1 KB of headroom against the 227 KB per-CTA limit at ks32 Ntile 448-464 (5 x 45 KB + 1 KB)"
+  - "mbar_wait traps after 2^27 polls, so a broken pipeline errors instead of hanging"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

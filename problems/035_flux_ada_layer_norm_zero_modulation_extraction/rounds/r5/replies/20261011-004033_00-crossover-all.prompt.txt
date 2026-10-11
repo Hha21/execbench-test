@@ -1,0 +1,2370 @@
+=== TASK ===
+Round: r5   Operation: crossover
+Problem: L1/035_flux_ada_layer_norm_zero_modulation_extraction   Target niche: exp:E1:H27   Target band: all
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r5-'.
+Experiment E1 (tests H27): Merge: one per-B dispatcher from r2/r3/r4-e1/r4-e2 kernels and CUTLASS, winners chosen from interleaved same-container runs. 1. Start from r4-e1-tc-pair2-twoacc (it already carries the unchanged r2 tc_small path for B <= 131, the r3 pair kbs2 path for 131 < B <= 256, tc_pair2 for 256 < B <= 512 and CUTLASS 256x192/256x256 for B > 512). Add r4-e2's pair2 kernel (nb=1 and nb=2 modes, with its fixed per-8-column epilogue remap) into the same kernel.cu under distinct symbol names; keep one launch per call, cudaFuncSetAttribute per kernel at module init, binding.cpp unchanged except the dispatch table. 2. In ONE probe process (rebuild CUTLASS TUs and both hand kernels inside the probe; /tmp is not kept), run harness-mode timing (252 MB zero flush, CUPTI or events) interleaved over 3 rounds for every candidate at every B: 373/384: tc_pair2 (r4-e1), nb1 (r4-e2), CUTLASS 256x192; 449/512: tc_pair2, nb1, CUTLASS 256x256; 691: nb2, CUTLASS 256x192; 773/853: nb2, CUTLASS 256x192 and 256x256; 919: nb2, CUTLASS 256x192. Hand kernels report clock64 span and the globaltimer-derived SM clock; for CUTLASS launch a tiny clock64/globaltimer kernel immediately before and after it to record its clock. Report both wall us and cycles-at-clock for every cell. 3. Selection rule per B: pick the lowest cycles at the same clock; if two candidates are within 3% in cycles, pick the one with the lower rented wall time; prefer CUTLASS on a true tie. Note that hand kernels throttle the card to 1.64-1.75 GHz while CUTLASS runs at 1.96 GHz, so wall time alone understates hand-kernel gains; state which rule decided each B. 4. If the r4-e1 portal result has landed, compute its portal/rented ratio at 192/211/449/512 and use it instead of 1.1-1.15 when predicting; record the ratios in findings. 5. Build the final dispatch table, run run_tests (16/16 x 10 rounds), record max |err| vs fp64 per B over 3 draws for every hand-kernel path, confirm one launch per call via the CUPTI discovery list, and confirm the build time of the whole solution (< 120 s). 6. Design card: paths list every B range with its kernel; findings list the full interleaved table with clocks and the per-B decision. Success: run_tests 16/16, one launch; rented same-container vs r2-e1-tc05-ef-small: 192/211 <= -5%, 449/512 <= -8%, 373/384 <= -5% (nb1) and 773/853 <= -4% in cycles at the same clock; emulator >= 0.625 with the hand-kernel paths at a 1.10-1.15 portal ratio; the kernel is submitted to the portal Refuted if: nb1 does not beat tc_pair2 and CUTLASS at 373/384 by >= 3% in the interleaved run (then 373/384 stay on CUTLASS and depend on E2/E3), or the nb2 773/853 gain is < 3% in cycles (then CUTLASS stays at all L > 512) This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r3-e2-tc-pair-kbs2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.4/53.8/108.0 | -/-/- | -/-/- | -/-/- | 45.1/62.2/140.1 | 0.616564 | 32/1296/None; 30/1296/None | passed |
+| r2-e1-tc05-ef-small | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.2/55.4/109.8 | -/-/- | -/-/- | -/-/- | 45.0/66.6/139.3 | 0.610767 | 32/1296/None | passed |
+| r1-adamod-cutlass-tf32-2sm-chunkepi | tma-tensor/persistent/dispatch:size | cuda_cpp | 52.0/62.2/109.1 | -/-/- | -/-/- | -/-/- | 55.3/69.6/136.9 | 0.588448 | - | passed |
+| r0-adamod-dispatch-skinny-fp32-3xtf32 | cpasync/oneshot/dispatch:size | cuda_cpp | 134.1/300.5/475.2 | -/-/- | -/-/- | -/-/- | 155.9/333.4/569.0 | 0.234899 | 128/1024/None; 108/1024/None | passed |
+| r1-e1-lt-fasttf32-bias-scatter | tma-tensor/oneshot/all | cuda_cpp | 56.8/75.3/138.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 20/0/None | passed |
+| r1-ef-bulk-tf32-stream-b16 | bulk1d/oneshot/dispatch:size | cuda_cpp | 51.3/75.7/138.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 140/1152/None; 90/1152/None | passed |
+| r2-adamod-stream16-cutlass-tf32 | tma-tensor/persistent/dispatch:size | cuda_cpp | 48.7/62.3/109.7 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 140/1152/None; 90/1152/None | passed |
+| r2-e3-tf32-ceiling-r1tiles | tma-tensor/persistent/dispatch:size | cuda_cpp | 52.1/61.4/102.2 | -/-/- | -/-/- | -/-/- | -/-/- | pending | - | passed |
+| r3-e3-tc05-emb-mcast2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.4/55.2/107.3 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 31/1296/None; 32/1296/None | passed |
+| r4-e1-tc-pair2-twoacc | tma-tensor/oneshot/dispatch:size | cuda_cpp | 42.9/53.5/103.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+| r4-e2-tc-pair2-nb2 | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.2/54.1/107.8 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+| r4-e3-ingest-probe-pair-parent | tma-tensor/oneshot/dispatch:size | cuda_cpp | 43.3/53.9/108.1 | -/-/- | -/-/- | -/-/- | -/-/- | pending | 32/1296/None; 30/1296/None | passed |
+B200 results so far:
+- r0-adamod-dispatch-skinny-fp32-3xtf32: B200 score 0.235, geomean 321.2 µs, B200 S/M/L 155.9/333.4/569.0 µs
+- r1-adamod-cutlass-tf32-2sm-chunkepi: B200 score 0.588, geomean 83.5 µs, B200 S/M/L 55.3/69.6/136.9 µs
+- r2-e1-tc05-ef-small: B200 score 0.611, geomean 77.7 µs, B200 S/M/L 45.0/66.6/139.3 µs
+- r3-e2-tc-pair-kbs2: B200 score 0.617, geomean 76.2 µs, B200 S/M/L 45.1/62.2/140.1 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #35 (035_flux_ada_layer_norm_zero_modulation_extraction). Seeded 2026-10-10 (research round r0); updated r1 2026-10-10; updated r2 2026-10-10; updated r3 2026-10-10; updated r4 2026-10-10; updated r5 2026-10-11.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'bf16 is this problem''s own dtype: write cutlass::bfloat16_t / __nv_bfloat16 directly. Never build type names with the ## token-paste operator (the lint rejects it: it reads as lint evasion to a reviewer).'
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells, TMA multicast of a GEMM operand); inherited from #38: clustered row-wise grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot (r13, H21).'
+- 'Any cublasLt algorithm forced per size must be chosen from shape only, verified 16/16 on 10 random rounds, and must launch the same activity sequence every call (split-K with a reduce kernel is allowed only if the count is constant per shape).'
+- 'The loop''s lint rejects the literal bf16 type name in CUTLASS sources; CUTLASS candidates go through run_tests and the operator whitelists the type name for this problem (dtype is bf16 by definition).'
+- 'Portal A/B packaging (r2): a candidate may dispatch by (batch_size, seq_len) among same-M shapes (4096 group: 4,1024 / 16,256 / 8,512 plus 2,2053; 8192 group: 16,512 / 8,1024 / 64,128 / 32,256). Shape-only dispatch is legitimate, but every variant must be a real candidate (16/16 correct, one launch); no diagnostic or deliberately wrong variant. The card must list which shape runs which variant and all 10 rented per-size times per variant, measured interleaved in one probe.'
+- 'Rented differences under about 4% between fused variants are unproven at the portal (fused kernels scale 1.36-1.40 portal/rented, plain GEMMs 1.22); interleave variants in the same probe, 3 rounds, and only promote gains of 5% or more.'
+- '#35 precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation is allowed (CUBLAS_COMPUTE_32F_FAST_TF32, tcgen05 kind::tf32, allow_tf32 inside our own GEMM call); inputs and outputs stay fp32 and no intermediate is stored below fp32. bf16/fp16 operands and BF16x9 emulation remain forbidden. TF32 max error 1.6e-3 vs atol 2e-3: verify every candidate on all 16 workloads x 10 rounds and never round outputs.'
+- '#35 dtype is fp32 throughout; the bf16 constraint above is inherited text from #30 and does not apply here.'
+- '#35 TF32 margin (operator, r1): accumulate in fp32 over the full K = 3072 inside one tensor-core accumulator; no split-K whose partials are stored or re-fed below fp32; no rounding of outputs or intermediates. Every candidate records max |err| vs fp64 per B (must stay <= 1.7e-3 against atol 2.0e-3; single draws of 1.73-1.79e-3 have been seen for every TF32 path including CUTLASS and are draw-dependent, so report 3 draws) in its findings. TMA tensor maps must use CU_TENSOR_MAP_DATA_TYPE_TFLOAT32 (round on load); FLOAT32 truncates and fails (r2).'
+- '#35 cache hints (r2): L2 evict_first is used only on the TMA/bulk loads of this call''s own weight buffer and evict_last/evict_first only on this call''s outputs; no applypriority, no persisting-L2 windows. Record the hint in the card''s paths (w: ef) so the emulator can learn the portal ratio of hinted paths.'
+- '#35 portal ratios (r2, H15): emulator predictions for tensor-core-bound paths must use 1.21-1.31 portal/rented (1.10-1.15 for hand-written tcgen05 kernels that throttle the rented card to 1.64-1.75 GHz, r4); DRAM-bound paths 1.03-1.08. The r1 emulator overpredicted L (0.603 predicted vs 0.5884 portal) by ignoring this.'
+- '#35 measurement (r3, operator): judge B >= 192 designs by SM cycles (clock64 in-kernel, with %globaltimer to recover the rented SM clock, which drifts 1350-1965 MHz between runs) or by tensor-pipe efficiency per clock, not by rented microseconds alone. Predict the portal time as max(1.05 x rented DRAM-bound time, rented compute cycles / ~1.55 GHz). Every probe records the clock it ran at. Cycle counts of tcgen05 rings are clock-invariant (r4-e3: identical at 1.14 and 1.9 GHz), so cycles are the portable quantity.'
+- '#35 dispatch (r3, operator): the r2 B <= 131 path (tc_small, evict_first, 144 one-SM CTAs) stays unchanged; new work targets 131 < B <= 512 first, then L.'
+- '#35 comparison baseline (r4): a hand-written kernel for B > 256 must be compared, in the same probe and in SM cycles, against the CUTLASS tile it replaces (256x192 for 373/384 and 691+, 256x256 for 449/512), not against tc_small or tc_pair. CUTLASS''s clock is read with a tiny clock64/globaltimer kernel launched immediately before and after it in the same probe (pynvml is missing in the containers).'
+- '#35 cycle accounting (r5, replaces r4): per-stage time of a tcgen05 ring is max(MMA clk per stage, per-stage floor), where the floor is about 950-1200 clk (about 575 ns) in our hand-written rotating rings and at most about 600 clk in CUTLASS''s warp-specialised pipeline. There is no ingest ceiling (H24 refuted: feed-only reaches 93-100 B/clk per SM). Every probe reports MMA clk per stage, the measured per-stage time and which term binds. Design stages so that MMA work per stage >= the floor.'
+- '#35 hand-written epilogues (r4-e2 lesson): check ptxas output for stack frame / local memory after any change to the TMEM -> register -> global remap; a per-column remap put a 16-element array in local memory and cost 22-33k clk per CTA. Remap per 8- or 16-column group only.'
+- '#35 probe infrastructure (r4): /tmp in probe containers is not reliably kept between probes; every timing probe rebuilds the CUTLASS TUs (18-39 s) and the hand kernels (1.5 s) and interleaves all variants in 3 rounds inside one process.'
+hypotheses:
+- id: H1
+  statement: The reference's cuBLAS SIMT sgemm is within 25-30% of the FFMA peak at M/L, so FFMA-only designs cannot gain more than about 1.3x there; packed fma.f32x2 adds no throughput.
+  status: supported
+  evidence:
+  - 'probe: cutlass3x_sm100_simt_sgemm 55-57 TF/s at B=384/919 vs 74.4 TF/s peak at 1965 MHz [probe_b200]'
+  - 'probe: FFMA 67.6 TF/s vs FFMA2 (fma.rn.f32x2) 73.5 TF/s on 148x8 CTAs: same 128 FMA/clk/SM datapath [probe_b200]'
+  - 'r1: moot since the TF32 ruling and Tb = TF32 speed; FFMA paths cannot score anywhere (B=5 skinny 76.1 us portal vs Tb 82.8)'
+- id: H2
+  statement: 3xTF32 (hi/lo split, three TF32 tensor-core GEMMs, fp32 accumulate) is fp32-level accurate and 3x faster than the reference at L even with a separate split pass and scatter.
+  status: parked
+  evidence:
+  - 'probe: max error vs fp64 4.3e-5 (fp32 cuBLAS 1.6e-5, tolerance atol 2e-3) at B=919; gemms 415 us + split 112 + scatter [probe_b200]'
+  - 'run_tests r0: 575 us at 919 vs 1882 reference, 345 at 384 vs 762, 16/16 pass on 10 random rounds [r0-adamod-dispatch-skinny-fp32-3xtf32]'
+  - 'portal r0: 688.9 us at 919 scores 0.151 against Tb 169.8 (TF32 speed); retired by the 2026-10-10 TF32 ruling'
+- id: H3
+  statement: A fused tcgen05 3xTF32 kernel (TMA load, hi/lo split in shared memory, 3 MMAs per k-block, bias + six-way split in the epilogue, one launch) removes the 107-112 us split pass and the 7-47 us scatter and reaches max(3 x FLOPs / 588 TF/s, memory floor).
+  status: parked
+  evidence:
+  - 'estimate: 531 us at 919 at the lock vs r0 575 rented (~690 at the lock); 76-222 us at M vs 272-345; ~55-75 us at S vs 256'
+  - 'r1: superseded by plain TF32 (ruling); 3 MMAs per k-block can never reach Tb (169.8 us at 919 = 613 TF/s). The fused-epilogue part lives on as H14'
+- id: H4
+  statement: For B <= 128 one M-tile covers all rows, so a tensor-core TF32 kernel streams W exactly once and the S band is memory-bound; the S floor is the evict_first reads-only stream (39-40 us rented, H16), not the 50 us plain stream cuBLAS sits at.
+  status: supported
+  evidence:
+  - 'probe: plain cuBLAS TF32 runs 50-51 us at B=5..128 rented, i.e. at the dirty-L2 plain stream floor [probe_b200]'
+  - 'portal r0: Tb 82.8-90.7 us at B<=128, Tsol about 15 us; t = 50 us scores 0.66, t = 40 us 0.73'
+  - 'portal r1: CUTLASS 128x64/256x64 at 57.0/50.4/50.5/59.5/59.9 us (B=5..128) score 0.62-0.66; r1-ef mma.sync stream kernel 41.6/43.6 rented at B=5/16 shows the hinted floor is reachable with a GEMM attached'
+  - 'portal r2: tc_small 44.1/44.1/44.5/45.2/47.1/47.8 us at B=5..131 (scores 0.70-0.72), ratio 1.03-1.08 vs rented: DRAM-bound as predicted [r2-e1-tc05-ef-small]'
+- id: H5
+  statement: The skinny SIMT kernel (lane = W row, cp.async-staged 128x64 tiles, emb broadcast from smem) is at the copy floor at B=5 but issue/latency bound at B=16 and 32; 2 CTAs/SM and 2-row-per-lane register tiling recover the 32-64 us FFMA floor.
+  status: parked
+  evidence:
+  - 'probe: 54.6 / 88.8 / 145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs, 108-129 KB smem); run_tests 60.6 / 88.3 [probe_b200, r0]'
+  - 'dead end: skinny<32> loses to cuBLASLt fp32 (122 us) so B=32 stays on the library path in r0'
+  - 'portal r0: 76.1 us at B=5 (x1.26 vs rented: it scales with the SM clock, so it is issue-bound, not DRAM-bound); cuBLAS TF32 at 50 us beats it. Parked'
+- id: H6
+  statement: cuBLAS BF16x9 emulation is a legitimate one-call fp32-level path (error 3.4e-6) but is slower than 3xTF32 at L and falls back to SIMT below B~64.
+  status: refuted
+  evidence:
+  - 'probe: 117 / 131 / 177 / 358 / 754 us at B=5/32/128/384/919, maxerr 3.4e-6; r0 3xTF32 path 575 at 919 [probe_b200]'
+  - 'operator ruling 2026-10-10: BF16x9 emulation stays forbidden; and it is 4x slower than Tb at 919 anyway'
+- id: H7
+  statement: SOLAR's Tsol for this problem uses the FP32 CUDA-core peak, so 3xTF32 designs can go below Tsol at M/L (scores above 0.5 come cheaply there and the S band decides the ranking).
+  status: refuted
+  evidence:
+  - 'portal r0: Tsol = (Tb - S t - S Tb)/(1 - 2S) gives 15.0 us at B=5, 23.7 at 373, 57.9 at 919 = FLOPs / 1.8 PF/s (bf16-like dense rate, 2x the TF32 peak), floored at about 15 us for B <= 211'
+  - 'consequence: no TF32 kernel can reach Tsol; the lock-time TF32 peak (909 TF/s, 115 us at 919) scores at most 0.66 there'
+  - 'r2: the Tsol model reproduces the r2 portal score 0.610 from the per-workload times; 75% of TF32 peak at every B would score about 0.68, 85% about 0.71 [operator brief r3]'
+- id: H8
+  statement: The hidden Tb is close to the fp32 reference (~2.4 ms at 919 at the lock), not a TF32-enabled PyTorch solution (~180 us).
+  status: refuted
+  evidence:
+  - 'portal r0: Tb = 82.8 / 83.1 / 84.8 / 90.1 / 90.7 (B=5..128), 93.8-110.5 (M), 119.1-169.8 (L) us; 169.8 at 919 = 613 TF/s: a TF32 PyTorch matmul at the lock, slightly faster than our rented cuBLAS TF32 scaled by 1.31 (177 us)'
+- id: H9
+  statement: The separate scatter and any tmp[B,18432] round trip cost 5 us at B=5 and 22 us at 919 (3-13% of Tb, not the 28% first estimated); a fused epilogue that adds the bias and picks the output tensor by column chunk gains that much and no more before the GEMM itself improves.
+  status: supported
+  evidence:
+  - 'probe r1-e1: GEMM alone 49.5 vs 55.1 with scatter at B=5; 135 vs 157 at 919. r0''s 47 us figure was inflated by the 453 MB scratch traffic [probe_b200]'
+  - 'portal r1: fused CUTLASS 167.9 us at 919 vs Tb 169.8 (cuBLAS TF32 + bias pass): the fused epilogue is worth about the scatter and the GEMM rate is identical to Tb''s'
+- id: H10
+  statement: 'L2 evict_first on the W stream removes most of the dirty-L2 write-back penalty from the timed window (reads-only 45.9 -> 39.9 us plain LDG, 45.0 -> 38.7 bulk ring); store hints on the outputs are not a lever (<= 0.5 us).'
+  status: supported
+  evidence:
+  - 'probe r1-ef: with the harness zero-flush, plain LDG.128 45.9 us, evict_first 39.9; bulk ring 45.0, bulk + evict_first 38.7; ld.global.v8 256-bit 41.5 (no gain) [probe_b200]'
+  - 'probe r1-ef: read-based flush gives 38.9 us for every variant; so the dirty write-back costs 6-12 us for plain reads and 4-5 us with evict_first [probe_b200]'
+  - 'probe r1-ef: reads + six outputs at B=128: st default 40.3, evict_last 39.8, evict_first 40.3 us [probe_b200]'
+  - 'probe r2-e1: evict_first on the W TMA loads saves 6-9 us at every B <= 256 inside one container (45.5 vs 51.7 at B=5, 48.1 vs 57.0 at 211); the saving varied 1.5-9 us between containers [r2-e1-tc05-ef-small]'
+  - 'portal r2: the hinted path landed at 44.1-47.8 us for B <= 131 vs 50.4-59.9 unhinted CUTLASS in r1 (-12..-24%) [r2-e1-tc05-ef-small]'
+  - 'r4-e2: at 691-919 (compute-bound nb2 kernel) evict_first vs evict_normal on W is within 1%: the hint only matters where the kernel is DRAM-bound [r4-e2-tc-pair2-nb2]'
+- id: H11
+  statement: cuBLASLt CUBLAS_COMPUTE_32F_FAST_TF32 with a bias epilogue plus a scatter is a 16/16-correct path at 55-177 us rented (score about 0.54); cuBLAS 13's batched pointer-array mode over the six chunks removes the scatter at no GEMM cost.
+  status: refuted
+  evidence:
+  - 'run_tests r1-e1: 55.5/54.1/54.8/59.5/60.4 (S), 62.7-94.5 (M), 99.3-177.0 (L) us, 16/16, emulator 0.537 [r1-e1-lt-fasttf32-bias-scatter]'
+  - 'refuted part: pointer-array batched GEMM (bias via C broadcast, pinned pointer arrays) is 12-43% slower than big GEMM + scatter at every B; bias epilogue + pointer array is NOT_SUPPORTED; the pointer arrays must change per call and reach the GPU over PCIe [probe_b200]'
+  - 'superseded: the CUTLASS fused epilogue (H14) is faster at every B and needs no library heuristics'
+- id: H12
+  statement: 'tcgen05 TF32 stops at about 68% of the 909 TF/s lock-time peak (cuBLAS 613 TF/s = Tb; our 2SM 256x192/256x256 the same) because of operand traffic through shared memory: a 2SM 256x256x8 MMA needs 8 KB of TMA writes and 12 KB of MMA reads per CTA per 128 clk (160 B/clk against 128 B/clk), a hardware ceiling no tile beats. The alternative is that the loss is shape-specific (72 W tiles, 1-5 batch tiles, K loop of 96 stages, W from DRAM) and a square hot GEMM shows >= 85%.'
+  status: refuted
+  evidence:
+  - 'probe r0: cuBLAS TF32 770 TF/s unlocked at 919 = 65-67% of the 1.19 PF/s TF32 peak at 1965 MHz [probe_b200]'
+  - 'probe r1: swapped 2SM 256x256 142 us, 256x192 135.5, 1SM 128x256 161 at 919: 2SM is 1.13-1.19x 1SM but the best core is 780 TF/s rented, the same as cuBLAS which already uses 2SM 256x256 [probe_b200]'
+  - 'portal r1: L ratio portal/rented 1.25-1.27 (clock ratio 1.31): SM-clock-bound, not DRAM-bound'
+  - 'probe r2-e3: cuBLAS TF32 on hot 4096^3 / 8192x8192x2048 / 8192^3 reaches 69-72 / 75 / 71% of the clock peak, BF16 71 / 79 / 69%: TF32 is not uniquely capped. Power-capped runs at 1190-1330 MHz reach 89-96% per clock, so the ceiling does not scale with the SM clock: not smem-port or issue-rate bound; likely L2/fabric operand bandwidth (~13 TB/s in both dtypes) [r2-e3-tf32-ceiling-r1tiles]'
+  - 'probe r2-e3: cuBLAS on our shape at B=1024 (no padding) gets 75% per clock; B=919 gets 68.5% only because of N padding to 960. Both halves of the statement are refuted; what remains is a ~75% practical ceiling at 1965 MHz plus padding and quantisation losses [r2-e3-tf32-ceiling-r1tiles]'
+  - 'r4 re-reading (withdrawn in r5): the ingest explanation (H24) is refuted. r5 re-reading: CUTLASS/cuBLAS K-tile-32 stages carry 384 clk (256x192) or 512 clk (256x256) of MMA work against a per-stage floor of about 550-600 clk (H23), which predicts 64-70% and about 85% minus padding: the floor, not operand bandwidth, is the likely cause of the library ceiling [INFERRED from r4-e3]'
+- id: H13
+  statement: Re-reading W from L2 once per 128- or 256-row M-tile is the second limiter at L; a cluster of 2-4 CTAs along M with TMA multicast of the W tile cuts it to 1-2 passes.
+  status: refuted
+  evidence:
+  - 'probe r1: cluster 4x1 (W multicast across two pairs) slower everywhere: 167.5 vs 146 us at 919, 98.5 vs 63 at B=5 [probe_b200]'
+  - 'probe r1: raster AlongN (batch tiles of one W tile together) already reads W from DRAM once; AlongM re-reads it and costs 306 vs 148 us [probe_b200]'
+  - 'probe r2-e3: cluster 2x2 (W multicast to two pairs along batch) 20-30% slower at 384-919 [r2-e3-tf32-ceiling-r1tiles]'
+  - 'r4-e2: in the nb2 pair kernel, batch-major cluster order (sibling re-reads W from DRAM) costs only about 1% (2 us) at 691-919: W re-reads are not a limiter for compute-bound kernels [r4-e2-tc-pair2-nb2]'
+- id: H14
+  statement: 'A one-launch CUTLASS sm100 TF32 kernel with the bias and the six-way split in the epilogue (output pointer picked by N-tile) removes the scatter and the tmp round trip and matches cuBLAS GEMM-only time at every B.'
+  status: supported
+  evidence:
+  - 'run_tests r1: 51.0/48.8/49.0/55.5/56.0 (S), 57.0-68.5 (M), 79.6-133.6 (L) us rented, 16/16, one launch, builds in 31-39 s per variant [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'portal r1: 0.5884; S/M/L 55.3/69.6/136.9 us; predicted 0.603 (L overpredicted: the GEMM rate did not beat Tb''s, see H12/H15)'
+  - 'dead end: 2SM 128xN tiles with N >= 128 trip a device assertion in the no-smem epilogue TMEM load; 128x64 is fine [probe_b200]'
+  - 'probe r2: among tiles that build, the r1 dispatch (256x192 for 131-384 and 691+, 256x256 for 449/512) is already the per-B minimum; K tile 16/64, swizzle 2/4 and clusters 2x2/4x1 all lose [r2-adamod-stream16-cutlass-tf32, r2-e3-tf32-ceiling-r1tiles]'
+  - 'r4-e3: CUTLASS 256x192 at B=384 runs 141k clk at 1962 MHz and 114-117k at 1.2 GHz (192 stages: about 600-730 clk per 384-clk stage); the portal clock interpolates to about 128k clk = 85 us, matching the portal 83 us [r4-e3-ingest-probe-pair-parent]'
+- id: H15
+  statement: Portal/rented time ratios on #35 are 1.21-1.31 for SM-clock-bound paths (tensor core, issue-bound SIMT) and 1.03-1.08 for DRAM-bound paths; the emulator must use the path's bound, not the language, to predict the portal time. The portal SM clock is about 1.55 GHz against the rented card's ~1.97 GHz in short runs.
+  status: supported
+  evidence:
+  - 'portal vs rented r0: skinny B=5 76.1/60.6 = 1.26; cuBLASLt fp32 B=32 142.3/123.7 = 1.15; 3xTF32 B=919 688.9/574.6 = 1.20'
+  - 'portal vs rented r1 (CUTLASS): B=16/32 1.03, B=96/128 1.07, B=5 1.12 (128x64 tile, 2 waves), M 1.07-1.19 rising with B, L 1.25-1.27'
+  - 'portal vs rented r2 (tc_small): B <= 131 1.03-1.08 (DRAM-bound); B=192/211 1.26/1.26 (62.2/64.0 vs 49.3/50.6 rented): the kernel is compute-bound at the lock from B=192, and its rented -14/-16% gain vanished (r1 was 61.3/65.6 there). B >= 373 1.21-1.28 as in r1 [r2-e1-tc05-ef-small]'
+  - 'probe r2-e3: the rented clock drifts 1349-1965 MHz with sustained load, so rented differences of ~7% between sessions with identical code are clock, not kernel [r2-e3-tf32-ceiling-r1tiles]'
+  - 'dead end: nvidia-smi -lgc is not permitted on the rented card; the ratio comes from portal pairs only'
+  - 'r3: the cycles/1.55 GHz rule underpredicts tc_small at 192/211 by about 11% (86k cycles -> 55.5 us predicted, 62.2/64.0 measured); the pending r3-e2-tc-pair-kbs2 portal result is the next calibration point [r3-e3-tc05-emb-mcast2]'
+  - 'r4: hand-written pair kernels throttle the rented card to 1.64-1.75 GHz (CUTLASS runs at 1.96), so their rented us already sit nearer the lock: expected ratio 1.10-1.15. Cycle counts are clock-invariant (r4-e3), so cycles/1.5 GHz + fixed costs is the model. The pending r4-e1 portal result (449/512 at 112-116k clk) calibrates this [r4-e1-tc-pair2-twoacc, r4-e3-ingest-probe-pair-parent]'
+- id: H16
+  statement: Any kernel that reads W once pays the dirty-L2 write-back (about 126 MB) on top of 227 MB, so the S/M floor under harness conditions is 45-53 us.
+  status: refuted
+  evidence:
+  - 'probe r1-ef: reads-only floor with the harness flush is 39-40 us with evict_first (38.9 with a read-based flush): the hinted reads recycle their own lines and the write-back leaves the timed window [probe_b200]'
+  - 'consequence: S scores can reach about 0.73 (t = 40 us vs Tb 83); portal r2 reached 44.1-47.8 us (0.70-0.72) [r2-e1-tc05-ef-small]'
+- id: H17
+  statement: 'A fused tcgen05 TF32 kernel whose W loads carry L2 evict_first (one N tile for B <= 128: 144 one-SM CTAs of 128 W rows, N = B padded to 16, >= 96 KB of W in flight; N = 256 tiles for 131-256) reaches 42-45 us rented at every B <= 128 and about 45-50 us at 131-211, against 49-61 us for the unhinted CUTLASS tiles; portal ratio about 1.05 (DRAM-bound). Worth about +0.03.'
+  status: supported
+  evidence:
+  - 'probe r1-ef: reads-only evict_first floor 39-40 us; mma.sync version 41.6/43.6 at B=5/16 but 63 at B=32 (mma.sync is compute/issue-bound above B ~ 16) [r1-ef-bulk-tf32-stream-b16]'
+  - 'run_tests r2: 42.7/42.0/42.4/43.5/45.7/44.1 us at B=5..131 rented, 49.3/50.6 at 192/211; 16/16 [r2-e1-tc05-ef-small]'
+  - 'portal r2: 0.6108 (+0.022 vs r1); B <= 131 44.1-47.8 us (-12..-24% vs r1, ratio 1.03-1.08). Supported for B <= 131. The 192/211 part is refuted at the portal: 62.2/64.0 us (ratio 1.26), the one-SM kernel at kbs=1 runs about 440 TF/s rented = 40% of the TF32 peak and is clock-bound at the lock [r2-e1-tc05-ef-small, operator brief r3]'
+- id: H18
+  statement: 'Batch-side tile quantization costs 6-24% at L: the r1 dispatch pads B=449/691/773/853 to 512/768/960/960 columns; per-B N tiles of 240/240/208/224 (multiples of 16, 4 or fewer batch tiles) pad to 480/720/832/896 and gain 6-13% there, about +0.01, provided CUTLASS 2SM 256xN builds and passes for those N.'
+  status: refuted
+  evidence:
+  - 'portal r1: 449 101.4 us = 512 101.9 (same padded work); 691 138.0; 773 164.9 = 853 166.7 = 919 167.9 (all padded to 960): times follow padded N, not B'
+  - 'probe r2: CUTLASS 2SM 256x144/160/176/208/224/240 fail static divisibility asserts in the B-operand smem layout; only batch tiles that are multiples of 64 build [r2-adamod-stream16-cutlass-tf32]'
+  - 'probe r2: 128-wide tiles cost about 5% more per padded column than 192/256, so the reachable padding cut (960 -> 896 at 773/853) is worth 0.7-1.2 us, noise. The padding lever needs a hand-written kernel with N = Bpad (H19) [r2-adamod-stream16-cutlass-tf32]'
+  - 'r4: the hand-written nb1/nb2 pair kernels realise the padding cut (Bpad 464 at 449, 2 x 400 at 773, 2 x 432 at 853) and gain 6-15% there; so the quantisation loss was real but only reachable outside CUTLASS [r4-e1-tc-pair2-twoacc, r4-e2-tc-pair2-nb2]'
+- id: H19
+  statement: 'A hand-written 2SM tcgen05 TF32 kernel for 131 < B <= 512, where one CTA pair (cluster 2, cta_group::2, M = 256 W rows) computes the whole batch in one pass (N = Bpad <= 512 as two UMMAs of N1 = 256 and N2 = Bpad - 256 into two TMEM accumulators, each CTA supplying N/2 emb rows and 128 W rows, full K = 3072 in the accumulators), with evict_first on the W TMA stream, removes N padding beyond 16, wave quantisation (72 pairs on 74, one wave) and the unhinted write-back. For B <= 256 (one accumulator) 2-k-block stages run at the DRAM floor (r3). For 256 < B <= 512 the stage time is max(MMA clk, per-stage floor): MMA-bound at Bpad 464-512 (928-1024 clk per 1-k-block stage) and floor-bound at Bpad 384 (768 clk of MMA against a 950-1200 clk floor). Worth about +0.02-0.03 over 192-512 once 373/384 are also fixed (H25/H26).'
+  status: supported
+  evidence:
+  - 'estimate: compute per SM at 100% is 2 x 128 x Bpad x 3072 FLOP / 4096 FLOP/clk = 73.7k clk at Bpad=384 (37.5 us at 1.965 GHz, 49 at 1.5 GHz) and 98k clk at 512 (50 / 65.6 us); at 75-85% this is 44-50 us rented at 384 vs 68.8 today, 59-67 at 512 vs 81.2 [analysis r3]'
+  - 'r3: the B <= 256 half is built and 16/16 correct: r3-e2-tc-pair-kbs2, 749 clk per k-block at 192/256 real W (DRAM floor), 45.7/48.2 us rented at 192/211 (-7.3/-3.6%); portal result pending [r3-e2-tc-pair-kbs2]'
+  - 'r4-e1: the 256 < B <= 512 half (tc_pair2, two accumulators, kbs1 x 4-5 stages) is built and 16/16 correct; same-GPU rented 449 70.0 vs 81.5 (-14%), 512 74.2 vs 81.8 (-9%), 373/384 67.3 vs 69.0 (-2%); net of CUTLASS drift about 0/-11/-6% at 384/449/512. Per k-block 954 (384, ideal 768), 954 (464, ideal 928), 1028 (512, ideal 1024): 449/512 MMA-bound, 384 floor-bound. Span 107-116k clk; epilogue 7-9k clk; sent to the portal, result pending [r4-e1-tc-pair2-twoacc]'
+  - 'r4-e2 side result: the same design as nb=1 (r4-e2 code) measured 62.3/62.4/67.1/72.6 us at 373/384/449/512 vs best CUTLASS 67.9/67.9/79.0/79.6 (-8/-8/-15/-9%) in one container, unshipped; it and tc_pair2 have never been interleaved in one container [r4-e2-tc-pair2-nb2]'
+  - 'r4-e3: resident and fed rings agree within 2% (fed N=384 931, N=512 1029 clk per k-block): the pair ring is MMA/floor-bound, not ingest-bound [r4-e3-ingest-probe-pair-parent]'
+  - 'open: 373/384 gain only once the floor is hidden or lowered (H25, H26); E1 (r5) merges the banked gains, portal calibration pending'
+- id: H20
+  statement: 'The one-SM kernel''s 40% efficiency at B = 192-256 comes mainly from emb: every one of the 144 CTAs re-reads the same B x 12 KB of emb from L2 (340 MB at B=192, more than W) and all CTAs hit the same 128 B lines at the same time. TMA multicast of each emb k-block across a 2-CTA cluster (each CTA loads half the rows to both) halves that traffic and gains >= 10% in cycles at 192/211/256; the alternative explanation is ring depth (5 stages of 40 KB at kbs=1 cover only ~1 us of DRAM latency) or the 1SM UMMA shape itself (H21).'
+  status: refuted
+  evidence:
+  - 'r2: at B=192/211 the coupled ring runs kbs=1 with 5 stages because emb fills shared memory; 2x2 stages at 211 cost 63.3 vs 50.6 us: strongly stage-count sensitive [r2-e1-tc05-ef-small]'
+  - 'r3-e3: emb multicast across a 2-CTA cluster costs +2-4% cycles at 192/211 (80.1-80.8k vs 82.0-83.2k), within noise at 132/256; 1 to 36 private emb copies change the warm time by < 1.5% (1072 vs 1086 clk per k-block): neither L2 hot-spotting nor emb bytes are the limiter [r3-e3-tc05-emb-mcast2, r3-e2-tc-pair-kbs2]'
+  - 'r3-e2: ring depth is flat from 3 to 5 stages at kbs1 (1115/1108/1108 clk per k-block real W); the limiter is the per-stage commit chain (H23) [r3-e2-tc-pair-kbs2]'
+  - 'r3-e3: hot-W vs cold-W cycles 80.7-82.3k vs 85.5-87.5k at 192-256: DRAM is not the M-band limit; feed-only (no MMA) 62-64k cycles = 63-74 B/clk per SM of TMA ingest, which with the MMA overlaps only partly (81k vs max(63k, 43k)) [r3-e3-tc05-emb-mcast2]'
+- id: H21
+  statement: 'From shared-memory-resident operands (no TMA), 1SM tcgen05 128xN kind::tf32 reaches >= 90% of 4096 FLOP/clk/SM for N = 128-256, and 2SM 256xN the same per SM; adding the TMA feed costs the 1SM shape more than the 2SM shape because it moves N emb rows per CTA instead of N/2 (operand bytes per FLOP 1.5x at N=192). If instead the 1SM shape is already below 70% with resident operands, the UMMA shape itself is the M-band limiter and only 2SM designs can reach 75%.'
+  status: supported
+  evidence:
+  - 'r1: CUTLASS 2SM 256x256 is 1.13-1.19x faster than 1SM 128x256 at B=919 with TMA feed; no resident-operand measurement exists [r1-adamod-cutlass-tf32-2sm-chunkepi]'
+  - 'r2-e3: the cuBLAS 2SM ceiling (~75% at 1965 MHz, 90%+ when power-capped to 1.2-1.3 GHz) does not scale with the SM clock, so the portal at ~1.55 GHz may sit nearer 80% for the same kernel: the rented card understates the portal efficiency of 2SM tiles [r2-e3-tf32-ceiling-r1tiles]'
+  - 'r3-e2 (a): resident 1SM 128xN and 2SM 256xN give identical per-SM rates: 551 clk per commit group of 4 UMMAs for every N <= 256 (46.5/69.7/92.6% at N=128/192/256), and 98.6-99.1% at N=192/256 once a commit covers >= 8 UMMAs; UMMAs below N=128 are issue-bound at 64-77 clk each. The UMMA shape is not the limiter; the 2SM shape has no rate advantage with resident operands [r3-e2-tc-pair-kbs2]'
+  - 'r3-e2 (b): L2-fed rings: 1SM N=192 kbs1 48.5%, 2SM kbs2 75-86%, 2SM N=256 kbs2 96%: with the feed, 2SM wins only because halving emb per CTA lets 2-k-block stages fit (second clause supported through the stage size, not through operand bytes per se) [r3-e2-tc-pair-kbs2]'
+- id: H22
+  statement: 'The same two-accumulator pair kernel extended to nb = 2 batch tiles of N = roundup(ceil(B/2), 16) <= 464 (691 -> 2 x 352, 773 -> 2 x 400, 853 -> 2 x 432, 919 -> 2 x 464; one pass over K per tile, W tile re-read by the sibling pair from L2 under a batch-adjacent cluster order, grid 144 pairs = 2 waves on 74 pair slots) covers 691-919 at >= 85% per-clock efficiency because its ingest is 45-48 B/clk per SM (H24) against 73 for CUTLASS 256x192: about 100/114/123/132 us portal at 691/773/853/919 vs 138/165/167/168 (-21..-31%), worth about +0.03 with 449/512 from H19 (score model 0.685 for both halves).'
+  status: refuted
+  evidence:
+  - 'estimate: 919 -> 928 columns as 2 x 464 (vs 960 padded today), one accumulator pass each; MMA 928 clk per k-block per pass, 2 passes = 178k clk at 100%, 198k at 90% = 132 us at 1.5 GHz; CUTLASS today 5 waves x 256x192 at ~73% = 252k clk = 168 us [analysis r4]'
+  - 'r4-e2: built, 16/16 correct. Same-container interleaved vs best CUTLASS: 691 117.0 vs 108.7 (+8%), 773 120.2 vs 128.4 (-6.4%), 853 121.2 vs 129.9 (-6.7%), 919 129.5 vs 130.8 (-1%). Needed >= 15%: refuted as stated. Per-stage time 958-985 clk at Ntile 352-464 regardless of MMA work (640-928 clk): the per-stage floor (H23), not ingest, binds every tile below N 464; efficiency 68/75/81/81% at 691/773/853/919 [r4-e2-tc-pair2-nb2]'
+  - 'r4-e2: nb=3 adds a third wave and costs +30%; kbs=2 fits only 2 stages at Ntile 352-464 (77-91 KB per stage) [r4-e2-tc-pair2-nb2]'
+  - 'consequence: the nb2 kernel is a dispatcher candidate at 773/853 (-6.5%) and becomes -11..-27% at 691-853 if the floor is lowered to CUTLASS''s level or hidden by larger stages (H25, H26)'
+- id: H23
+  statement: 'The per-stage time of a tcgen05 ring is max(MMA clk per stage, per-stage floor). In our hand-written rotating rings the floor is about 950-1200 clk (about 575 ns, container-dependent, clock-invariant) and independent of the UMMA count (4 or 8), N (192-464), stage count (3-5), DRAM vs resident operands, the wait instruction, the fence and the commit count; it is hidden only when MMA work per stage is >= about 950 clk (N >= about 475 at kbs=1, or kbs >= 2 at N >= 256). CUTLASS''s warp-specialised pipeline pays at most about 600 clk per stage at the same cadence (4 UMMAs of N=192).'
+  status: supported
+  evidence:
+  - 'r3-e2 (a): resident commit groups of 4 UMMAs: 551 clk at N=128/192/256 (MMA 256/384/512 clk) in one container, 674 in another; groups of 8 UMMAs: 388 clk per k-block at N=192 (98.8%), 517 at N=256 (99%); rotating the stage address per k-block raises the floor to 839-844 [r3-e2-tc-pair-kbs2]'
+  - 'r3-e2 (b): ablation at N=192 kbs1: no-MMA 687, MMA-only 844, barrier ping-pong 652, full 852 clk per stage; removing tcgen05.fence no change; committing every second stage 906 -> 865 only [r3-e2-tc-pair-kbs2]'
+  - 'r4-e1: at N >= 384 the kbs1 floor is 950-1200 clk across containers (about 575 ns); same with 4 or 8 UMMAs per stage (994 vs 995), N1/N2 192/192 vs 256/128 (999 vs 995), interleaved vs sequential UMMA order, test_wait vs try_wait, nanosleep idle warps, commit every second stage (worse). Waiting 2 stages per 16 UMMAs gained 2.5% [r4-e1-tc-pair2-twoacc]'
+  - 'r4-e2: nb2 ring 958-985 clk per stage at Ntile 352-464 with 8 UMMAs; removing the second accumulator (half the MMA work) 982; no-MMA 646; warm W 967: the floor depends on neither MMA work, stage bytes, DRAM nor the wait instruction [r4-e2-tc-pair2-nb2]'
+  - 'r4-e3: resident kbs1 N=192 943, N=384 948 (81%) at 3-5 stages; N=464 947 (98%), N=512 1026 (99.8%): max() form confirmed, floor hidden from N about 475. Fed rings agree within 2% with resident. Cycles identical at 1.14 and 1.9 GHz [r4-e3-ingest-probe-pair-parent]'
+  - 'r4-e3: CUTLASS 256x192 at B=384 needs 114-117k clk for 192 stages at 1.2 GHz (about 600 clk per 384-clk stage) and 141k at 1.96 GHz: its floor is at most about 600 clk, 35-40% below ours; the structural difference is unresolved (H25) [r4-e3-ingest-probe-pair-parent]'
+- id: H24
+  statement: 'Per-SM TMA ingest from L2 into shared memory saturates at about 50-65 B per SM-clock on the rented card (15-17 TB/s aggregate, the L2/fabric rate), and this ceiling, not the tensor pipe, sets the 73-75% efficiency of every TMA-fed tcgen05 GEMM measured so far: CUTLASS/cuBLAS 256x192 needs 73 B/clk per SM, 256x256 64 B/clk, tc_small at 192 kbs1 51-58 B/clk, the r3 pair at 192/256 kbs2 55-63 B/clk. Designs below ~50 B/clk (one-pass pair with N >= 384: 45-52 B/clk) are MMA-bound. The ceiling is in bytes per second, not per SM clock, so at the portal''s 1.5 GHz it is 20-25% looser per clock (consistent with cuBLAS reaching 90% per clock when power-capped to 1.2-1.3 GHz), which is why ingest-bound paths show portal/rented ratios of 1.21-1.27 rather than the clock ratio 1.31.'
+  status: refuted
+  evidence:
+  - 'r3-e3: feed-only (no MMA, hot W) 62-64k cycles for 3.9-4.6 MB per CTA = 63-74 B/clk per SM at 192-256; B=16 hot feed-only 75 B/clk; full kernel 81k vs max(63k feed, 43k MMA): partial overlap [r3-e3-tc05-emb-mcast2]'
+  - 'r3-e2 (b): every L2-fed ring lands at 51-68 B/clk per SM when converted; the warm no-MMA ring at N=192 is 40 KB/687 clk = 58 B/clk [r3-e2-tc-pair-kbs2, analysis r4]'
+  - 'r4-e3 step 2: feed-only per-stage time is flat at 642-707 clk from 24 KB to 64 KB per stage, so B/clk scales with stage size up to 93-100 B/clk (kbs2 96 KB: 98 B/clk, about 28 TB/s aggregate): there is no 50-65 B/clk ceiling. The earlier 13-35 B/clk numbers were an artefact of a remote mbarrier.arrive release path (1000 clk round trip) [r4-e3-ingest-probe-pair-parent]'
+  - 'r4-e3 step 3: clk per k-block is identical (<= 0.2%) at 1.14 GHz (power-capped) and 1.8-1.96 GHz for resident, fed and feed-only rings; GB/s per SM scales with the clock. No bytes-per-second ceiling. Only 2-stage rings gain 4-7% at the low clock (L2 latency exposure) [r4-e3-ingest-probe-pair-parent]'
+  - 'r4-e1/e2: feed-only at 384-512 53-58 B/clk is the DRAM rate (about 6 TB/s), and stage bytes 33-46 KB give the same ~970 clk per stage: ingest is not binding in any shipped ring [r4-e1-tc-pair2-twoacc, r4-e2-tc-pair2-nb2]'
+  - 'consequence: the feed-only numbers still show 642-707 clk per TMA stage (a TMA-side per-stage cost of the same order as the MMA-side floor); a ring hides it only because feed and MMA overlap. The cuBLAS 75% ceiling is reassigned to H23/H12'
+- id: H25
+  statement: 'The ~950-1200 clk per-stage floor of our rotating rings is a protocol artefact of the hand-written pipeline, not a hardware commit-group throughput limit: candidates are (a) one thread issuing both TMA and UMMAs so UMMA issue back-pressure starves the TMA (and vice versa), (b) the empty-barrier wait placed in the UMMA issue path instead of a separate producer warp, (c) cluster-scope commit/wait semantics (multicast commit to both CTAs, acquire.cluster waits) on every stage, (d) the stage-address rotation itself (resident fixed stage 551 vs rotating 839 in r3), (e) the full-barrier wait + fence::after_thread_sync sequence per stage. A ring that mirrors CUTLASS''s PipelineTmaUmmaAsync structure (producer warp waits empty and issues TMA with expect_tx; MMA warp waits full, issues UMMAs, commits to empty; leader-only MMA; CTA-local empty wait in the producer) pays <= 600 clk per stage, which makes Bpad 384 kbs1 MMA-bound (768 clk per k-block: -19% at 373/384) and the nb2 L tiles MMA-bound at 352-432 (704-864 clk: -11..-27% at 691-853).'
+  status: open
+  evidence:
+  - 'r4-e3: CUTLASS 256x192 at 1.2 GHz: 114-117k clk for 192 stages = about 600 clk per stage with 384 clk of MMA; our rings 943-948 at the same cadence (N=192, 4 UMMAs) [r4-e3-ingest-probe-pair-parent]'
+  - 'r3-e2 (a): resident fixed stage (no rotation, no waits) 551-674 clk per 4-UMMA group; rotating stage 839-844 at 2-5 stages; so 290 clk of the floor comes with rotation and/or the waits that come with a ring [r3-e2-tc-pair-kbs2]'
+  - 'r4-e3: releasing the ring via remote mbarrier.arrive.release.cluster costs about 1000 clk per stage: cluster-scope barrier round trips are expensive, which makes (c) plausible [r4-e3-ingest-probe-pair-parent]'
+  - 'untested: a warp-specialised ring, a 1SM ring with CTA-local barriers, rotation without waits; E2 (r5) bisects'
+- id: H26
+  statement: 'Stages of 48 k (one SW128 32-k TMA box plus one SW64 16-k box per operand, two UMMA smem descriptors per stage, 64 stages over K = 3072, 3-stage ring of 60 KB per CTA at Bpad 384) carry 1152 clk of MMA work per stage, above the ~950-1200 clk floor, so the floor is hidden without knowing its source: the two-accumulator pair at 373/384 runs at about 800 clk per 32-k equivalent instead of 950-1000 (span about 85-88k clk vs 107-111k: -18..-22%, about 60 us portal vs 83). The same stage shape makes the nb2 L tiles MMA-bound (Ntile 352/400/432: 1056/1200/1296 clk per stage, 57-65 KB per stage, 3 stages fit), giving about -15..-25% at 691-853. A 3-stage ring of 60 KB stages hides DRAM latency (r4-e3: rings saturate at 3 stages; r4-e1: st3 vs st5 at 40 KB costs 5%).'
+  status: open
+  evidence:
+  - 'r4-e1 open note: a 48-wide k stage (SW128 32 + SW64 16 boxes, 60 KB per CTA, 3 stages, 1152 clk MMA per stage) is the only way past the floor at Bpad 384 without a floor fix [r4-e1-tc-pair2-twoacc]'
+  - 'r4-e3: the floor is hidden once MMA work per stage >= about 950 clk (N=464 98%, N=512 99.8% at kbs1; N=384 kbs2 2 stages 91-95% L2-hot but 2-stage rings expose DRAM latency: r4-e1 kbs2 st2 1127-1265 with real W) [r4-e3-ingest-probe-pair-parent, r4-e1-tc-pair2-twoacc]'
+  - 'untested: SW64 UMMA descriptors for the 16-k tail, 3 x 60 KB rings with DRAM W; E3 (r5) builds it'
+- id: H27
+  statement: 'A single per-B dispatcher built from the existing kernels (r2 tc_small for B <= 131; r3 pair kbs2 for 131 < B <= 256; the better of r4-e1 tc_pair2 and r4-e2 nb1 for 256 < B <= 512; r4-e2 nb2 at 773/853; CUTLASS 256x192 at 691/919 unless beaten), with winners chosen per B from interleaved same-container runs in cycles, lands at about M -8..-10% and L -6..-8% on the portal relative to r2 (192/211 -15%, 373/384 -5..-8%, 449/512 -11..-16%, 773/853 -5%), worth about +0.012-0.02 (score model 0.631 for M -8%, L -8%).'
+  status: open
+  evidence:
+  - 'r3-e2: 192/211 -7.3/-3.6% rented at the DRAM floor; r4-e1: 449/512 -11/-6% net of drift, 373/384 about 0; r4-e2: 773/853 -6.5%, 691 +8%, 919 -1% vs CUTLASS; nb1 at 373-512 -8..-15% vs CUTLASS in one container [r3-e2-tc-pair-kbs2, r4-e1-tc-pair2-twoacc, r4-e2-tc-pair2-nb2]'
+  - 'score model: S 0 / M -8 / L -8 gives 0.6306; M -15 / L -12 gives 0.6448 [predict_score r5]'
+  - 'portal calibration pending: r4-e1-tc-pair2-twoacc (192/211 pair, 449/512 tc_pair2) is in the queue; its ratios set the hand-kernel portal/rented factor (H15)'
+
+
+=== LAB NOTEBOOK ===
+Portal outcomes vs the bench (change vs the current best, same kernel pair):
+- r0-adamod-dispatch-skinny-fp32-3xtf32 (portal 0.2349) vs r3-e2-tc-pair-kbs2: S bench +209.2% / portal +245.8%; M bench +458.1% / portal +436.4%; L bench +339.9% / portal +306.2%
+- r1-adamod-cutlass-tf32-2sm-chunkepi (portal 0.5884) vs r3-e2-tc-pair-kbs2: S bench +19.8% / portal +22.7%; M bench +15.4% / portal +12.0%; L bench +1.0% / portal -2.3%
+- r2-e1-tc05-ef-small (portal 0.6108) vs r3-e2-tc-pair-kbs2: S bench -0.3% / portal -0.2%; M bench +2.8% / portal +7.2%; L bench +1.7% / portal -0.5%
+Findings recorded by design sessions, newest round first:
+Round r4:
+- [r4-e1-tc-pair2-twoacc] run_tests 16/16 PASS (10 rounds each), one launch. Rented us vs r2-e1-tc05-ef-small on the same GPU: 373 67.3 vs 69.0 (-2.4%), 384 67.3 vs 68.9 (-2.3%), 449 70.0 vs 81.5 (-14.1%), 512 74.2 vs 81.8 (-9.2%); 192/211 45.7/48.2 (r3 pair, unchanged); unchanged CUTLASS L paths 691-919 moved -2.2..-3.0% (drift), so the net tc_pair2 gain is about 0/-11/-6% at 384/449/512. Band change S -1.1% M -3.5% L -5.9%; emulator 0.6270 +- 0.012 (no paths were passed to it) [run_tests]
+- [r4-e1-tc-pair2-twoacc] precision, max |err| vs fp64 (W/sqrt(3072), bias randn, one draw per B): B=257 1.54e-3, 373 1.56e-3, 384 1.54e-3, 449 1.51-1.56e-3, 512 1.63e-3, 0 elements outside atol+rtol; all <= 1.75e-3. The n1 = 192 split gives 1.58e-3 at 373 [probe_b200]
+- [r4-e1-tc-pair2-twoacc] first build correct: two accumulators at TMEM cols 0 and 256, 512-col cta_group::2 alloc, emb per CTA as 128 rows (rank*128) then N2/2 rows (256 + rank*N2/2) via two TMA maps, second B desc = first + 16 KB, idescs differ only in N, (i|j|k) zero-init for both [probe_b200]
+- [r4-e1-tc-pair2-twoacc] cycles per k-block (kbs=1, real W from DRAM after a 252 MB zero flush, evict_first, clock64 + globaltimer, rented SM 1.64-1.72 GHz), container 1: Bpad 384 st3/4/5 = 1004/954/956 (ideal 768: 76-80%); 464 st3/4/5 = 1072/954/955 (ideal 928: 97%); 512 st3/4 = 1107/1028 (ideal 1024: 100%). kbs=2 st2: 1127/1216/1265 (exposed latency with 2 stages). Span per CTA: 106.7k (384), 108.2k (449), 116.4k (512) cycles [probe_b200]
+- [r4-e1-tc-pair2-twoacc] classification (H23/H24): resident operands (no TMA after warm-up), kbs1: 950 (384), 952-955 (449), 1027 (512); resident kbs2 st2: 771 (384) = ideal, 931 (449), 1027 (512). Feed only (no MMA, clock rises to 1.96 GHz): kbs1 st5 767 (384), 795 (449), 870 (512, st4) = 53-58 B/clk/SM, i.e. about 6 TB/s DRAM, not an L2 ingest ceiling. So 384 is chain/floor-bound, 449 is floor and MMA almost equal, 512 is MMA-bound; ingest (H24) is not binding anywhere [probe_b200]
+- [r4-e1-tc-pair2-twoacc] H23 floor at N >= 384: the kbs=1 per-stage floor is 950-1200 clk depending on the container (990/970/1200 in three later probes), constant at about 575 ns. It is larger than the 551-674 clk seen for 4-UMMA resident groups in r3. It is the same with 4 UMMAs per stage (UMMA2 skipped: 994 vs 995), with N1/N2 = 192/192 vs 256/128 (999 vs 995), and with interleaved or sequential UMMA order (1005). So it does not depend on MMA work or UMMA count [probe_b200]
+- [r4-e1-tc-pair2-twoacc] dead ends on the floor (Bpad 384, kbs1 st4, clk/k-block in one container): test_wait spin instead of try_wait 971 vs 970; commit every 2nd stage 1060 (worse, coarser refill; resident 970: no gain); idle warps nanosleep on accum 978; epilogue 2 tcgen05.ld per wait 971; removing tcgen05.fence::after_thread_sync 1198 vs 1197; waiting for 3 stages at a time 1161-1241. Only waiting for 2 stages per 16 UMMAs (shipped) helps: 1167 vs 1197 (-2.5%) in the 1200-clk container [probe_b200]
+- [r4-e1-tc-pair2-twoacc] CUTLASS comparison, interleaved harness_time, same probe (wall us; CUTLASS clock not measured: pynvml missing, nvidia-smi run aborted): 373 mine 68.3 vs 256x192 68.2 / 256x256 79.2; 384 68.4 vs 68.1 / 79.3; 449 70.9 vs 87.2 / 79.7; 512 74.2 vs 87.9 / 80.0. The best CUTLASS tile per B is the r1 table. My kernel ran at 1.64-1.72 GHz (globaltimer), so CUTLASS's 68.1 us at 384 is about 116k cycles at the same clock: about -5% cycles at 384, -11% at 449, -7% at 512 under the same-clock assumption. Success criterion (>= 20% fewer cycles) not shown [probe_b200]
+- [r4-e1-tc-pair2-twoacc] fixed costs per CTA outside the K loop: first full barrier at 5.8-6.8k clk (cold DRAM W plus setup), epilogue 6.9k (384) / 8.3k (449) / 9.1k (512) clk, about 12-14% of the span. The 8-warp epilogue stores 28-38 MB in about 4-5 us (about 7 TB/s); a TMA-store epilogue is the next lever there [probe_b200]
+- [r4-e1-tc-pair2-twoacc] targets: <= 100k cycles at 384 missed (106.7-111k); <= 125k at 512 met (116k); per-stage within 15% of MMA ideal met at 449/512, missed at 384 (+26-30%). Refutation clause half-true: the 384 ring is pinned at the floor at every stage count (3-5), 449/512 are not [probe_b200]
+- [r4-e1-tc-pair2-twoacc] portal prediction (operator rule max(1.05 x DRAM, cycles/1.55 GHz) + 11%): 373/384 108-111k -> 78-79 us (vs 83.0 portal CUTLASS, -5%), 449 112k -> 80 us (vs 101.4, -21%), 512 116k -> 83 us (vs 101.9, -18%). If the floor is in ns (about 575 ns per stage, as the cross-container numbers suggest) and not in clocks, 373/384 do better at the 1.5 GHz lock (about 64-70 us). The tensor-heavy kernel throttles to 1.64-1.75 GHz on the rented card, so its portal/rented ratio should be about 1.1-1.15, not 1.31 [analysis]
+- [r4-e1-tc-pair2-twoacc] probe infra: probe containers change between calls (/tmp kept in about half the calls); each measurement probe must rebuild CUTLASS (18-39 s for 2 TUs on 8 cores) and the kernel (1.5 s). Once (after 2 CUTLASS rebuilds) harness_time raised 'No timing results for methodology: cupti' [probe_b200]
+- [r4-e1-tc-pair2-twoacc] open: at Bpad 384 the only way past the floor is more MMA work per wait group with >= 3 stages of refill: a 48-wide k stage (SW128 32 + SW64 16 boxes, 60 KB per CTA, 3 stages, 1152 clk MMA per stage) or a 3-CTA-per-cluster split. The floor source (not commit count, wait count, fence, spin vs suspend, idle warps or UMMA count) is still unknown; it is about 575 ns per 1-k-block stage in this kernel [analysis]
+- [r4-e2-tc-pair2-nb2] VERDICT H22: refuted as stated. Same-container harness_time, 3 interleaved rounds, us pair2 (fixed epilogue) vs CUTLASS 256x192 / 256x256: 691 117.0 vs 108.7 / 108.7 (+8%); 773 120.2 vs 128.4 / 133.4 (-6.4%); 853 121.2 vs 129.9 / 135.8 (-6.7%); 919 129.5 vs 130.8 / 136.9 (-1.0%). Needed >= 15% at 773-919 and >= 10% at 691 [probe_b200]
+- [r4-e2-tc-pair2-nb2] run_tests 16/16 PASS, one launch. us vs r2-e1-tc05-ef-small on the same GPU: 773 123.9 vs 130.7 (-5.2%), 853 125.5 vs 133.1 (-5.7%), 919 133.2 vs 134.2 (-0.8%); every other B is the r3 code (192 -6.2%, 211 -3.6%, rest within +-1.8%); band S -0.2% M -1.6% L -1.2%; emulator 0.6164 +- 0.012 (P beat 69%) [run_tests]
+- [r4-e2-tc-pair2-nb2] main-loop floor: in-kernel clock64/globaltimer, harness flush, real W, rented clock 1.63-1.78 GHz. Main loop per 1-k-block stage with 8 UMMAs: 958-985 clk at Ntile 352/400/432/464 and also at nb=3 (Ntile 320). MMA ideal per stage is 2*Ntile = 640-928 clk, so it is MMA-bound only at 464 (94%) [probe_b200]
+- [r4-e2-tc-pair2-nb2] floor ablation (B=919 nb2 / 691 nb2 / 919 nb3, clk per k-block): base 985/977/972; second accumulator removed (MMA work halved) 982/981/974; no MMA (TMA + barriers only) 646/641/619 at 1.96 GHz; warm W (4 W tiles) 967/958/957; warm W + no MMA 607/605/601; test_wait spin instead of try_wait 985/980/970. The ~970 floor depends on neither MMA work, stage bytes (33-46 KB), DRAM, nor the wait instruction: H23's max() model fails (floor ~960, not 551-674, at 8 UMMAs per stage with rotating stages) [probe_b200]
+- [r4-e2-tc-pair2-nb2] H24 not the limiter here: stage bytes 36 KB (nb3) and 46 KB (nb2 at 919) give the same ~970 clk per stage, so ingest bytes/clk does not set the pace of this ring. CUTLASS 256x192 runs about 460-550 clk per 4-UMMA k-block stage on the same shape (134 us at 919 over ~4.9 tiles per pair), so the hand-written ring's per-stage chain costs about 2x CUTLASS's; cause unresolved [probe_b200, analysis]
+- [r4-e2-tc-pair2-nb2] epilogue bug (also a lesson for all hand-written kernels): a per-column piecewise remap of TMEM column -> emb row made ptxas place r[16] in local memory (48 B stack). The epilogue then took 22-33k clk per CTA (1050 clk per 16 columns) even with stores disabled. TMEM loads alone take 1.4k clk for 464 columns; batching 4-8 x16 loads per wait changed nothing. Remapping once per 8-column group (boundaries 128/256/256+h2 are multiples of 8) brings it to ~8k clk with stores: 919 155 -> 129.5 us, 691 139 -> 117 us [probe_b200]
+- [r4-e2-tc-pair2-nb2] cluster order: W-tile-adjacent (a) vs batch-major (b, the sibling reads W from DRAM again): 691 139.2 vs 141.2, 773 145.8 vs 147.2, 853 148.7 vs 150.0, 919 154.6 vs 156.4 us (pre-fix epilogue): (a) wins by about 1% only; this kernel is not DRAM-bound, so the second W read costs about 2 us [probe_b200]
+- [r4-e2-tc-pair2-nb2] W hint: evict_first vs evict_normal on W within 1% at 691-919 (139.2 vs 139.1, 154.6 vs 154.1) [probe_b200]
+- [r4-e2-tc-pair2-nb2] nb=3 at 773/853/919 (Ntile 272/288/320, 3 waves): 193.9/196.7/201.4 us vs nb=2 145-155: +30%. The stage floor is paid per wave, so more tiles only add waves [probe_b200]
+- [r4-e2-tc-pair2-nb2] M-band side result for E1/H19: the same kernel with nb=1 (one pass, one wave of 72 pairs) at 373/384/449/512 gives 62.3/62.4/67.1/72.6 us vs the best CUTLASS tile 67.9 (192)/67.9 (192)/79.0 (256)/79.6 (256): -8/-8/-15/-9% in one container, max err 1.53-1.73e-3. Not shipped (task: keep other paths); a strong candidate for the next M-band round [probe_b200]
+- [r4-e2-tc-pair2-nb2] precision: max |err| vs fp64 (W/sqrt(3072), bias randn) 691 1.54-1.66e-3, 773 1.63e-3, 853 1.53e-3, 919 1.54-1.64e-3, nb3 919 1.67e-3, nb1 384 1.60-1.73e-3, 449 1.53-1.55e-3, 512 1.59-1.60e-3; one draw at 384 reached 1.73e-3 (above the 1.7e-3 bar, below atol 2e-3) [probe_b200]
+- [r4-e2-tc-pair2-nb2] per-clock efficiency (MMA-ideal 2 passes x 96 x 2*Ntile clk / span cycles at ~1.7 GHz): fixed kernel 691 ~68%, 773 ~75%, 853 ~81%, 919 ~81%; CUTLASS 256x192 on its padded work about 77-83% at the same clock. Success needed >= 85% [probe_b200, analysis]
+- [r4-e2-tc-pair2-nb2] portal prediction (r3 rule cycles/1.55 GHz): 773/853/919 about 205/207/220k clk -> 132/134/142 us vs CUTLASS portal 164.9/166.7/167.9 (-15..-20%); with the rule's observed +11% underprediction, 147/149/158 us (-6..-11%); with a flat 1.31 clock ratio against CUTLASS's 1.25-1.27, -2/-2/+4%. Central estimate L -3% on the band (3 of 6 workloads) [analysis]
+- [r4-e2-tc-pair2-nb2] dead end: kbs=2 does not fit more than 2 stages at Ntile 352-464 (77-91 KB per stage per CTA), and r3 showed 2-stage rings are latency-bound; nb=3 adds a wave [analysis]
+- [r4-e2-tc-pair2-nb2] infra: /tmp in probe containers persisted between 2-3 consecutive probes and was then lost (CUTLASS .so had to be rebuilt; 18-28 s for 2 TUs in parallel). Rebuild everything inside the timing probe [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] VERDICT: Step 1 passes for N >= 464 (98-99.8% of MMA-ideal, floor hidden) and fails for N = 384 at kbs=1 (81%, chain-bound at 948 clk vs ideal 768). Step 2 is refuted: feed-only B/clk scales with stage size and reaches 93-100 B/clk (> 90), so H24's 50-70 B/clk ceiling does not exist for L2-hot pair rings. Step 3 is refuted: clk per k-block is identical at 1.14 GHz and 1.8-1.96 GHz (<= 0.2%), so there is no bytes-per-second ceiling that loosens per clock. H24 is refuted; H23 is refined [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] method: 2SM cta_group::2 ring, grid 148 (74 pairs), cluster 2, 128 threads, tcgen05.mma kind::tf32, TFLOAT32 maps, 128B swizzle, nk = 384 k-blocks (4 passes over K), clk = clock64 delta of the leader's issue thread, MHz = clock64/globaltimer. W from 16 distinct hot 128-row tiles (evict_first), emb from the same hot rows for every pair, 2 launches per config (first warms L2), 3 interleaved rounds, spread < 0.5% unless noted. Per CTA two accumulators: UMMA1 N1 = 256 (128 emb rows per CTA) + UMMA2 N2 = 2 x e2 (e2 rows per CTA), TMEM 512 columns [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 1 resident operands (no TMA), kbs=1 (4 K-steps x two UMMAs, one commit per stage), burst clock 1.75-1.82 GHz, clk per k-block / ideal(2N) / eff: floor N=192 single accumulator 943 / 384 / 40.7%; N=384 (256+128) 948 / 768 / 81.0% at 3, 4 and 5 stages (947.2-948.2); N=464 (256+208) 947 / 928 / 98.0% at 3/4/5 stages; N=512 (256+256) 1025.6 / 1024 / 99.8% at 3 and 4 stages (5 does not fit). Stage count has no effect [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 1 bound per config: N=192 and N=384 at kbs=1 hit the commit chain (about 940-948 clk per stage in this container, the same for 4 and 8 UMMAs and for N=192 to 384); N=464 and N=512 hit the MMA (ideal 928 / 1024). The floor is hidden only when MMA work per stage is >= about 950 clk, i.e. N >= about 475; N=464 is at the crossover. The floor is container-dependent (551-674 clk in r3 probes with fixed stages, 840 rotating, 938-948 here with a ring), so compare only inside one probe [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2a feed-only (TMA ring, L2-hot, no UMMA, release by commit-only multicast to both CTAs), kbs=1, 4 stages (3 at 64 KB), clk per stage / B/clk per SM: 24 KB 642 / 38; 32 KB 642 / 51; 40 KB 705 / 58; 48 KB 705 / 70; 64 KB 707 / 93. At the 1.95 GHz idle clock. Per-stage time is flat at 642-707 clk across 24-64 KB: B/clk scales with stage size, it is not a ceiling [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2b feed-only kbs=2: 48 KB (4 stages) 709 clk/stage = 69 B/clk; 64 KB (3 stages) 715 = 92; 96 KB (2 stages) 1006 (+-5%) = 98 (about 28 TB/s aggregate at 1.95 GHz; every pair reads the same 16 W tiles and the same emb rows, so the L2 pattern is friendlier than a real kernel's, caveat). Ring depth at 40 KB kbs=1: 2 stages 863 clk (47.5 B/clk), 3 stages 706, 5 stages 705: saturates at 3 stages [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] dead end: releasing the ring with two remote mbarrier.arrive.release.cluster (mapa to both CTAs) instead of the tcgen05 commit costs 1880-2050 clk per stage (12-35 B/clk): a cluster-scope remote arrive round trip of about 1000 clk. That made the first feed-only numbers look like a 13-35 B/clk ceiling; it is an artefact of the release path, not ingest [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 2c fed + MMA (same TMA ring, UMMAs on), burst clock, clk per k-block / eff / B/clk: kbs1 E=64 (N=128) 924 / 27.7% / 27; E=128 (N=256) 928 / 55.2% / 35; E=192 (N=384) 931 / 82.5% / 44; E=256 (N=512) 1029 / 99.5% / 48; kbs2 E=64 671 / 38.2%; E=128 698 / 73.4% / 47; E=256 1030 / 99.4% / 48; kbs2 N=384 2 stages (80 KB) 843 / 91.1% (811 / 94.7% capped). Fed equals resident to within 2% (N=384 931 vs 943, N=512 1029 vs 1026): time is max(MMA, chain), with feed (642-705 clk per stage) fully hidden, not the sum [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] STEP 3 clock scaling: the card is power-capped to 1.11-1.19 GHz as soon as a bf16 8192^3 matmul loop runs (first sample 1145 MHz) and stays there; idle bursts run 1.66-1.96 GHz (the clock sags to 1.66 GHz under a fed N=512 ring). Same configs, burst vs capped (200 matmuls queued before every run): resident N=192 937.9 vs 937.9 clk/kb; resident N=384 942.8 vs 942.8; fed N=384 kbs1 927.0 vs 926.1; fed N=512 kbs1 1029.4 vs 1028.5; feed-only E=128/192/256 kbs1 642.4/705.0/704.7 vs 641.8/704.2/704.7; feed-only kbs2 E=128 357.6 vs 355.0. B/clk is the same at both clocks, i.e. GB/s per SM scales with the clock (feed-only 40 KB: 114 vs 70 GB/s/SM). Only the 2-stage rings gain: fed N=384 kbs2 st2 843 -> 811 (-3.8%) and feed-only 96 KB kbs2 529 -> 492 (-7%), L2 latency exposure. No >= 15% rise at the low clock: the success criterion for H24 is not met [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] CUTLASS 256x192 (r1 tile, W cold via the 252 MB flush, events around one launch, includes about 3 us of event/launch gap) at B=384: 72.0 us at 1962 MHz = 141k clk (50.8% of the 71.7k-clk MMA ideal per 148 SMs); 94.2 us at 1215-1241 MHz = 114-117k clk (61-63%); 93.2 us at 1275 MHz (60%). So CUTLASS cycles fall 19% at the low clock (partly ns-bound: DRAM W and flush interaction) but stay at 62-65% at best; the portal clock (1.5 GHz) interpolates to about 128k clk = 85 us, matching the portal's ~83 us at B=373/384. The hand-written ring at N=384 kbs2 needs 81k clk (843 x 96) at 91-95%: about 35% fewer cycles than CUTLASS at the same clock [probe_b200]
+- [r4-e3-ingest-probe-pair-parent] consequence for H19: one-pass pair kernel for 256 < B <= 512 with two accumulators is MMA/chain-bound, not ingest-bound. Per-k-block cycles from the probe: Bpad 384 kbs2 2 stages 811-843; Bpad 464 kbs1 4 stages 947 (kbs2 2 stages = 90 KB x 2 not probed); Bpad 512 kbs1 or kbs2 1029-1030. Times 96 k-blocks plus about 8k clk for ramp and epilogue, at 1.5 GHz: about 59 / 66 / 71 us for Bpad 384 / 464 / 512 against portal CUTLASS 83 (373/384) and 103-104 (449/512): about -29% / -36% / -31%. Not yet built; E1 (r4) builds it, with real W from DRAM (hot-L2 W here) so the DRAM floor (about 42 us rented) must be rechecked [analysis from probe]
+- [r4-e3-ingest-probe-pair-parent] consequence for H22: if the same ring holds for nb = 2 batch tiles of N <= 464 the L band is also MMA-bound (947 clk x 96 x 2 passes = 182k clk = 121 us at 1.5 GHz at 919 vs CUTLASS portal 168 us), but the probe did not test the W re-read from L2 by the sibling pair or wave quantisation [analysis]
+- [r4-e3-ingest-probe-pair-parent] open: why CUTLASS 256x192 K-tile 32 sits at 51-65%. Its stage is 4 UMMAs of N=192 (384 clk), the same cadence as the 943-clk floor config here, so the same commit-chain floor is a candidate; this probe cannot separate it from DRAM/epilogue effects. The earlier ingest attribution (73 B/clk needed vs 50-65 'ceiling') is not supported: feed-only reaches 93-100 B/clk [analysis]
+- [r4-e3-ingest-probe-pair-parent] open: kbs=2 at Bpad 464 and 512 is untested with the extra variant matrix (resident kbs2 N=384 and N=464 were queued but the e3.so did not persist between probes: /tmp is wiped per probe container, builds take 1.4 s for the ring and 17-28 s for the CUTLASS TU, so each probe must rebuild)
+Round r3:
+- [r3-e2-tc-pair-kbs2] VERDICT B=192-256: the limiter of tc_small is the per-stage MMA -> commit -> mbarrier chain at kbs=1 (about 840 clk/stage warm, 1108 with DRAM W), not ring depth >= 3, not the UMMA shape, not the smem port and not emb L2. A 2SM pair with kbs=2 fits and runs at the DRAM stream rate. H20 refuted, H21 first clause true only with >= 8 UMMAs per commit, 2SM-fed beats 1SM-fed only because it allows kbs=2 [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) resident operands, 1SM 128xN kind::tf32, 96 k-blocks x 4 UMMAs, commit per k-block, 144 CTAs, rented clock 1.62-1.70 GHz (globaltimer): N=128/192/256 = 551/551/553 clk per k-block = 46.5/69.7/92.6% of 4096 FLOP/clk/SM. Every N <= 256 is floored at about 551 clk per commit group [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) same, 2SM cta_group::2 256xN (cluster 2, leader issues, multicast commit): 552/552/554 clk per k-block = 46.4/69.6/92.4% per SM: identical per SM to 1SM with resident operands, so 2SM has no UMMA-rate advantage [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) commit every 8 or more UMMAs (kbs>=2): N=192 388 clk = 98.8% (1SM) and 390 = 98.6% (2SM), N=256 517 = 99.0%/99.1%, N=128 307 (kbs4) = 83.4%, 290 (kbs6) = 88.3%, N=64 kbs8 255 = 50%: the UMMA itself delivers 99% at N=192/256 and is issue-bound (about 64-77 clk per UMMA) below N=128, clk 1.62-1.83 GHz. Literal H21 refutation test (resident 1SM 128x192 <= 70%) trips only at the shipped one-commit-per-k-block cadence, so the cause is the commit cadence, not the shape [probe_b200]
+- [r3-e2-tc-pair-kbs2] (a) another container (clk 1.70-1.82 GHz): resident N=192 kbs1 fixed stage 674 clk (57%), N=256 676 (75.7%); rotating the stage address per k-block (as a ring does) 839 / 844 clk (45.8 / 60.7%) at 2, 4 or 5 stages; kbs2 rotating 539 / 551. The commit floor drifts 551-674 between containers, so compare only inside one probe [probe_b200]
+- [r3-e2-tc-pair-kbs2] (b) TMA ring fed from L2 (every CTA the same 128 W rows, or 16 distinct tiles: identical), clk 1.58-1.82 GHz, clk/k-block and eff: 1SM N=192 kbs1 st5 791 (48.5%); 1SM kbs2 st2 587 (65.4%); 2SM kbs1 st5/st8 792 (48.5%, no gain from depth or 2SM); 2SM kbs2 st4 512 (75.0%); 2SM kbs4 st2 446 (86.2%); N=256: 1SM kbs1 st4 794 (64.5%), 2SM kbs1 st4/st7 796, 2SM kbs2 st3 532 (96.3%); N=128 kbs2 1SM and 2SM 507 (50.5%, issue-bound). 2SM-fed kbs2 >= 75% and 1SM-fed kbs1 48.5% (<= 60%) as H21 predicted; the 2SM advantage is the larger stage, not operand traffic [probe_b200]
+- [r3-e2-tc-pair-kbs2] (b) ablation, warm, N=192 kbs1 st4 (clk/k-block): base 852, no MMA (TMA + barriers only) 687, no W 851, no emb 850, no W and no emb (MMA + barriers only) 844, nothing (pure barrier ping-pong) 652; 2SM 853/712/852/852/846/656; N=256 856/689/856/854/848/652. TMA bytes cost nothing: the MMA + commit + mbarrier chain sets the pace. Removing tcgen05.fence from the loop: no change; committing every second stage (shared empty barrier): 906 -> 865 only [probe_b200]
+- [r3-e2-tc-pair-kbs2] (c) ring-depth slope, real W from DRAM with the 252 MB harness flush, evict_first, clk 1.74-1.82 GHz, 1SM kbs1: B=192 stages 2/3/4/5 = 1300/1115/1108/1108 clk per k-block (71.7/61.7/59.8/60.6 us wall); B=256 stages 2/3/4 = 1420/1128/1115 (78.6/63.2/59.6 us). Steep only from 2 to 3 stages, flat from 3 to 5: ring depth is not the limiter at 4-5 stages [probe_b200]
+- [r3-e2-tc-pair-kbs2] (c) real W, 2SM: B=192 kbs1 st3/4/6/8 = 1123/1119/1121/1123 (60.8-61.1 us); kbs2 st3 749 (42.5 us, 51.2%); kbs4 st2 780 (43.6 us); B=256 kbs1 st3/4/6 1129/1122/1123, kbs2 st3 748 (44.0 us, 68.4%). 1SM kbs2 st2 (the only fit): 928 (50.9 us) at 192, 1043 (57.0 us) at 256. No-MMA floors with W from DRAM: 1SM kbs1 st4 922 clk (46.6 us), 2SM kbs2 st3 788 (40.2 us at 1.955 GHz); hint vs no hint: 1108 vs 1136 (1SM kbs1), 749 vs 924 (2SM kbs2) [probe_b200]
+- [r3-e2-tc-pair-kbs2] (d) emb hot-spotting: warm L2, N=192 kbs1 st4, copies 1/2/4/8/16/36: 1072/1072/1072/1072/1079/1086 clk per k-block; N=256 copies 1/2/4/8/16: 1079/1078/1079/1079/1088. Real W: B=192 copies 1/16 1106/1112, B=256 1116/1127; 144 private copies 1857 (B=192) and 2131 (B=256) clk, but that variant adds 340-453 MB of cold emb DRAM traffic, so it measures DRAM not contention. Private copies are not >= 10% faster: H20 refuted, E3 multicast of emb is not the fix [probe_b200]
+- [r3-e2-tc-pair-kbs2] run_tests (rented B200, same GPU as r2-e1-tc05-ef-small, interleaved by the harness): 16/16 pass, one launch. B=192 45.7 vs 49.3 us (-7.3%), B=211 48.2 vs 50.0 (-3.6%), B=131 44.0 vs 44.3, all other B within +-1.6% (S +0.4%, M -2.4%, L -0.9%); emulator 0.6162 +- 0.012. The first try of the cta_group::2 pipeline (TMA .cta_group::2 with mapa leader barrier, multicast commit mask 3, leader-only MMA, both-CTA epilogue) was correct on all 16 workloads x 10 rounds [run_tests]
+- [r3-e2-tc-pair-kbs2] portal prediction by the operator's rule: tc_small B=192 at 1108 clk x 96 = 106k clk = 68 us at 1.55 GHz (portal measured 62.2); the pair kernel at 749 clk x 96 = 72k clk = 46 us at 1.55 GHz plus ramp, so expect about 48-52 us at B=192/211, i.e. -15..-20% vs 62.2/64.0 (about +0.01 on the problem score); B=131 not changed (operator ruling) [analysis from probe cycles]
+- [r3-e2-tc-pair-kbs2] precision: not re-measured; the maps use TFLOAT32 as in r2, same operands and fp32 accumulation, 16/16 x 10 rounds pass, expected max |err| 1.5-1.65e-3 at B=192/211 as r2 recorded [run_tests]
+- [r3-e2-tc-pair-kbs2] dead end: pair-commit (one commit per two 1-k-block stages) 906 -> 865 clk only; 2SM at kbs1 gives no gain over 1SM (792 vs 791 warm, 1119 vs 1108 real); the 1SM kbs2 variant fits only 2 stages at B=192 (928 clk) [probe_b200]
+- [r3-e2-tc-pair-kbs2] open: B=373/384 would need N=384 (two TMEM accumulators of 192, 2SM, kbs2 ring of 3 stages at 80 KB per CTA does not fit; kbs1 stages would pay the 840-clk chain) so the CUTLASS tiles stay; the per-stage fixed chain cost (about 250-300 clk, source unresolved) is the lever for every hand-written variant [analysis]
+- [r3-e3-tc05-emb-mcast2] H20 refuted (probe, interleaved, harness flush, 3 rounds, rented SM clock 1.66-1.78 GHz from clock64/globaltimer): cycles base vs emb-multicast B=132 74.3-76.2k vs 74.9-75.3k; 192 80.1-80.8k vs 82.0-83.2k (+2-4%); 211 80.9-81.4k vs 82.8-83.5k (+2-3%); 256 85.8-87.6k vs 86.6-87.7k. Per-clock efficiency 2*128*Bpad*3072/(cyc*4096): 132 0.37/0.37, 192 0.46/0.45, 211 0.53/0.52, 256 0.57/0.56 [probe_b200]
+- [r3-e3-tc05-emb-mcast2] harness_time (same probe) us base vs mc: 132 44.1-44.4 vs 44.6-44.9; 192 48.9-49.0 vs 49.6-49.9; 211 49.7-50.0 vs 50.5-50.6; 256 53.1-53.8 vs 53.5-53.6 [probe_b200]
+- [r3-e3-tc05-emb-mcast2] kbs=2 at B=192 does not fit 3 stages (2 x 2 stages only): base 2x2 98-105k cycles (57-60 us), mc 2x2 87.5-90.6k (53.6-54.0 us). Multicast cuts cycles 10-15% with a 2-deep ring (emb L2 latency exposed), but both lose to the 1x5 ring [probe_b200]
+- [r3-e3-tc05-emb-mcast2] limiter isolated (probe, W tile index blockIdx%8 so W is L2-hot, and/or MMAs skipped): B=192/211/256 hot-W 80.7-82.3k cycles vs 85.5-87.5k cold: DRAM is not the M-band limit. Feed only (no MMA, hot W) 62-64k cycles = 3.9-4.6 MB per CTA at 63-74 B/clk/SM; B=16 hot feed-only 23.3k (75 B/clk). MMA ideal 37-49k. So TMA ingest per SM (L2 -> SM bytes per SM clock) bounds the kernel, and MMA + feed overlap only partly (81k vs max(63k, 43k)) [probe_b200]
+- [r3-e3-tc05-emb-mcast2] consequence: the 1.26 portal/rented ratio at 192/211 (H15) is the SM-clock-bound ingest. A cta_group::2 pair (H19/E1) reduces landing bytes per SM from 16 KB W + Bpad*128 B emb to 16 KB + Bpad*64 B per k-block (-30% at 192, -33% at 256); multicast of emb on top of the pair is not needed [INFERRED from the probes]
+- [r3-e3-tc05-emb-mcast2] B=132 cold 75k cycles = hot-W 53.5k + DRAM: at 132 the kernel is still DRAM-bound at the rented clock (span 42 us); feed-only cold 79-81k cycles at 1.96 GHz [probe_b200]
+- [r3-e3-tc05-emb-mcast2] max |err| vs fp64 (W/sqrt(3072), bias randn): B=132 1.45e-3, 192 1.64e-3, 211 1.54e-3, 256 1.49e-3, identical for base and multicast (same operands, same accumulation order) [probe_b200]
+- [r3-e3-tc05-emb-mcast2] cudaOccupancyMaxActiveClusters = 74 clusters of 2 at 225 KB smem for Bpad 144-256: the 72 clusters fit in one wave [probe_b200]
+- [r3-e3-tc05-emb-mcast2] run_tests 16/16 PASS. Rented us vs parent same GPU: 131 44.1 vs 44.1, 192 49.4 vs 48.9 (+0.9%), 211 50.7 vs 50.2 (+0.9%); S unchanged; L -1.4% is drift (identical CUTLASS code). Emulator 0.6117 +- 0.012 (P beat 53%), not a real gain [run_tests]
+- [r3-e3-tc05-emb-mcast2] predicted portal time = max(1.05 x 42 us DRAM part, cycles/1.55 GHz): base 192 86k -> 55.5 us, mc 87.7k -> 56.6 us; base 211 86k -> 55.5, mc 88.5k -> 57.1. The portal measured base 62.2/64.0, so this model underpredicts the parent by about 11% at 192/211 [analysis]
+- [r3-e3-tc05-emb-mcast2] Bpad rounding: multicast halves only need Bpad/2 to be a multiple of 8 rows (Bpad multiple of 16); 192/211/256 keep Bpad 192/224/256, so the N of the comparison is identical [design]
+Round r2:
+- [r2-e3-tf32-ceiling-r1tiles] H12 step 1 (harness mode: flush + CUPTI, clock read in-kernel at 1960-1975 MHz, 3 rounds, spread < 3%): cuBLAS TF32 4096^3 822-854 TF/s (69-72% of clock peak), 8192x8192x2048 894-897 (75%), 8192^3 846-847 (71%); BF16 4096^3 1692-1697 (71%), 8192x8192x2048 1890 (79%), 8192^3 1640-1652 (69%). TF32 is NOT uniquely capped: BF16 stops at the same fraction [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] H12: same shapes under sustained back-to-back load are power-capped (throttle reason 0x4 SW power cap, ~1000 W) to 1190-1330 MHz and then reach 89-91% (TF32 8192^3 716 TF/s at 1330 MHz) and 94-96% (BF16 1361 TF/s at 1200 MHz) per clock: the ceiling does not scale with the SM clock, so it is not SM-side shared-memory traffic or the TF32 issue rate; likely L2/fabric (~13 TB/s operand reads in both dtypes) [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] H12 verdict: refuted as a TF32-specific hardware cap and as a shape-specific loss. cuBLAS on our shape at B=1024 (no padding) gets 75% per clock at 1965 MHz, the same as square. B=919 gets 68.5% only because of N padding [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] probe: the rented card's clock state drifts. The same cuBLAS L919 GEMM ran 128-136 us in short-burst runs at ~1965 MHz and 167-175 us after sustained loops (1349-1427 MHz). Rented time differences of ~7% between sessions with identical code are clock or thermal, not kernel changes [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] run_tests (code identical to r1, comments only): 16/16 PASS; B=5..128 51.8/48.9/49.0/55.3/55.8, M 56.9/57.1/60.5/66.9/66.5, L 75.7/76.6/103.1/122.6/124.1/125.2 us. The L -7% vs the stored r1 times is clock drift (same binary), so the emulator's 0.615 is spurious: expect the portal to repeat r1's 0.588 [run_tests]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: cluster 2x2 (W tile multicast to two pairs along the batch dim) is 20-30% slower: 919 153.6-159.7 vs 125.2 us; 691 118-150 vs 101.6; 512/449 99-118 vs 75.7; 384 82.7-98 vs 66.3 [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: K-tile 16 (16/14 stages) is 10-19% slower and K-tile 64 (4/3 stages) is 2-7% slower than K-tile 32 at B=449-919; max_swizzle 2/4 is +0.5-1.5% slower than 1 [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] tile check (harness mode, interleaved x3): 256x192 vs 256x256 at 919 125.0 vs 130.9, at 691 101.6-103.3 vs 102.4-103.5, at 512 83.7 vs 75.6, at 449 83.3 vs 75.7, at 384 66.3 vs 75.1 us: the r1 dispatch table is already optimal among the tiles that build [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] dead end: 2SM 256x240 does not build in CUTLASS 4.4.1 (B-operand smem layout/TMA static assert; 120 batch rows per CTA) [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] max |err| vs fp64 (W/sqrt(3072), bias randn) at B=919: 1.58e-3 on one draw, 1.79e-3 on another (above the 1.7e-3 bar, under atol 2e-3). Identical for every tile, cluster and K-tile variant (same tf32 truncation). The margin depends on the draw; the harness passed 16/16 x 10 rounds [probe_b200, run_tests]
+- [r2-e3-tf32-ceiling-r1tiles] method: CUTLASS variants build in a probe with nvcc -c in parallel (~30 s for 4-6 TUs on 24 cores) into /tmp/*.so loaded by ctypes; /tmp persists between probes, so build and time can be split [probe_b200]
+- [r2-e3-tf32-ceiling-r1tiles] consequence: any remaining L gain needs fewer L2 bytes per FLOP without 4-CTA clusters, or less N padding (E2/H18: 208/224-wide tiles). The tcgen05 rate itself cannot be raised by tile, stage or scheduler knobs [INFERRED]
+Round r1:
+- [r1-e1-lt-fasttf32-bias-scatter] dead end: profiler kernel names are not retrievable inside the probe after the first torch.profiler call; use CUBLASLT_LOG_LEVEL=5 instead [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: reads-only 226.5 MB with the harness flush (zero_ 252 MB), CUPTI: plain LDG.128 1184x256 thr 45.9 us (4.9 TB/s), L2::cache_hint evict_first 39.9 us (5.7 TB/s), 1-D bulk ring 148 CTAs x 4 x 32 KB 45.0 us, same ring with evict_first 38.7 us (5.85 TB/s), 256-bit ld.global.v8 with evict_first 41.5 us (no gain over 128-bit) [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] probe: same variants, own event loop (events add about 5 us), read-flush vs zero-flush: plain 38.9 vs 51.2, evict_first 38.9 vs 44.1, bulk 38.9 vs 49.2, bulk evict_first 38.9 vs 43.0, ldg256 41.0 vs 50.1. The dirty write-back penalty is 6-12 us for plain reads and 4-5 us for evict_first. Both land at 38.9 with a read-based flush [probe_b200]
+- [r1-ef-bulk-tf32-stream-b16] H16 refuted: the reads-only floor with the harness flush is 39-40 us (cap was 45-53). Mechanism: evict_first reads recycle their own L2 lines instead of evicting the dirty flush lines, so the write-back leaves the timed window
+- [r1-ef-bulk-tf32-stream-b16] probe: reads + six outputs for B=128 (9.4 MB written): st default 40.3, evict_last 39.8, evict_first 40.3 us. Store hints change the time by at most 0.5 us (about 1%), so a store hint is not a lever
+- [r1-ef-bulk-tf32-stream-b16] probe: cuBLAS TF32 addmm (bias in, harness protocol): 52.4 / 51.0 / 46.4-48.4 / 135.7 us at B=5/128/32/919; B=32 gemm + scatter 53.7 (+5-7 us for the extra launch + scatter), B=919 gemm + scatter 159.0 (+23 us)
+- [r1-ef-bulk-tf32-stream-b16] dead end: nvidia-smi -lgc 1500,1500 is not permitted on the rented card (no permission), so the portal/rented ratio for DRAM-bound vs tensor-core paths could not be measured directly. Estimate from r0 pairs (H15 text): DRAM-bound ~1.0-1.15, SM-clock-bound ~1.26-1.31
+- [r1-ef-bulk-tf32-stream-b16] probe: the harness weight input is N(0,1)/sqrt(fan_in) (io.py _is_weight_matrix), not randn. Plain TF32 is then within tolerance: cuBLAS TF32 max err 1.5e-3 vs atol 2e-3, 100% of elements pass at B=128. With unscaled randn weights only 12% would pass
+- [r1-ef-bulk-tf32-stream-b16] dead end: v1 of the streaming kernel with 256 B bulk copies (128 rows x 64 k per stage) ran 170-207 us at B=5/16/32, 3-4x slower than the stream floor. Small 1-D bulk copies cost about 30-40 clk each in the TMA unit. v2 uses 2 KB row segments (16 rows x 512 k per stage), emb chunk shared by 8 row groups: 41.5 / 43.4 us at B=5/16
+- [r1-ef-bulk-tf32-stream-b16] dead end: v2 at B=32 (NB=4, 3 W stages + 2 x 66 KB emb buffers, 168 regs) 63.2 us vs cuBLAS TF32 + scatter 54.5; the B=17..32 band stays on cuBLAS. Cause not isolated (3-deep ring, emb conversion barriers or LDS pressure)
+- [r1-ef-bulk-tf32-stream-b16] run_tests (final): 16/16 PASS. B=5 41.6, 16 43.6, 32 54.5, 96 59.5, 128 60.5, 131 64.2, 192 66.7, 211 67.5, 373 92.5, 384 93.0, 449 99.1, 512 101.7, 691 137.4, 773 167.2, 853 172.4, 919 175.1 us. Band change vs r0: S -61.6%, M -74.8%, L -71.3%. Emulator 0.546 vs r0 0.235. Max |err| vs fp64 per B was NOT recorded (the margin constraint asks for it); the harness's 99% matched rule passed
+- [r1-ef-bulk-tf32-stream-b16] open: B=32..128 (8 workloads) sit at 54-64 us on cuBLAS + scatter vs a 39-40 us streaming floor. The same evict_first bulk ring with tcgen05 TF32 (single M tile for B<=128) is the round-2 target; mma.sync would be compute-bound above B~32. M/L bands are still cuBLAS 2-launch (scatter 7-23 us)
+Round r0:
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: reference = cutlass3x_sm100_simt_sgemm (55-57 TF/s, 74% of the 74.4 TF/s FFMA peak at 1965 MHz) + elementwise bias add (47 us at B=919) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: packed fma.rn.f32x2 gives 73.5 vs 67.6 TF/s for scalar FFMA: no 2x FP32 lever on sm_100 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: tcgen05 TF32 770 TF/s (cuBLAS, B=919) vs mma.sync m16n8k8 TF32 276 TF/s and mma.sync bf16 554 TF/s: 3xTF32 must use tcgen05 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] dead end: six N=3072 cuBLAS GEMMs into the six outputs: 298 us at B=5 and 2050 at 919 vs 104/1836 for one N=18432 GEMM [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: 3xTF32 via pre-split + 3 cuBLASLt TF32 GEMMs: 244/245/324/530 us at B=5/128/384/919 (split pass 107-112 us, gemms 137-415), maxerr 4.3e-5 vs 1.6e-5 fp32 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: cuBLAS BF16x9 emulation (CUBLAS_COMPUTE_32F_EMULATED_16BFX9): 117/177/358/754 us at B=5/128/384/919, maxerr 3.4e-6; SIMT fallback below B~64 [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: plain TF32 (not allowed): 50-135 us, maxerr 1.6e-3, within 30% of the atol [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] probe: skinny cp.async kernel 54.6/88.8/145.4 us at B=5/16/32 (1 CTA/SM, 144 CTAs); B=32 loses to cuBLASLt fp32 (122 us) [probe_b200]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: cuBLASLt fp32 + bias epilogue + scatter alone is reference speed (120-1924 us), 16/16 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] run_tests: this dispatch 60.6/88.3/123.7/255.8/255.5 (S) 271.6-344.7 (M) 370.4-574.6 (L) us, 16/16 on two runs; threshold B>64 vs B>128 gains 2-4% at 96/128 [run_tests]
+- [r0-adamod-dispatch-skinny-fp32-3xtf32] static sm_100a: skinny<16> 128 regs, skinny<8> 108 regs, split 17, scatter 20; no spills; skinny smem 108-117 KB (1 CTA/SM) [compile_b200]
+(45 older findings not shown; the hypothesis ledger summarises them, and get_kernel returns any kernel's full card)
+
+=== PARENTS ===
+--- parent r4-e1-tc-pair2-twoacc ---
+design card:
+id: r4-e1-tc-pair2-twoacc
+parents:
+  - r3-e2-tc-pair-kbs2
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E1/H19: one cta_group::2 pair per 256 W rows computes the whole batch (N = Bpad <= 512) in one pass as two UMMAs
+  (N1 = 256, N2 = Bpad - 256) into two TMEM accumulators, fed by a kbs=1 ring with an evict_first W stream. This removes
+  the CUTLASS batch tiling and padding at 373-512. Measured: 449/512 run at 93-100% of the MMA ideal per stage, but at
+  Bpad 384 every 1-k-block stage is held at a fixed ~575 ns floor (950-1200 clk, depending on container), 26-30% above
+  the 768-clk ideal. Rented: -14.1% at 449, -9.2% at 512, -2.3% at 373/384 vs the CUTLASS tiles (about -11/-6/0% net of
+  the -2.5% drift seen on unchanged paths in the same run). Portal by the operator rule (cycles / 1.55 GHz + 11%):
+  about 78-79 us at 373/384 (vs 83.0), 80 at 449 (vs 101.4), 83 at 512 (vs 101.9).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -2
+    confidence: low
+  L:
+    pct: -6
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 40
+  smem_per_cta_bytes: 231424
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 204800
+  launches_per_call: 1
+knobs:
+  KBS: 1
+  STAGES_RULE: "(226 KB - 1 KB) / (16 KB + Bpad/2 * 128 B): Bpad 384 -> 5, 464 -> 5, 512 -> 4"
+  WAIT_GROUP: 2
+  N_SPLIT: "N1 = 256, N2 = Bpad - 256 (TMEM cols [0,256) and [256,Bpad), 512 allocated)"
+  EPILOGUE_WARPS: 8
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  CLUSTER: 2
+  PAIR2_B_RANGE: "256 < B <= 512"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel (unchanged r2 path)
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel (unchanged r3 path)
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: tc_pair2_kernel
+    meta:
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H19
+  - H23
+  - H24
+findings:
+  - "run_tests 16/16 PASS (10 rounds each), one launch. Rented us vs r2-e1-tc05-ef-small on the same GPU: 373 67.3 vs 69.0 (-2.4%), 384 67.3 vs 68.9 (-2.3%), 449 70.0 vs 81.5 (-14.1%), 512 74.2 vs 81.8 (-9.2%); 192/211 45.7/48.2 (r3 pair, unchanged); unchanged CUTLASS L paths 691-919 moved -2.2..-3.0% (drift), so the net tc_pair2 gain is about 0/-11/-6% at 384/449/512. Band change S -1.1% M -3.5% L -5.9%; emulator 0.6270 +- 0.012 (no paths were passed to it) [run_tests]"
+  - "precision, max |err| vs fp64 (W/sqrt(3072), bias randn, one draw per B): B=257 1.54e-3, 373 1.56e-3, 384 1.54e-3, 449 1.51-1.56e-3, 512 1.63e-3, 0 elements outside atol+rtol; all <= 1.75e-3. The n1 = 192 split gives 1.58e-3 at 373 [probe_b200]"
+  - "first build correct: two accumulators at TMEM cols 0 and 256, 512-col cta_group::2 alloc, emb per CTA as 128 rows (rank*128) then N2/2 rows (256 + rank*N2/2) via two TMA maps, second B desc = first + 16 KB, idescs differ only in N, (i|j|k) zero-init for both [probe_b200]"
+  - "cycles per k-block (kbs=1, real W from DRAM after a 252 MB zero flush, evict_first, clock64 + globaltimer, rented SM 1.64-1.72 GHz), container 1: Bpad 384 st3/4/5 = 1004/954/956 (ideal 768: 76-80%); 464 st3/4/5 = 1072/954/955 (ideal 928: 97%); 512 st3/4 = 1107/1028 (ideal 1024: 100%). kbs=2 st2: 1127/1216/1265 (exposed latency with 2 stages). Span per CTA: 106.7k (384), 108.2k (449), 116.4k (512) cycles [probe_b200]"
+  - "classification (H23/H24): resident operands (no TMA after warm-up), kbs1: 950 (384), 952-955 (449), 1027 (512); resident kbs2 st2: 771 (384) = ideal, 931 (449), 1027 (512). Feed only (no MMA, clock rises to 1.96 GHz): kbs1 st5 767 (384), 795 (449), 870 (512, st4) = 53-58 B/clk/SM, i.e. about 6 TB/s DRAM, not an L2 ingest ceiling. So 384 is chain/floor-bound, 449 is floor and MMA almost equal, 512 is MMA-bound; ingest (H24) is not binding anywhere [probe_b200]"
+  - "H23 floor at N >= 384: the kbs=1 per-stage floor is 950-1200 clk depending on the container (990/970/1200 in three later probes), constant at about 575 ns. It is larger than the 551-674 clk seen for 4-UMMA resident groups in r3. It is the same with 4 UMMAs per stage (UMMA2 skipped: 994 vs 995), with N1/N2 = 192/192 vs 256/128 (999 vs 995), and with interleaved or sequential UMMA order (1005). So it does not depend on MMA work or UMMA count [probe_b200]"
+  - "dead ends on the floor (Bpad 384, kbs1 st4, clk/k-block in one container): test_wait spin instead of try_wait 971 vs 970; commit every 2nd stage 1060 (worse, coarser refill; resident 970: no gain); idle warps nanosleep on accum 978; epilogue 2 tcgen05.ld per wait 971; removing tcgen05.fence::after_thread_sync 1198 vs 1197; waiting for 3 stages at a time 1161-1241. Only waiting for 2 stages per 16 UMMAs (shipped) helps: 1167 vs 1197 (-2.5%) in the 1200-clk container [probe_b200]"
+  - "CUTLASS comparison, interleaved harness_time, same probe (wall us; CUTLASS clock not measured: pynvml missing, nvidia-smi run aborted): 373 mine 68.3 vs 256x192 68.2 / 256x256 79.2; 384 68.4 vs 68.1 / 79.3; 449 70.9 vs 87.2 / 79.7; 512 74.2 vs 87.9 / 80.0. The best CUTLASS tile per B is the r1 table. My kernel ran at 1.64-1.72 GHz (globaltimer), so CUTLASS's 68.1 us at 384 is about 116k cycles at the same clock: about -5% cycles at 384, -11% at 449, -7% at 512 under the same-clock assumption. Success criterion (>= 20% fewer cycles) not shown [probe_b200]"
+  - "fixed costs per CTA outside the K loop: first full barrier at 5.8-6.8k clk (cold DRAM W plus setup), epilogue 6.9k (384) / 8.3k (449) / 9.1k (512) clk, about 12-14% of the span. The 8-warp epilogue stores 28-38 MB in about 4-5 us (about 7 TB/s); a TMA-store epilogue is the next lever there [probe_b200]"
+  - "targets: <= 100k cycles at 384 missed (106.7-111k); <= 125k at 512 met (116k); per-stage within 15% of MMA ideal met at 449/512, missed at 384 (+26-30%). Refutation clause half-true: the 384 ring is pinned at the floor at every stage count (3-5), 449/512 are not [probe_b200]"
+  - "portal prediction (operator rule max(1.05 x DRAM, cycles/1.55 GHz) + 11%): 373/384 108-111k -> 78-79 us (vs 83.0 portal CUTLASS, -5%), 449 112k -> 80 us (vs 101.4, -21%), 512 116k -> 83 us (vs 101.9, -18%). If the floor is in ns (about 575 ns per stage, as the cross-container numbers suggest) and not in clocks, 373/384 do better at the 1.5 GHz lock (about 64-70 us). The tensor-heavy kernel throttles to 1.64-1.75 GHz on the rented card, so its portal/rented ratio should be about 1.1-1.15, not 1.31 [analysis]"
+  - "probe infra: probe containers change between calls (/tmp kept in about half the calls); each measurement probe must rebuild CUTLASS (18-39 s for 2 TUs on 8 cores) and the kernel (1.5 s). Once (after 2 CUTLASS rebuilds) harness_time raised 'No timing results for methodology: cupti' [probe_b200]"
+  - "open: at Bpad 384 the only way past the floor is more MMA work per wait group with >= 3 stages of refill: a 48-wide k stage (SW128 32 + SW64 16 boxes, 60 KB per CTA, 3 stages, 1152 clk MMA per stage) or a 3-CTA-per-cluster split. The floor source (not commit count, wait count, fence, spin vs suspend, idle warps or UMMA count) is still unknown; it is about 575 ns per 1-k-block stage in this kernel [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 256
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "373/384 gain over CUTLASS 256x192 is about 0% rented; the portal gain depends on whether the ~575 ns per-stage floor is time- or clock-bound. If clock-bound and the kernel is fully clock-scaled, 373/384 could land at or slightly above 83 us"
+  - "The per-stage floor varied 950-1200 clk between probe containers; the portal card may sit anywhere in that range (449 is floor/MMA-balanced and would lose up to 20% on a 1200-clk card)"
+  - "Uses all 227 KB of shared memory at Bpad 400-464 (5 stages of 46 KB + 1 KB alignment slack + static barriers); a toolchain change in static smem could make the launch fail (status 431/launch error, not a wrong result)"
+  - "512-column TMEM allocation per CTA requires 1 CTA per SM (guaranteed by shared memory); co-residency with another TMEM user would block in tcgen05.alloc"
+  - "No compile_b200 static check was run on the final file set (registers/spills estimated); run_tests built and passed it"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 42.9/53.5/103.8
+B200 portal: score not submitted, geomean - µs
+
+sm_100a static features: [{"kernel": "_ZN44_GLOBAL__N__6c2bacd2_11_tc_small_cu_b6cfd58e15tc_small_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii", "num_warps": null, "regs": 32, "smem": 1296, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 2, "UTMALDG": 32, "LDG.CONSTANT": 1}}, {"kernel": "_ZN43_GLOBAL__N__26d2233b_10_tc_pair_cu_8feb229414tc_pair_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii", "num_warps": null, "regs": 30, "smem": 1296, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 2, "UTMALDG": 32, "LDG.CONSTANT": 1}}, {"kernel": "_ZN44_GLOBAL__N__3d55125a_11_tc_pair2_cu_ed38027215tc_pair2_kernelE14CUtensorMap_stS0_S0_PKfNS_7OutPtrsEiii", "num_warps": null, "regs": 32, "smem": 1168, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 3, "UTMALDG": 3, "LDG.CONSTANT": 1}}]
+source:
+--- file adamod_gemm.cuh ---
+#pragma once
+// TF32 tcgen05 GEMM for AdaLayerNormZero modulation: D[m = feature, n = batch] = W[m, :] . emb[n, :] + bias[m],
+// built from CUTLASS 4.4 sm100 collectives (2SM MMA, cluster 2x1, persistent CLC tile scheduler).
+// A = W [18432, 3072] K-major, B = emb [B, 3072] K-major: the large dimension is M, as cuBLAS's tnn kernels do,
+// so a 256-row W tile feeds every batch tile of the same wave and W is read from DRAM once.
+// Epilogue: CUTLASS's no-smem (direct store) epilogue with C = bias broadcast (stride 0 along the batch mode),
+// wrapped so that each tile writes straight into its own output tensor: 3072 % tile_m == 0, so the tile's
+// chunk c = m0 / 3072 is uniform and D is re-based to outs[c] - c * 3072 (column-major, ld 3072).
+#include <cuda_runtime.h>
+#include "cutlass/cutlass.h"
+#include "cute/tensor.hpp"
+#include "cutlass/numeric_types.h"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/gemm/kernel/gemm_universal.hpp"
+#include "cutlass/gemm/collective/collective_builder.hpp"
+#include "cutlass/epilogue/collective/collective_builder.hpp"
+#include "cutlass/util/packed_stride.hpp"
+
+namespace adamod {
+using namespace cute;
+constexpr int kD = 3072;
+constexpr int kN = 6 * kD;
+
+// The base epilogue keeps a const reference to its Params; we own that Params object and re-point ptr_D per tile.
+template <class Base>
+struct HeldParams {
+  typename Base::Params held;
+};
+
+template <class Base>
+class ChunkedEpilogue : private HeldParams<Base>, public Base {
+  using Holder = HeldParams<Base>;
+
+ public:
+  struct Arguments {
+    typename Base::Arguments base;
+    float* outs[6];
+  };
+  struct Params {
+    typename Base::Params base;
+    float* outs[6];
+  };
+
+  template <class PS>
+  static constexpr Params to_underlying_arguments(PS const& ps, Arguments const& a, void* ws) {
+    Params p{Base::to_underlying_arguments(ps, a.base, ws), {}};
+    for (int i = 0; i < 6; ++i) p.outs[i] = a.outs[i];
+    return p;
+  }
+  template <class PS>
+  static size_t get_workspace_size(PS const& ps, Arguments const& a) {
+    return Base::get_workspace_size(ps, a.base);
+  }
+  template <class PS>
+  static cutlass::Status initialize_workspace(PS const& ps, Arguments const& a, void* ws, cudaStream_t s,
+                                              cutlass::CudaHostAdapter* h = nullptr) {
+    return Base::initialize_workspace(ps, a.base, ws, s, h);
+  }
+  template <class PS>
+  static bool can_implement(PS const& ps, Arguments const& a) {
+    return Base::can_implement(ps, a.base);
+  }
+  CUTLASS_DEVICE static void prefetch_tma_descriptors(Params const&) {}
+
+  CUTLASS_DEVICE ChunkedEpilogue(Params const& p, typename Base::TensorStorage& st)
+      : Holder{p.base}, Base(Holder::held, st), outs_(p.outs) {}
+
+  template <bool ReuseTmem = false, class LP, class LPS, class SP, class SPS, class AP, class APS, class PS, class CS,
+            class CC, class TS, class TM, class Acc, class ST>
+  CUTLASS_DEVICE auto store(LP lp, LPS lps, SP sp, SPS sps, AP ap, APS aps, PS ps, CS cs, CC cc, TS ts, TM tm, Acc acc,
+                            ST& st) {
+    const int c = (int(get<0>(cc)) * int(size<0>(cs))) / kD;   // chunk of this CTA's rows
+    Holder::held.ptr_D = outs_[c] - (size_t)c * kD;             // feature m -> outs[c][b * 3072 + m - c * 3072]
+    return Base::template store<ReuseTmem>(lp, lps, sp, sps, ap, aps, ps, cs, cc, ts, tm, acc, st);
+  }
+
+ private:
+  float* const* outs_;
+};
+
+// TM x TN MMA tile over a 2-CTA pair; Stages = 0 lets CUTLASS fill shared memory.
+template <int TM, int TN, int Stages>
+struct Tf32Gemm {
+  using MmaTile = Shape<Int<TM>, Int<TN>, _32>;
+  using Cluster = Shape<_2, _1, _1>;
+  using EpiBase = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, MmaTile, Cluster,
+      cutlass::epilogue::collective::EpilogueTileAuto, float, float, float, cutlass::layout::ColumnMajor, 4, float,
+      cutlass::layout::ColumnMajor, 4, cutlass::epilogue::NoSmemWarpSpecialized2Sm,
+      cutlass::epilogue::fusion::LinearCombination<float, float, float, float>>::CollectiveOp;
+  using Epi = ChunkedEpilogue<EpiBase>;
+  using StageSpec = cute::conditional_t<(Stages > 0), cutlass::gemm::collective::StageCount<Stages>,
+                                        cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(
+                                            sizeof(typename EpiBase::SharedStorage))>>;
+  using Mainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, cutlass::tfloat32_t, cutlass::layout::RowMajor, 4,
+      cutlass::tfloat32_t, cutlass::layout::ColumnMajor, 4, float, MmaTile, Cluster, StageSpec,
+      cutlass::gemm::KernelTmaWarpSpecialized2SmSm100>::CollectiveOp;
+  using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int, int, int, int>, Mainloop, Epi, void>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
+};
+
+// fp32 data is read by TMA as tf32; accumulation is fp32 over K.
+template <class G>
+int run_gemm(const float* emb, const float* W, const float* bias, float* const* outs, int B, int device, int sms,
+             cudaStream_t stream) {
+  using Kernel = typename G::Kernel;
+  using Gemm = typename G::Gemm;
+  using SA = typename Kernel::StrideA;
+  using SB = typename Kernel::StrideB;
+  using SC = typename G::EpiBase::StrideC;
+  using SD = typename G::EpiBase::StrideD;
+  typename Gemm::Arguments args;
+  args.mode = cutlass::gemm::GemmUniversalMode::kGemm;
+  args.problem_shape = {kN, B, kD, 1};
+  args.mainloop.ptr_A = reinterpret_cast<const cutlass::tfloat32_t*>(W);
+  args.mainloop.dA = cutlass::make_cute_packed_stride(SA{}, make_shape(kN, kD, 1));
+  args.mainloop.ptr_B = reinterpret_cast<const cutlass::tfloat32_t*>(emb);
+  args.mainloop.dB = cutlass::make_cute_packed_stride(SB{}, make_shape(B, kD, 1));
+  args.epilogue.base.thread.alpha = 1.f;
+  args.epilogue.base.thread.beta = 1.f;
+  args.epilogue.base.ptr_C = bias;   // C[m, n] = bias[m]
+  SC dC{};
+  get<1>(dC) = 0;
+  get<2>(dC) = 0;
+  args.epilogue.base.dC = dC;
+  args.epilogue.base.ptr_D = outs[0];   // replaced per tile by ChunkedEpilogue
+  SD dD{};
+  get<1>(dD) = kD;
+  get<2>(dD) = 0;
+  args.epilogue.base.dD = dD;
+  for (int i = 0; i < 6; ++i) args.epilogue.outs[i] = outs[i];
+  args.hw_info.device_id = device;
+  args.hw_info.sm_count = sms;
+  Gemm gemm;
+  if (Gemm::get_workspace_size(args) != 0) return 900;   // no workspace (and no memset) by construction
+  cutlass::Status s = gemm.can_implement(args);
+  if (s != cutlass::Status::kSuccess) return 100 + (int)s;
+  s = gemm.initialize(args, nullptr, stream);
+  if (s != cutlass::Status::kSuccess) return 200 + (int)s;
+  s = gemm.run(stream);
+  if (s != cutlass::Status::kSuccess) return 300 + (int)s;
+  return (int)cudaGetLastError();
+}
+}  // namespace adamod
+
+
+--- file tile_256x192.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x192(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                   int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 192, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tc_small.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// B <= 256: hand-written tcgen05 TF32 GEMM, one 128-row W tile per CTA (144 CTAs, one per SM), all batch rows in
+// one UMMA N = B rounded up to 16 (<= 256), fp32 accumulator in TMEM over the full K = 3072.
+// W streams from DRAM once through a TMA ring with an L2 evict_first hint: the harness leaves the L2 full of dirty
+// zero lines, and evict_first W lines recycle each other instead of forcing those lines to be written back inside
+// the timed window. Each stage holds kbs k-blocks of 32 (128 B swizzle rows) of W and of emb (emb from L2).
+// The TMA tensor maps use the TFLOAT32 type (round to nearest tf32: max |err| 1.3-1.6e-3; FLOAT32 truncates, 3.6-4.2e-3).
+// Epilogue: 4 warps read one TMEM lane quadrant each (row m = W row), add bias[m] and store out_c[b * 3072 + m - c * 3072];
+// c = m0 / 3072 is uniform per CTA.
+// tcgen05 exists only on sm_100a: the body is compiled for the arch-specific target (as CUTLASS guards its kernels).
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kMaxStages = 16, kSmemDyn = 225 * 1024;
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) { while (!try_wait(bar, par)) {} }
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];" ::"r"(bar) : "memory");
+}
+// K-major, 128 B swizzle UMMA operand: 8-row groups 1024 B apart (SBO), version 1 (sm100), layout SWIZZLE_128B.
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+#endif
+
+__global__ void __launch_bounds__(128, 1) tc_small_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                         const __grid_constant__ CUtensorMap mapE,
+                                                         const float* __restrict__ bias, OutPtrs outs, int B, int Bpad,
+                                                         int kbs, int stages, int tmem_cols) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const uint32_t eBlk = Bpad * 128, stageBytes = kbs * (kWBlk + eBlk);
+  const int nIt = kKB / kbs;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const int m0 = blockIdx.x * kRows;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(tmem_cols));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  __syncthreads();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fb = smem_u32(&full[s]);
+      const uint32_t a = sbase + s * stageBytes, b = a + kbs * kWBlk;
+      asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fb), "r"(stageBytes) : "memory");
+      asm volatile(
+          "cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i * kbs), "l"(pol) : "memory");
+      for (int j = 0; j < kbs; ++j)
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                     ::"r"(b + j * eBlk), "l"((uint64_t)&mapE), "r"(fb), "r"((i * kbs + j) * kBK), "r"(0) : "memory");
+    }
+  } else if (warp == 1 && lane == 0) {   // MMA issuer: UMMA 128 x Bpad x 8, four per 32-wide k-block
+    const uint32_t idesc = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(Bpad >> 3) << 17) | ((uint32_t)(kRows >> 4) << 24);
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+      asm volatile("tcgen05.fence::after_thread_sync;");
+      for (int j = 0; j < kbs; ++j) {
+        const uint32_t a = sbase + s * stageBytes + j * kWBlk, b = sbase + s * stageBytes + kbs * kWBlk + j * eBlk;
+        const uint64_t da = sw128_desc(a), db = sw128_desc(b);
+#pragma unroll
+        for (int k = 0; k < kBK / 8; ++k) {
+          const uint32_t acc = (i | j | k) != 0;
+          asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::1.kind::tf32 [%0], %1, %2, %3, p; }"
+                       ::"r"(tmem), "l"(da + 2 * k), "l"(db + 2 * k), "r"(idesc), "r"(acc));
+        }
+      }
+      umma_commit(smem_u32(&empty[s]));
+    }
+    umma_commit(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int m = m0 + warp * 32 + lane;
+  const int c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  for (int c0 = 0; c0 < Bpad; c0 += 16) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(tmem + ((uint32_t)(warp * 32) << 16) + c0));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int i = 0; i < 16; ++i)
+      if (c0 + i < B) o[(size_t)(c0 + i) * kD] = __uint_as_float(r[i]) + bv;
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  __syncthreads();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(tmem_cols));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_small(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                               cudaStream_t stream) {
+  if (B < 1 || B > 256) return 400;
+  const int Bpad = (B + 15) / 16 * 16;
+  const int tmem_cols = Bpad <= 32 ? 32 : Bpad <= 64 ? 64 : Bpad <= 128 ? 128 : 256;
+  const int perK = kWBlk + Bpad * 128, avail = kSmemDyn - 1024;
+  int kbs = 1;   // largest k-blocks per stage that still leaves a 3-deep ring
+  for (int cand : {4, 3, 2})
+    if (avail / (cand * perK) >= 3) { kbs = cand; break; }
+  int stages = avail / (kbs * perK);
+  if (stages > kMaxStages) stages = kMaxStages;
+  CUtensorMap mW, mE;
+  // W viewed as [96 k-blocks][18432 rows][32]: one box = kbs k-blocks of 128 rows, each a canonical SW128 atom stack.
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, (cuuint32_t)kbs}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 401;
+  // emb rows B..Bpad-1 are out of bounds and zero-filled by TMA.
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE[2] = {kBK, (cuuint32_t)Bpad};
+  if (cuTensorMapEncodeTiled(&mE, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 402;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_small_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  tc_small_kernel<<<kN / kRows, 128, stages * kbs * perK + 1024, stream>>>(mW, mE, bias, op, B, Bpad, kbs, stages, tmem_cols);
+  return (int)cudaGetLastError();
+}
+
+
+--- file tc_pair.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// 131 < B <= 256: 2SM tcgen05 TF32 GEMM. A cluster of two CTAs computes a 256-row W tile with one cta_group::2 UMMA
+// (M = 256, N = Bpad <= 256, K = 8) per step: each CTA holds its own 128 W rows and half (Bpad / 2) of the emb rows in
+// shared memory, and its accumulator is 128 lanes x Bpad columns of its own TMEM. Only the leader CTA issues the MMAs;
+// both CTAs' TMA loads signal the leader's full barrier, and the commit is multicast to both CTAs' empty barriers.
+// Stages hold kbs = 2 k-blocks of 32: the E2 probe measured 8-UMMA stages at 749 clk/k-block against 1108 for the
+// 1-k-block stages of tc_small (per-stage MMA/commit chain cost of about 250-300 clk dominates at 1 k-block).
+// W loads carry the L2 evict_first policy as in tc_small. Epilogue per CTA is the same as tc_small (bias + six-way split).
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kMaxStages = 16, kSmemDyn = 225 * 1024;
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ uint32_t mapa0(uint32_t a) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(0));
+  return r;
+}
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) {
+  uint32_t n = 0;
+  while (!try_wait(bar, par))
+    if (++n > (1u << 27)) __trap();   // a broken pipeline fails the call instead of hanging it
+}
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit2(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], %1;"
+               ::"r"(bar), "h"((uint16_t)3) : "memory");
+}
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+__device__ __forceinline__ void cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\nbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+#endif
+
+__global__ void __launch_bounds__(128, 1) tc_pair_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                        const __grid_constant__ CUtensorMap mapE,
+                                                        const float* __restrict__ bias, OutPtrs outs, int B, int Bpad,
+                                                        int kbs, int stages, int tmem_cols) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const int ebrows = Bpad / 2;
+  const uint32_t eBlk = ebrows * 128, stageBytes = kbs * (kWBlk + eBlk);   // per CTA
+  const int nIt = kKB / kbs;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  uint32_t rank;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+  const int m0 = blockIdx.x * kRows;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(tmem_cols));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer (both CTAs)
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fl = smem_u32(&full[s]);
+      const uint32_t fb = mapa0(fl);   // the leader's full barrier collects the bytes of both CTAs
+      if (rank == 0)
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fl), "r"(2 * stageBytes) : "memory");
+      const uint32_t a = sbase + s * stageBytes, b = a + kbs * kWBlk;
+      asm volatile(
+          "cp.async.bulk.tensor.3d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i * kbs), "l"(pol) : "memory");
+      for (int j = 0; j < kbs; ++j)
+        asm volatile("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                     ::"r"(b + j * eBlk), "l"((uint64_t)&mapE), "r"(fb), "r"((i * kbs + j) * kBK), "r"((int)rank * ebrows) : "memory");
+    }
+  } else if (warp == 1 && lane == 0 && rank == 0) {   // MMA issuer (leader): UMMA 256 x Bpad x 8, four per k-block
+    const uint32_t idesc = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(Bpad >> 3) << 17) | ((uint32_t)(2 * kRows >> 4) << 24);
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+      asm volatile("tcgen05.fence::after_thread_sync;");
+      for (int j = 0; j < kbs; ++j) {
+        const uint32_t a = sbase + s * stageBytes + j * kWBlk, b = sbase + s * stageBytes + kbs * kWBlk + j * eBlk;
+        const uint64_t da = sw128_desc(a), db = sw128_desc(b);
+#pragma unroll
+        for (int k = 0; k < kBK / 8; ++k) {
+          const uint32_t acc = (i | j | k) != 0;
+          asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::tf32 [%0], %1, %2, %3, p; }"
+                       ::"r"(tmem), "l"(da + 2 * k), "l"(db + 2 * k), "r"(idesc), "r"(acc));
+        }
+      }
+      umma_commit2(smem_u32(&empty[s]));
+    }
+    umma_commit2(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int m = m0 + warp * 32 + lane;
+  const int c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  for (int c0 = 0; c0 < Bpad; c0 += 16) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(tmem + ((uint32_t)(warp * 32) << 16) + c0));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int i = 0; i < 16; ++i)
+      if (c0 + i < B) o[(size_t)(c0 + i) * kD] = __uint_as_float(r[i]) + bv;
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(tmem_cols));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_pair(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                              cudaStream_t stream) {
+  if (B < 1 || B > 256) return 410;
+  const int Bpad = (B + 15) / 16 * 16;
+  const int tmem_cols = Bpad <= 32 ? 32 : Bpad <= 64 ? 64 : Bpad <= 128 ? 128 : 256;
+  const int ebrows = Bpad / 2;
+  const int perK = kWBlk + ebrows * 128, avail = kSmemDyn - 1024;
+  const int kbs = 2;
+  int stages = avail / (kbs * perK);
+  if (stages > kMaxStages) stages = kMaxStages;
+  CUtensorMap mW, mE;
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, (cuuint32_t)kbs}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 411;
+  // Each CTA loads ebrows emb rows (rank * ebrows ...); rows >= B are out of bounds and zero-filled by TMA.
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE[2] = {kBK, (cuuint32_t)ebrows};
+  if (cuTensorMapEncodeTiled(&mE, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 412;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_pair_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  cudaLaunchConfig_t cfg = {};
+  cfg.gridDim = dim3(kN / kRows);
+  cfg.blockDim = dim3(128);
+  cfg.dynamicSmemBytes = stages * kbs * perK + 1024;
+  cfg.stream = stream;
+  cudaLaunchAttribute at[1];
+  at[0].id = cudaLaunchAttributeClusterDimension;
+  at[0].val.clusterDim.x = 2;
+  at[0].val.clusterDim.y = 1;
+  at[0].val.clusterDim.z = 1;
+  cfg.attrs = at;
+  cfg.numAttrs = 1;
+  cudaLaunchKernelEx(&cfg, tc_pair_kernel, mW, mE, bias, op, B, Bpad, kbs, stages, tmem_cols);
+  return (int)cudaGetLastError();
+}
+
+
+--- file tc_pair2.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// 256 < B <= 512: 2SM tcgen05 TF32 GEMM over the whole batch in one pass (N = Bpad = B rounded up to 16).
+// A cluster of two CTAs computes a 256-row W tile; the batch is split into two UMMAs per K = 8 step, N1 = 256 and
+// N2 = Bpad - 256, accumulating into TMEM columns [0, 256) and [256, Bpad) of a 512-column allocation, so TMEM
+// column = batch row. Per k-block each CTA holds its 128 W rows (16 KB) and Bpad / 2 emb rows: 128 rows for UMMA1
+// (batch rank * 128 ...) followed by N2 / 2 rows for UMMA2 (batch 256 + rank * N2 / 2 ...), loaded by two emb boxes;
+// the second B descriptor is the first plus 16 KB. Only the leader issues MMAs; commits are multicast to both CTAs.
+// The ring holds 1-k-block stages (4-5 fit in 226 KB). Every 1-k-block stage pays a fixed floor of about 575 ns
+// (950-1200 clk) whatever its MMA work (E1 probe, also with resident operands), so the MMA thread waits for two stages
+// at a time and issues 16 UMMAs before the next wait (about 2.5% faster than per-stage waits); it still commits each
+// stage separately so that refills stay 1-k-block grained.
+// W loads carry the L2 evict_first policy; tensor maps use TFLOAT32 (round to nearest on load).
+// Epilogue: 8 warps, warp w reads TMEM lane quadrant w % 4 and every other 16-column chunk, adds bias, six-way split.
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kN1 = 256, kE1Blk = (kN1 / 2) * kBK * 4;   // UMMA1 emb rows per CTA: 128 x 128 B = 16 KB
+constexpr int kMaxStages = 8, kSmemDyn = 226 * 1024, kThreads = 256, kTmemCols = 512;
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ uint32_t mapa0(uint32_t a) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(0));
+  return r;
+}
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) {
+  uint32_t n = 0;
+  while (!try_wait(bar, par))
+    if (++n > (1u << 27)) __trap();   // a broken pipeline fails the call instead of hanging it
+}
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit2(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], %1;"
+               ::"r"(bar), "h"((uint16_t)3) : "memory");
+}
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+__device__ __forceinline__ void cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\nbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+__device__ __forceinline__ void mma2(uint32_t d, uint64_t a, uint64_t b, uint32_t idesc, uint32_t acc) {
+  asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::tf32 [%0], %1, %2, %3, p; }"
+               ::"r"(d), "l"(a), "l"(b), "r"(idesc), "r"(acc));
+}
+#endif
+
+__global__ void __launch_bounds__(kThreads, 1) tc_pair2_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                              const __grid_constant__ CUtensorMap mapE1,
+                                                              const __grid_constant__ CUtensorMap mapE2,
+                                                              const float* __restrict__ bias, OutPtrs outs, int B,
+                                                              int Bpad, int stages) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const int n2 = Bpad - kN1, n2h = n2 / 2;
+  const uint32_t eBlk = kE1Blk + n2h * 128, stageBytes = kWBlk + eBlk;   // per CTA
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  uint32_t rank;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+  const int m0 = blockIdx.x * kRows;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE1) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE2) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(kTmemCols));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer (both CTAs)
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < kKB; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fl = smem_u32(&full[s]);
+      const uint32_t fb = mapa0(fl);   // the leader's full barrier collects the bytes of both CTAs
+      if (rank == 0)
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fl), "r"(2 * stageBytes) : "memory");
+      const uint32_t a = sbase + s * stageBytes, b = a + kWBlk;
+      asm volatile(
+          "cp.async.bulk.tensor.3d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i), "l"(pol) : "memory");
+      // emb rows >= B are out of bounds and zero-filled by TMA (their bytes still count toward complete_tx).
+      asm volatile("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                   ::"r"(b), "l"((uint64_t)&mapE1), "r"(fb), "r"(i * kBK), "r"((int)rank * (kN1 / 2)) : "memory");
+      asm volatile("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                   ::"r"(b + kE1Blk), "l"((uint64_t)&mapE2), "r"(fb), "r"(i * kBK), "r"(kN1 + (int)rank * n2h) : "memory");
+    }
+  } else if (warp == 1 && lane == 0 && rank == 0) {   // MMA issuer (leader): 2 x UMMA 256 x N x 8 per K step
+    const uint32_t ib = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(2 * kRows >> 4) << 24);
+    const uint32_t idesc1 = ib | ((uint32_t)(kN1 >> 3) << 17), idesc2 = ib | ((uint32_t)(n2 >> 3) << 17);
+    for (int i = 0; i < kKB; ++i) {   // kKB is even: stages are waited for in pairs
+      const int s = i % stages;
+      if ((i & 1) == 0) {
+        mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+        mbar_wait(smem_u32(&full[(i + 1) % stages]), ((i + 1) / stages) & 1);
+        asm volatile("tcgen05.fence::after_thread_sync;");
+      }
+      const uint32_t a = sbase + s * stageBytes, b = a + kWBlk;
+      const uint64_t da = sw128_desc(a), db1 = sw128_desc(b), db2 = sw128_desc(b + kE1Blk);
+#pragma unroll
+      for (int k = 0; k < kBK / 8; ++k) {
+        const uint32_t acc = (i | k) != 0;
+        mma2(tmem, da + 2 * k, db1 + 2 * k, idesc1, acc);
+        mma2(tmem + kN1, da + 2 * k, db2 + 2 * k, idesc2, acc);
+      }
+      umma_commit2(smem_u32(&empty[s]));
+    }
+    umma_commit2(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int q = warp & 3, h = warp >> 2;
+  const int m = m0 + q * 32 + lane;
+  const int c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  for (int c0 = h * 16; c0 < Bpad; c0 += 32) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(tmem + ((uint32_t)(q * 32) << 16) + c0));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int i = 0; i < 16; ++i)
+      if (c0 + i < B) o[(size_t)(c0 + i) * kD] = __uint_as_float(r[i]) + bv;
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(kTmemCols));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_pair2(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                               cudaStream_t stream) {
+  if (B <= 256 || B > 512) return 430;
+  const int Bpad = (B + 15) / 16 * 16, n2h = (Bpad - kN1) / 2;
+  const int perK = kWBlk + kE1Blk + n2h * 128, avail = kSmemDyn - 1024;
+  int stages = avail / perK;   // Bpad 272-384: 5, 400-464: 5 (46 KB), 480-512: 4
+  if (stages > kMaxStages) stages = kMaxStages;
+  if (stages < 2) return 431;
+  CUtensorMap mW, mE1, mE2;
+  // W viewed as [96 k-blocks][18432 rows][32]: one box = one k-block of 128 rows, a canonical SW128 atom stack.
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, 1}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 432;
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE1[2] = {kBK, (cuuint32_t)(kN1 / 2)}, bE2[2] = {kBK, (cuuint32_t)n2h};
+  if (cuTensorMapEncodeTiled(&mE1, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE1, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 433;
+  if (cuTensorMapEncodeTiled(&mE2, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE2, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 434;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_pair2_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  cudaLaunchConfig_t cfg = {};
+  cfg.gridDim = dim3(kN / kRows);
+  cfg.blockDim = dim3(kThreads);
+  cfg.dynamicSmemBytes = stages * perK + 1024;
+  cfg.stream = stream;
+  cudaLaunchAttribute at[1];
+  at[0].id = cudaLaunchAttributeClusterDimension;
+  at[0].val.clusterDim.x = 2;
+  at[0].val.clusterDim.y = 1;
+  at[0].val.clusterDim.z = 1;
+  cfg.attrs = at;
+  cfg.numAttrs = 1;
+  cudaLaunchKernelEx(&cfg, tc_pair2_kernel, mW, mE1, mE2, bias, op, B, Bpad, stages);
+  return (int)cudaGetLastError();
+}
+
+
+--- file kernel.cu ---
+#include <cuda_runtime.h>
+
+// One launch per call; the kernel is chosen from B only.
+//   B <= 131: hand-written tcgen05 TF32 kernel, one-SM CTAs, evict_first W stream (tc_small.cu).
+//   131 < B <= 256: hand-written 2SM tcgen05 TF32 kernel, cluster of 2, 2-k-block stages (tc_pair.cu).
+//   256 < B <= 512: hand-written 2SM kernel, whole batch in one pass as two TMEM accumulators (tc_pair2.cu).
+//   B >  512: CUTLASS sm100 2SM TF32 GEMM 256x192 with fused bias + six-way epilogue (r1 tile).
+extern "C" int adamod_tc_small(const float*, const float*, const float*, float* const*, int, cudaStream_t);
+extern "C" int adamod_tc_pair(const float*, const float*, const float*, float* const*, int, cudaStream_t);
+extern "C" int adamod_tc_pair2(const float*, const float*, const float*, float* const*, int, cudaStream_t);
+extern "C" int adamod_gemm_256x192(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream) {
+  if (B <= 131) return adamod_tc_small(emb, weight, bias, outs, B, stream);
+  if (B <= 256) return adamod_tc_pair(emb, weight, bias, outs, B, stream);
+  if (B <= 512) return adamod_tc_pair2(emb, weight, bias, outs, B, stream);
+  int device = 0;
+  cudaGetDevice(&device);
+  static int sms = 0;   // device property, queried once
+  if (sms == 0) cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+  return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream);
+
+void run(torch::Tensor emb, torch::Tensor weight, torch::Tensor bias,
+         torch::Tensor shift_msa, torch::Tensor scale_msa, torch::Tensor gate_msa,
+         torch::Tensor shift_mlp, torch::Tensor scale_mlp, torch::Tensor gate_mlp) {
+  TORCH_CHECK(emb.is_cuda() && emb.dtype() == torch::kFloat32 && emb.is_contiguous(), "emb must be contiguous fp32 cuda");
+  TORCH_CHECK(weight.is_contiguous() && weight.dtype() == torch::kFloat32, "weight must be contiguous fp32");
+  TORCH_CHECK(bias.is_contiguous() && bias.dtype() == torch::kFloat32, "bias must be contiguous fp32");
+  TORCH_CHECK(emb.dim() == 2 && emb.size(1) == 3072 && emb.size(0) >= 1, "emb must be [B, 3072]");
+  TORCH_CHECK(weight.size(0) == 6 * 3072 && weight.size(1) == 3072, "weight must be [18432, 3072]");
+  TORCH_CHECK(bias.numel() == 6 * 3072, "bias must be [18432]");
+  const int B = (int)emb.size(0);
+  torch::Tensor outs_t[6] = {shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp};
+  float* outs[6];
+  for (int i = 0; i < 6; ++i) {
+    TORCH_CHECK(outs_t[i].is_contiguous() && outs_t[i].dtype() == torch::kFloat32 && outs_t[i].size(0) == B &&
+                outs_t[i].size(1) == 3072, "bad output tensor");
+    outs[i] = outs_t[i].data_ptr<float>();
+  }
+  const c10::cuda::OptionalCUDAGuard guard(emb.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  int st = adamod_launch(emb.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), outs, B, stream);
+  TORCH_CHECK(st == 0, "adamod_launch failed with status ", st);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("run", &run, "AdaLayerNormZero modulation: tcgen05 TF32 GEMM with bias and six-way split epilogue");
+}
+
+
+--- parent r4-e2-tc-pair2-nb2 ---
+design card:
+id: r4-e2-tc-pair2-nb2
+parents:
+  - r3-e2-tc-pair-kbs2
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  H22 test. The kernel is a 2-CTA pair (cta_group::2, M = 256) with two TMEM accumulators (N1 = 256, N2 = Ntile - 256)
+  and nb = 2 batch tiles of Ntile = roundup(ceil(B/2), 16) per W tile. The grid is 144 clusters ordered W-tile-adjacent,
+  with kbs = 1, 5 stages and evict_first on W. It covers 720 < B <= 1024 in one launch. It does NOT reach 85% per clock.
+  The main loop is floored at 960-985 clk per 1-k-block stage regardless of MMA work or stage bytes, and the two waves
+  cannot overlap the epilogue, so it beats CUTLASS 256x192 by only 6.5-6.8% at 773/853 and 1% at 919, and loses 8% at
+  691. B = 691 therefore stays on CUTLASS. H22 is refuted as stated (needed >= 15%), but the cause is a per-stage floor
+  (H23), not the ingest ceiling (H24).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: -3
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 231424
+  threads_per_cta: 128
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 184320
+  launches_per_call: 1
+knobs:
+  NB: 2
+  KBS: 1
+  STAGES_RULE: "(226 KB - 1 KB) / (16 KB + Ntile/2 * 128 B): 5 at Ntile 352-464"
+  CLUSTER_ORDER: "W tile = id / nb, batch tile = id % nb"
+  W_HINT: evict_first
+  TMA_DTYPE: TFLOAT32
+  PAIR2_RANGE: "720 < B <= 1024"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+  - max_tokens: 384
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 512
+    kernel: Tf32Gemm<256,256,0>
+    meta:
+      launches: 1
+  - max_tokens: 720
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+  - max_tokens: 1024
+    kernel: tc_pair2_kernel
+    meta:
+      nb: 2
+      launches: 1
+  - max_tokens: null
+    kernel: Tf32Gemm<256,192,0>
+    meta:
+      launches: 1
+tests:
+  - H22
+  - H23
+  - H24
+  - H19
+findings:
+  - "VERDICT H22: refuted as stated. Same-container harness_time, 3 interleaved rounds, us pair2 (fixed epilogue) vs CUTLASS 256x192 / 256x256: 691 117.0 vs 108.7 / 108.7 (+8%); 773 120.2 vs 128.4 / 133.4 (-6.4%); 853 121.2 vs 129.9 / 135.8 (-6.7%); 919 129.5 vs 130.8 / 136.9 (-1.0%). Needed >= 15% at 773-919 and >= 10% at 691 [probe_b200]"
+  - "run_tests 16/16 PASS, one launch. us vs r2-e1-tc05-ef-small on the same GPU: 773 123.9 vs 130.7 (-5.2%), 853 125.5 vs 133.1 (-5.7%), 919 133.2 vs 134.2 (-0.8%); every other B is the r3 code (192 -6.2%, 211 -3.6%, rest within +-1.8%); band S -0.2% M -1.6% L -1.2%; emulator 0.6164 +- 0.012 (P beat 69%) [run_tests]"
+  - "main-loop floor: in-kernel clock64/globaltimer, harness flush, real W, rented clock 1.63-1.78 GHz. Main loop per 1-k-block stage with 8 UMMAs: 958-985 clk at Ntile 352/400/432/464 and also at nb=3 (Ntile 320). MMA ideal per stage is 2*Ntile = 640-928 clk, so it is MMA-bound only at 464 (94%) [probe_b200]"
+  - "floor ablation (B=919 nb2 / 691 nb2 / 919 nb3, clk per k-block): base 985/977/972; second accumulator removed (MMA work halved) 982/981/974; no MMA (TMA + barriers only) 646/641/619 at 1.96 GHz; warm W (4 W tiles) 967/958/957; warm W + no MMA 607/605/601; test_wait spin instead of try_wait 985/980/970. The ~970 floor depends on neither MMA work, stage bytes (33-46 KB), DRAM, nor the wait instruction: H23's max() model fails (floor ~960, not 551-674, at 8 UMMAs per stage with rotating stages) [probe_b200]"
+  - "H24 not the limiter here: stage bytes 36 KB (nb3) and 46 KB (nb2 at 919) give the same ~970 clk per stage, so ingest bytes/clk does not set the pace of this ring. CUTLASS 256x192 runs about 460-550 clk per 4-UMMA k-block stage on the same shape (134 us at 919 over ~4.9 tiles per pair), so the hand-written ring's per-stage chain costs about 2x CUTLASS's; cause unresolved [probe_b200, analysis]"
+  - "epilogue bug (also a lesson for all hand-written kernels): a per-column piecewise remap of TMEM column -> emb row made ptxas place r[16] in local memory (48 B stack). The epilogue then took 22-33k clk per CTA (1050 clk per 16 columns) even with stores disabled. TMEM loads alone take 1.4k clk for 464 columns; batching 4-8 x16 loads per wait changed nothing. Remapping once per 8-column group (boundaries 128/256/256+h2 are multiples of 8) brings it to ~8k clk with stores: 919 155 -> 129.5 us, 691 139 -> 117 us [probe_b200]"
+  - "cluster order: W-tile-adjacent (a) vs batch-major (b, the sibling reads W from DRAM again): 691 139.2 vs 141.2, 773 145.8 vs 147.2, 853 148.7 vs 150.0, 919 154.6 vs 156.4 us (pre-fix epilogue): (a) wins by about 1% only; this kernel is not DRAM-bound, so the second W read costs about 2 us [probe_b200]"
+  - "W hint: evict_first vs evict_normal on W within 1% at 691-919 (139.2 vs 139.1, 154.6 vs 154.1) [probe_b200]"
+  - "nb=3 at 773/853/919 (Ntile 272/288/320, 3 waves): 193.9/196.7/201.4 us vs nb=2 145-155: +30%. The stage floor is paid per wave, so more tiles only add waves [probe_b200]"
+  - "M-band side result for E1/H19: the same kernel with nb=1 (one pass, one wave of 72 pairs) at 373/384/449/512 gives 62.3/62.4/67.1/72.6 us vs the best CUTLASS tile 67.9 (192)/67.9 (192)/79.0 (256)/79.6 (256): -8/-8/-15/-9% in one container, max err 1.53-1.73e-3. Not shipped (task: keep other paths); a strong candidate for the next M-band round [probe_b200]"
+  - "precision: max |err| vs fp64 (W/sqrt(3072), bias randn) 691 1.54-1.66e-3, 773 1.63e-3, 853 1.53e-3, 919 1.54-1.64e-3, nb3 919 1.67e-3, nb1 384 1.60-1.73e-3, 449 1.53-1.55e-3, 512 1.59-1.60e-3; one draw at 384 reached 1.73e-3 (above the 1.7e-3 bar, below atol 2e-3) [probe_b200]"
+  - "per-clock efficiency (MMA-ideal 2 passes x 96 x 2*Ntile clk / span cycles at ~1.7 GHz): fixed kernel 691 ~68%, 773 ~75%, 853 ~81%, 919 ~81%; CUTLASS 256x192 on its padded work about 77-83% at the same clock. Success needed >= 85% [probe_b200, analysis]"
+  - "portal prediction (r3 rule cycles/1.55 GHz): 773/853/919 about 205/207/220k clk -> 132/134/142 us vs CUTLASS portal 164.9/166.7/167.9 (-15..-20%); with the rule's observed +11% underprediction, 147/149/158 us (-6..-11%); with a flat 1.31 clock ratio against CUTLASS's 1.25-1.27, -2/-2/+4%. Central estimate L -3% on the band (3 of 6 workloads) [analysis]"
+  - "dead end: kbs=2 does not fit more than 2 stages at Ntile 352-464 (77-91 KB per stage per CTA), and r3 showed 2-stage rings are latency-bound; nb=3 adds a wave [analysis]"
+  - "infra: /tmp in probe containers persisted between 2-3 consecutive probes and was then lost (CUTLASS .so had to be rebuilt; 18-28 s for 2 TUs in parallel). Rebuild everything inside the timing probe [probe_b200]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: 384
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 720
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+  - max_tokens: 1024
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: ef
+    st: none
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 192
+    rows: 128
+    grid: persistent
+    mem: tma
+    launches: 1
+    cluster: 2
+    x: none
+    w: none
+    st: none
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Rented gain is only 5-6% at 773/853 and about 1% at 919; if the hand-written ring's portal/rented ratio is the clock ratio 1.31 while CUTLASS's stays 1.25-1.27, 919 could lose 3-4% on the portal"
+  - "Two waves of 74 clusters at 226 KB smem rely on 74 pairs fitting per wave (true on the rented card); fewer resident pairs on the portal card would add a third partial wave"
+  - "kSmemDyn = 226 KB leaves under 1 KB of headroom against the 227 KB per-CTA limit (static smem ~150 B)"
+  - "One probe draw at B=384 (nb=1, not shipped) reached max err 1.73e-3; shipped sizes stayed <= 1.67e-3"
+  - "mbar_wait traps after 2^27 polls, so a broken pipeline errors instead of hanging"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 43.2/54.1/107.8
+B200 portal: score not submitted, geomean - µs
+
+sm_100a static features: [{"kernel": "_ZN44_GLOBAL__N__5b8eb0c6_11_tc_small_cu_b6cfd58e15tc_small_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii", "num_warps": null, "regs": 32, "smem": 1296, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 2, "UTMALDG": 32, "LDG.CONSTANT": 1}}, {"kernel": "_ZN43_GLOBAL__N__5bf5c7d0_10_tc_pair_cu_8feb229414tc_pair_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii", "num_warps": null, "regs": 30, "smem": 1296, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 2, "UTMALDG": 32, "LDG.CONSTANT": 1}}, {"kernel": "_ZN44_GLOBAL__N__0af00e4e_11_tc_pair2_cu_ed38027215tc_pair2_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiii", "num_warps": null, "regs": 40, "smem": 1168, "local": 0, "resident_per_sm": null, "ops": {"UTMACCTL": 2, "UTMALDG": 2, "LDG.CONSTANT": 1}}]
+source:
+--- file adamod_gemm.cuh ---
+#pragma once
+// TF32 tcgen05 GEMM for AdaLayerNormZero modulation: D[m = feature, n = batch] = W[m, :] . emb[n, :] + bias[m],
+// built from CUTLASS 4.4 sm100 collectives (2SM MMA, cluster 2x1, persistent CLC tile scheduler).
+// A = W [18432, 3072] K-major, B = emb [B, 3072] K-major: the large dimension is M, as cuBLAS's tnn kernels do,
+// so a 256-row W tile feeds every batch tile of the same wave and W is read from DRAM once.
+// Epilogue: CUTLASS's no-smem (direct store) epilogue with C = bias broadcast (stride 0 along the batch mode),
+// wrapped so that each tile writes straight into its own output tensor: 3072 % tile_m == 0, so the tile's
+// chunk c = m0 / 3072 is uniform and D is re-based to outs[c] - c * 3072 (column-major, ld 3072).
+#include <cuda_runtime.h>
+#include "cutlass/cutlass.h"
+#include "cute/tensor.hpp"
+#include "cutlass/numeric_types.h"
+#include "cutlass/gemm/device/gemm_universal_adapter.h"
+#include "cutlass/gemm/kernel/gemm_universal.hpp"
+#include "cutlass/gemm/collective/collective_builder.hpp"
+#include "cutlass/epilogue/collective/collective_builder.hpp"
+#include "cutlass/util/packed_stride.hpp"
+
+namespace adamod {
+using namespace cute;
+constexpr int kD = 3072;
+constexpr int kN = 6 * kD;
+
+// The base epilogue keeps a const reference to its Params; we own that Params object and re-point ptr_D per tile.
+template <class Base>
+struct HeldParams {
+  typename Base::Params held;
+};
+
+template <class Base>
+class ChunkedEpilogue : private HeldParams<Base>, public Base {
+  using Holder = HeldParams<Base>;
+
+ public:
+  struct Arguments {
+    typename Base::Arguments base;
+    float* outs[6];
+  };
+  struct Params {
+    typename Base::Params base;
+    float* outs[6];
+  };
+
+  template <class PS>
+  static constexpr Params to_underlying_arguments(PS const& ps, Arguments const& a, void* ws) {
+    Params p{Base::to_underlying_arguments(ps, a.base, ws), {}};
+    for (int i = 0; i < 6; ++i) p.outs[i] = a.outs[i];
+    return p;
+  }
+  template <class PS>
+  static size_t get_workspace_size(PS const& ps, Arguments const& a) {
+    return Base::get_workspace_size(ps, a.base);
+  }
+  template <class PS>
+  static cutlass::Status initialize_workspace(PS const& ps, Arguments const& a, void* ws, cudaStream_t s,
+                                              cutlass::CudaHostAdapter* h = nullptr) {
+    return Base::initialize_workspace(ps, a.base, ws, s, h);
+  }
+  template <class PS>
+  static bool can_implement(PS const& ps, Arguments const& a) {
+    return Base::can_implement(ps, a.base);
+  }
+  CUTLASS_DEVICE static void prefetch_tma_descriptors(Params const&) {}
+
+  CUTLASS_DEVICE ChunkedEpilogue(Params const& p, typename Base::TensorStorage& st)
+      : Holder{p.base}, Base(Holder::held, st), outs_(p.outs) {}
+
+  template <bool ReuseTmem = false, class LP, class LPS, class SP, class SPS, class AP, class APS, class PS, class CS,
+            class CC, class TS, class TM, class Acc, class ST>
+  CUTLASS_DEVICE auto store(LP lp, LPS lps, SP sp, SPS sps, AP ap, APS aps, PS ps, CS cs, CC cc, TS ts, TM tm, Acc acc,
+                            ST& st) {
+    const int c = (int(get<0>(cc)) * int(size<0>(cs))) / kD;   // chunk of this CTA's rows
+    Holder::held.ptr_D = outs_[c] - (size_t)c * kD;             // feature m -> outs[c][b * 3072 + m - c * 3072]
+    return Base::template store<ReuseTmem>(lp, lps, sp, sps, ap, aps, ps, cs, cc, ts, tm, acc, st);
+  }
+
+ private:
+  float* const* outs_;
+};
+
+// TM x TN MMA tile over a 2-CTA pair; Stages = 0 lets CUTLASS fill shared memory.
+template <int TM, int TN, int Stages>
+struct Tf32Gemm {
+  using MmaTile = Shape<Int<TM>, Int<TN>, _32>;
+  using Cluster = Shape<_2, _1, _1>;
+  using EpiBase = typename cutlass::epilogue::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, MmaTile, Cluster,
+      cutlass::epilogue::collective::EpilogueTileAuto, float, float, float, cutlass::layout::ColumnMajor, 4, float,
+      cutlass::layout::ColumnMajor, 4, cutlass::epilogue::NoSmemWarpSpecialized2Sm,
+      cutlass::epilogue::fusion::LinearCombination<float, float, float, float>>::CollectiveOp;
+  using Epi = ChunkedEpilogue<EpiBase>;
+  using StageSpec = cute::conditional_t<(Stages > 0), cutlass::gemm::collective::StageCount<Stages>,
+                                        cutlass::gemm::collective::StageCountAutoCarveout<static_cast<int>(
+                                            sizeof(typename EpiBase::SharedStorage))>>;
+  using Mainloop = typename cutlass::gemm::collective::CollectiveBuilder<
+      cutlass::arch::Sm100, cutlass::arch::OpClassTensorOp, cutlass::tfloat32_t, cutlass::layout::RowMajor, 4,
+      cutlass::tfloat32_t, cutlass::layout::ColumnMajor, 4, float, MmaTile, Cluster, StageSpec,
+      cutlass::gemm::KernelTmaWarpSpecialized2SmSm100>::CollectiveOp;
+  using Kernel = cutlass::gemm::kernel::GemmUniversal<Shape<int, int, int, int>, Mainloop, Epi, void>;
+  using Gemm = cutlass::gemm::device::GemmUniversalAdapter<Kernel>;
+};
+
+// fp32 data is read by TMA as tf32; accumulation is fp32 over K.
+template <class G>
+int run_gemm(const float* emb, const float* W, const float* bias, float* const* outs, int B, int device, int sms,
+             cudaStream_t stream) {
+  using Kernel = typename G::Kernel;
+  using Gemm = typename G::Gemm;
+  using SA = typename Kernel::StrideA;
+  using SB = typename Kernel::StrideB;
+  using SC = typename G::EpiBase::StrideC;
+  using SD = typename G::EpiBase::StrideD;
+  typename Gemm::Arguments args;
+  args.mode = cutlass::gemm::GemmUniversalMode::kGemm;
+  args.problem_shape = {kN, B, kD, 1};
+  args.mainloop.ptr_A = reinterpret_cast<const cutlass::tfloat32_t*>(W);
+  args.mainloop.dA = cutlass::make_cute_packed_stride(SA{}, make_shape(kN, kD, 1));
+  args.mainloop.ptr_B = reinterpret_cast<const cutlass::tfloat32_t*>(emb);
+  args.mainloop.dB = cutlass::make_cute_packed_stride(SB{}, make_shape(B, kD, 1));
+  args.epilogue.base.thread.alpha = 1.f;
+  args.epilogue.base.thread.beta = 1.f;
+  args.epilogue.base.ptr_C = bias;   // C[m, n] = bias[m]
+  SC dC{};
+  get<1>(dC) = 0;
+  get<2>(dC) = 0;
+  args.epilogue.base.dC = dC;
+  args.epilogue.base.ptr_D = outs[0];   // replaced per tile by ChunkedEpilogue
+  SD dD{};
+  get<1>(dD) = kD;
+  get<2>(dD) = 0;
+  args.epilogue.base.dD = dD;
+  for (int i = 0; i < 6; ++i) args.epilogue.outs[i] = outs[i];
+  args.hw_info.device_id = device;
+  args.hw_info.sm_count = sms;
+  Gemm gemm;
+  if (Gemm::get_workspace_size(args) != 0) return 900;   // no workspace (and no memset) by construction
+  cutlass::Status s = gemm.can_implement(args);
+  if (s != cutlass::Status::kSuccess) return 100 + (int)s;
+  s = gemm.initialize(args, nullptr, stream);
+  if (s != cutlass::Status::kSuccess) return 200 + (int)s;
+  s = gemm.run(stream);
+  if (s != cutlass::Status::kSuccess) return 300 + (int)s;
+  return (int)cudaGetLastError();
+}
+}  // namespace adamod
+
+
+--- file tile_256x192.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x192(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                   int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 192, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tile_256x256.cu ---
+#include "adamod_gemm.cuh"
+
+extern "C" int adamod_gemm_256x256(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                                   int device, int sms, cudaStream_t stream) {
+  return adamod::run_gemm<adamod::Tf32Gemm<256, 256, 0>>(emb, W, bias, outs, B, device, sms, stream);
+}
+
+
+--- file tc_small.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// B <= 256: hand-written tcgen05 TF32 GEMM, one 128-row W tile per CTA (144 CTAs, one per SM), all batch rows in
+// one UMMA N = B rounded up to 16 (<= 256), fp32 accumulator in TMEM over the full K = 3072.
+// W streams from DRAM once through a TMA ring with an L2 evict_first hint: the harness leaves the L2 full of dirty
+// zero lines, and evict_first W lines recycle each other instead of forcing those lines to be written back inside
+// the timed window. Each stage holds kbs k-blocks of 32 (128 B swizzle rows) of W and of emb (emb from L2).
+// The TMA tensor maps use the TFLOAT32 type (round to nearest tf32: max |err| 1.3-1.6e-3; FLOAT32 truncates, 3.6-4.2e-3).
+// Epilogue: 4 warps read one TMEM lane quadrant each (row m = W row), add bias[m] and store out_c[b * 3072 + m - c * 3072];
+// c = m0 / 3072 is uniform per CTA.
+// tcgen05 exists only on sm_100a: the body is compiled for the arch-specific target (as CUTLASS guards its kernels).
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kMaxStages = 16, kSmemDyn = 225 * 1024;
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) { while (!try_wait(bar, par)) {} }
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::1.mbarrier::arrive::one.shared::cluster.b64 [%0];" ::"r"(bar) : "memory");
+}
+// K-major, 128 B swizzle UMMA operand: 8-row groups 1024 B apart (SBO), version 1 (sm100), layout SWIZZLE_128B.
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+#endif
+
+__global__ void __launch_bounds__(128, 1) tc_small_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                         const __grid_constant__ CUtensorMap mapE,
+                                                         const float* __restrict__ bias, OutPtrs outs, int B, int Bpad,
+                                                         int kbs, int stages, int tmem_cols) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const uint32_t eBlk = Bpad * 128, stageBytes = kbs * (kWBlk + eBlk);
+  const int nIt = kKB / kbs;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  const int m0 = blockIdx.x * kRows;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::1.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(tmem_cols));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::1.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  __syncthreads();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fb = smem_u32(&full[s]);
+      const uint32_t a = sbase + s * stageBytes, b = a + kbs * kWBlk;
+      asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fb), "r"(stageBytes) : "memory");
+      asm volatile(
+          "cp.async.bulk.tensor.3d.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i * kbs), "l"(pol) : "memory");
+      for (int j = 0; j < kbs; ++j)
+        asm volatile("cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                     ::"r"(b + j * eBlk), "l"((uint64_t)&mapE), "r"(fb), "r"((i * kbs + j) * kBK), "r"(0) : "memory");
+    }
+  } else if (warp == 1 && lane == 0) {   // MMA issuer: UMMA 128 x Bpad x 8, four per 32-wide k-block
+    const uint32_t idesc = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(Bpad >> 3) << 17) | ((uint32_t)(kRows >> 4) << 24);
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+      asm volatile("tcgen05.fence::after_thread_sync;");
+      for (int j = 0; j < kbs; ++j) {
+        const uint32_t a = sbase + s * stageBytes + j * kWBlk, b = sbase + s * stageBytes + kbs * kWBlk + j * eBlk;
+        const uint64_t da = sw128_desc(a), db = sw128_desc(b);
+#pragma unroll
+        for (int k = 0; k < kBK / 8; ++k) {
+          const uint32_t acc = (i | j | k) != 0;
+          asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::1.kind::tf32 [%0], %1, %2, %3, p; }"
+                       ::"r"(tmem), "l"(da + 2 * k), "l"(db + 2 * k), "r"(idesc), "r"(acc));
+        }
+      }
+      umma_commit(smem_u32(&empty[s]));
+    }
+    umma_commit(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int m = m0 + warp * 32 + lane;
+  const int c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  for (int c0 = 0; c0 < Bpad; c0 += 16) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(tmem + ((uint32_t)(warp * 32) << 16) + c0));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int i = 0; i < 16; ++i)
+      if (c0 + i < B) o[(size_t)(c0 + i) * kD] = __uint_as_float(r[i]) + bv;
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  __syncthreads();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::1.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(tmem_cols));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_small(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                               cudaStream_t stream) {
+  if (B < 1 || B > 256) return 400;
+  const int Bpad = (B + 15) / 16 * 16;
+  const int tmem_cols = Bpad <= 32 ? 32 : Bpad <= 64 ? 64 : Bpad <= 128 ? 128 : 256;
+  const int perK = kWBlk + Bpad * 128, avail = kSmemDyn - 1024;
+  int kbs = 1;   // largest k-blocks per stage that still leaves a 3-deep ring
+  for (int cand : {4, 3, 2})
+    if (avail / (cand * perK) >= 3) { kbs = cand; break; }
+  int stages = avail / (kbs * perK);
+  if (stages > kMaxStages) stages = kMaxStages;
+  CUtensorMap mW, mE;
+  // W viewed as [96 k-blocks][18432 rows][32]: one box = kbs k-blocks of 128 rows, each a canonical SW128 atom stack.
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, (cuuint32_t)kbs}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 401;
+  // emb rows B..Bpad-1 are out of bounds and zero-filled by TMA.
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE[2] = {kBK, (cuuint32_t)Bpad};
+  if (cuTensorMapEncodeTiled(&mE, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 402;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_small_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  tc_small_kernel<<<kN / kRows, 128, stages * kbs * perK + 1024, stream>>>(mW, mE, bias, op, B, Bpad, kbs, stages, tmem_cols);
+  return (int)cudaGetLastError();
+}
+
+
+--- file tc_pair.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// 131 < B <= 256: 2SM tcgen05 TF32 GEMM. A cluster of two CTAs computes a 256-row W tile with one cta_group::2 UMMA
+// (M = 256, N = Bpad <= 256, K = 8) per step: each CTA holds its own 128 W rows and half (Bpad / 2) of the emb rows in
+// shared memory, and its accumulator is 128 lanes x Bpad columns of its own TMEM. Only the leader CTA issues the MMAs;
+// both CTAs' TMA loads signal the leader's full barrier, and the commit is multicast to both CTAs' empty barriers.
+// Stages hold kbs = 2 k-blocks of 32: the E2 probe measured 8-UMMA stages at 749 clk/k-block against 1108 for the
+// 1-k-block stages of tc_small (per-stage MMA/commit chain cost of about 250-300 clk dominates at 1 k-block).
+// W loads carry the L2 evict_first policy as in tc_small. Epilogue per CTA is the same as tc_small (bias + six-way split).
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kMaxStages = 16, kSmemDyn = 225 * 1024;
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ uint32_t mapa0(uint32_t a) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(0));
+  return r;
+}
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) {
+  uint32_t n = 0;
+  while (!try_wait(bar, par))
+    if (++n > (1u << 27)) __trap();   // a broken pipeline fails the call instead of hanging it
+}
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit2(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], %1;"
+               ::"r"(bar), "h"((uint16_t)3) : "memory");
+}
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+__device__ __forceinline__ void cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\nbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+#endif
+
+__global__ void __launch_bounds__(128, 1) tc_pair_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                        const __grid_constant__ CUtensorMap mapE,
+                                                        const float* __restrict__ bias, OutPtrs outs, int B, int Bpad,
+                                                        int kbs, int stages, int tmem_cols) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const int ebrows = Bpad / 2;
+  const uint32_t eBlk = ebrows * 128, stageBytes = kbs * (kWBlk + eBlk);   // per CTA
+  const int nIt = kKB / kbs;
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  uint32_t rank;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+  const int m0 = blockIdx.x * kRows;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(tmem_cols));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer (both CTAs)
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fl = smem_u32(&full[s]);
+      const uint32_t fb = mapa0(fl);   // the leader's full barrier collects the bytes of both CTAs
+      if (rank == 0)
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fl), "r"(2 * stageBytes) : "memory");
+      const uint32_t a = sbase + s * stageBytes, b = a + kbs * kWBlk;
+      asm volatile(
+          "cp.async.bulk.tensor.3d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i * kbs), "l"(pol) : "memory");
+      for (int j = 0; j < kbs; ++j)
+        asm volatile("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                     ::"r"(b + j * eBlk), "l"((uint64_t)&mapE), "r"(fb), "r"((i * kbs + j) * kBK), "r"((int)rank * ebrows) : "memory");
+    }
+  } else if (warp == 1 && lane == 0 && rank == 0) {   // MMA issuer (leader): UMMA 256 x Bpad x 8, four per k-block
+    const uint32_t idesc = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(Bpad >> 3) << 17) | ((uint32_t)(2 * kRows >> 4) << 24);
+    for (int i = 0; i < nIt; ++i) {
+      const int s = i % stages;
+      mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+      asm volatile("tcgen05.fence::after_thread_sync;");
+      for (int j = 0; j < kbs; ++j) {
+        const uint32_t a = sbase + s * stageBytes + j * kWBlk, b = sbase + s * stageBytes + kbs * kWBlk + j * eBlk;
+        const uint64_t da = sw128_desc(a), db = sw128_desc(b);
+#pragma unroll
+        for (int k = 0; k < kBK / 8; ++k) {
+          const uint32_t acc = (i | j | k) != 0;
+          asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::tf32 [%0], %1, %2, %3, p; }"
+                       ::"r"(tmem), "l"(da + 2 * k), "l"(db + 2 * k), "r"(idesc), "r"(acc));
+        }
+      }
+      umma_commit2(smem_u32(&empty[s]));
+    }
+    umma_commit2(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int m = m0 + warp * 32 + lane;
+  const int c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  for (int c0 = 0; c0 < Bpad; c0 += 16) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(tmem + ((uint32_t)(warp * 32) << 16) + c0));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int i = 0; i < 16; ++i)
+      if (c0 + i < B) o[(size_t)(c0 + i) * kD] = __uint_as_float(r[i]) + bv;
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(tmem_cols));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_pair(const float* emb, const float* W, const float* bias, float* const* outs, int B,
+                              cudaStream_t stream) {
+  if (B < 1 || B > 256) return 410;
+  const int Bpad = (B + 15) / 16 * 16;
+  const int tmem_cols = Bpad <= 32 ? 32 : Bpad <= 64 ? 64 : Bpad <= 128 ? 128 : 256;
+  const int ebrows = Bpad / 2;
+  const int perK = kWBlk + ebrows * 128, avail = kSmemDyn - 1024;
+  const int kbs = 2;
+  int stages = avail / (kbs * perK);
+  if (stages > kMaxStages) stages = kMaxStages;
+  CUtensorMap mW, mE;
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, (cuuint32_t)kbs}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 411;
+  // Each CTA loads ebrows emb rows (rank * ebrows ...); rows >= B are out of bounds and zero-filled by TMA.
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE[2] = {kBK, (cuuint32_t)ebrows};
+  if (cuTensorMapEncodeTiled(&mE, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 412;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_pair_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  cudaLaunchConfig_t cfg = {};
+  cfg.gridDim = dim3(kN / kRows);
+  cfg.blockDim = dim3(128);
+  cfg.dynamicSmemBytes = stages * kbs * perK + 1024;
+  cfg.stream = stream;
+  cudaLaunchAttribute at[1];
+  at[0].id = cudaLaunchAttributeClusterDimension;
+  at[0].val.clusterDim.x = 2;
+  at[0].val.clusterDim.y = 1;
+  at[0].val.clusterDim.z = 1;
+  cfg.attrs = at;
+  cfg.numAttrs = 1;
+  cudaLaunchKernelEx(&cfg, tc_pair_kernel, mW, mE, bias, op, B, Bpad, kbs, stages, tmem_cols);
+  return (int)cudaGetLastError();
+}
+
+
+--- file tc_pair2.cu ---
+#include <cuda_runtime.h>
+#include <cuda.h>
+#include <cstdint>
+
+// 720 < B <= 1024: 2SM tcgen05 TF32 GEMM with two TMEM accumulators and nb = 2 batch tiles per 256-row W tile.
+// Ntile = roundup(ceil(B / nb), 16) in (256, 512]: one pass over K computes N1 = 256 columns into TMEM columns
+// [0, 256) and N2 = Ntile - 256 columns into [256, Ntile), both from the same A (W) stage, 8 UMMAs per 1-k-block stage.
+// Each CTA of the pair loads Ntile / 2 contiguous emb rows (n0 + rank * Ntile / 2 ...); the UMMA B operand of N columns
+// takes N / 2 rows from each CTA, so accumulator columns map to emb rows as
+//   j < 128 -> j, 128..255 -> half + j - 128, 256..256+h2 -> j - 128, rest -> half + j - 128 - h2.
+// Grid: 72 W tiles x nb batch tiles = 144 clusters of 2 (two waves of 74 pairs); cluster id -> (W tile = id / nb,
+// batch tile = id % nb), so the two batch tiles of a W tile run together and the second read of W hits L2.
+// W loads carry L2 evict_first; TMA maps are TFLOAT32 (round on load); emb rows >= B are zero-filled by TMA and the
+// epilogue skips them. The epilogue remaps once per 8 columns: a per-column remap put r[] in local memory and cost
+// 30k clk per CTA (probe).
+namespace {
+constexpr int kD = 3072, kN = 6 * kD, kRows = 128, kBK = 32, kKB = kD / kBK, kWBlk = kRows * kBK * 4;
+constexpr int kMaxStages = 8, kSmemDyn = 226 * 1024, kWTiles = kN / (2 * kRows);
+struct OutPtrs { float* p[6]; };
+
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+__device__ __forceinline__ uint32_t smem_u32(const void* p) { return (uint32_t)__cvta_generic_to_shared(p); }
+__device__ __forceinline__ uint32_t mapa0(uint32_t a) {
+  uint32_t r;
+  asm volatile("mapa.shared::cluster.u32 %0, %1, %2;" : "=r"(r) : "r"(a), "r"(0));
+  return r;
+}
+__device__ __forceinline__ bool try_wait(uint32_t bar, uint32_t par) {
+  uint32_t ok;
+  asm volatile("{ .reg .pred p; mbarrier.try_wait.parity.shared::cta.b64 p, [%1], %2; selp.u32 %0, 1, 0, p; }"
+               : "=r"(ok) : "r"(bar), "r"(par) : "memory");
+  return ok != 0;
+}
+__device__ __forceinline__ void mbar_wait(uint32_t bar, uint32_t par) {
+  uint32_t n = 0;
+  while (!try_wait(bar, par))
+    if (++n > (1u << 27)) __trap();   // a broken pipeline fails the call instead of hanging it
+}
+__device__ __forceinline__ void mbar_init(uint32_t bar) { asm volatile("mbarrier.init.shared::cta.b64 [%0], 1;" ::"r"(bar)); }
+__device__ __forceinline__ void umma_commit2(uint32_t bar) {
+  asm volatile("tcgen05.commit.cta_group::2.mbarrier::arrive::one.shared::cluster.multicast::cluster.b64 [%0], %1;"
+               ::"r"(bar), "h"((uint16_t)3) : "memory");
+}
+__device__ __forceinline__ uint64_t sw128_desc(uint32_t addr) {
+  return (uint64_t)((addr & 0x3FFFF) >> 4) | ((uint64_t)1 << 16) | ((uint64_t)(1024 >> 4) << 32) | ((uint64_t)1 << 46) |
+         ((uint64_t)2 << 61);
+}
+__device__ __forceinline__ void cluster_sync() {
+  asm volatile("barrier.cluster.arrive.release.aligned;\nbarrier.cluster.wait.acquire.aligned;" ::: "memory");
+}
+#endif
+
+__global__ void __launch_bounds__(128, 1) tc_pair2_kernel(const __grid_constant__ CUtensorMap mapW,
+                                                         const __grid_constant__ CUtensorMap mapE,
+                                                         const float* __restrict__ bias, OutPtrs outs, int B, int Ntile,
+                                                         int nb, int stages) {
+#if defined(__CUDA_ARCH_FEAT_SM100_ALL)
+  extern __shared__ uint8_t smem_raw[];
+  __shared__ __align__(8) uint64_t full[kMaxStages], empty[kMaxStages], accum;
+  __shared__ uint32_t tmem_slot;
+  const uint32_t sbase = (smem_u32(smem_raw) + 1023) & ~1023u;
+  const int half = Ntile / 2, N2 = Ntile - 256, h2 = N2 / 2;
+  const uint32_t eBlk = half * 128, stageBytes = kWBlk + eBlk;   // per CTA
+  const int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+  uint32_t rank;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(rank));
+  const int cid = blockIdx.x >> 1, wt = cid / nb, bt = cid - wt * nb;
+  const int m0 = wt * 2 * kRows + (int)rank * kRows, n0 = bt * Ntile;
+  if (threadIdx.x == 0) {
+    for (int i = 0; i < stages; ++i) { mbar_init(smem_u32(&full[i])); mbar_init(smem_u32(&empty[i])); }
+    mbar_init(smem_u32(&accum));
+    asm volatile("fence.mbarrier_init.release.cluster;");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapW) : "memory");
+    asm volatile("prefetch.tensormap [%0];" ::"l"((uint64_t)&mapE) : "memory");
+  }
+  if (warp == 3) {
+    asm volatile("tcgen05.alloc.cta_group::2.sync.aligned.shared::cta.b32 [%0], %1;" ::"r"(smem_u32(&tmem_slot)), "r"(512));
+    asm volatile("tcgen05.relinquish_alloc_permit.cta_group::2.sync.aligned;");
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const uint32_t tmem = tmem_slot;
+
+  if (warp == 0 && lane == 0) {   // TMA producer (both CTAs)
+    uint64_t pol;
+    asm volatile("createpolicy.fractional.L2::evict_first.b64 %0, 1.0;" : "=l"(pol));
+    for (int i = 0; i < kKB; ++i) {
+      const int s = i % stages;
+      if (i >= stages) mbar_wait(smem_u32(&empty[s]), ((i / stages) - 1) & 1);
+      const uint32_t fl = smem_u32(&full[s]), fb = mapa0(fl);   // leader's full barrier collects both CTAs' bytes
+      if (rank == 0)
+        asm volatile("mbarrier.arrive.expect_tx.shared::cta.b64 _, [%0], %1;" ::"r"(fl), "r"(2 * stageBytes) : "memory");
+      const uint32_t a = sbase + s * stageBytes, b = a + kWBlk;
+      asm volatile(
+          "cp.async.bulk.tensor.3d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes.L2::cache_hint [%0], [%1, {%3, %4, %5}], [%2], %6;"
+          ::"r"(a), "l"((uint64_t)&mapW), "r"(fb), "r"(0), "r"(m0), "r"(i), "l"(pol) : "memory");
+      asm volatile("cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [%0], [%1, {%3, %4}], [%2];"
+                   ::"r"(b), "l"((uint64_t)&mapE), "r"(fb), "r"(i * kBK), "r"(n0 + (int)rank * half) : "memory");
+    }
+  } else if (warp == 1 && lane == 0 && rank == 0) {   // MMA issuer (leader): two UMMAs 256 x {256, N2} x 8 per k-step
+    const uint32_t ib = (1u << 4) | (2u << 7) | (2u << 10) | ((uint32_t)(2 * kRows >> 4) << 24);
+    const uint32_t id1 = ib | ((uint32_t)(256 >> 3) << 17), id2 = ib | ((uint32_t)(N2 >> 3) << 17);
+    for (int i = 0; i < kKB; ++i) {
+      const int s = i % stages;
+      mbar_wait(smem_u32(&full[s]), (i / stages) & 1);
+      asm volatile("tcgen05.fence::after_thread_sync;");
+      const uint32_t a = sbase + s * stageBytes, b = a + kWBlk;
+      const uint64_t da = sw128_desc(a), db = sw128_desc(b), db2 = sw128_desc(b + 128 * 128);
+#pragma unroll
+      for (int k = 0; k < kBK / 8; ++k) {
+        const uint32_t acc = (i | k) != 0;
+        asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::tf32 [%0], %1, %2, %3, p; }"
+                     ::"r"(tmem), "l"(da + 2 * k), "l"(db + 2 * k), "r"(id1), "r"(acc));
+        asm volatile("{ .reg .pred p; setp.ne.b32 p, %4, 0; tcgen05.mma.cta_group::2.kind::tf32 [%0], %1, %2, %3, p; }"
+                     ::"r"(tmem + 256), "l"(da + 2 * k), "l"(db2 + 2 * k), "r"(id2), "r"(acc));
+      }
+      umma_commit2(smem_u32(&empty[s]));
+    }
+    umma_commit2(smem_u32(&accum));
+  }
+  __syncwarp();
+
+  mbar_wait(smem_u32(&accum), 0);
+  asm volatile("tcgen05.fence::after_thread_sync;");
+  const int m = m0 + warp * 32 + lane, c = m0 / kD;
+  const float bv = bias[m];
+  float* o = outs.p[c] + (m - c * kD);
+  const uint32_t taddr = tmem + ((uint32_t)(warp * 32) << 16);
+  for (int cc = 0; cc < Ntile; cc += 16) {
+    uint32_t r[16];
+    asm volatile("tcgen05.ld.sync.aligned.32x32b.x16.b32 {%0,%1,%2,%3,%4,%5,%6,%7,%8,%9,%10,%11,%12,%13,%14,%15}, [%16];"
+                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]), "=r"(r[4]), "=r"(r[5]), "=r"(r[6]), "=r"(r[7]),
+                   "=r"(r[8]), "=r"(r[9]), "=r"(r[10]), "=r"(r[11]), "=r"(r[12]), "=r"(r[13]), "=r"(r[14]), "=r"(r[15])
+                 : "r"(taddr + cc));
+    asm volatile("tcgen05.wait::ld.sync.aligned;" ::: "memory");
+#pragma unroll
+    for (int g = 0; g < 2; ++g) {   // region boundaries (128, 256, 256 + h2) are multiples of 8
+      const int j = cc + 8 * g;
+      const int loc0 = j < 128 ? j : j < 256 ? half + (j - 128) : j - 256 < h2 ? j - 128 : half + (j - 128 - h2);
+      float* og = o + (size_t)(n0 + loc0) * kD;
+      const int lim = B - (n0 + loc0);
+#pragma unroll
+      for (int i = 0; i < 8; ++i)
+        if (i < lim) og[(size_t)i * kD] = __uint_as_float(r[8 * g + i]) + bv;
+    }
+  }
+  asm volatile("tcgen05.fence::before_thread_sync;");
+  cluster_sync();
+  if (warp == 3) {
+    asm volatile("tcgen05.fence::after_thread_sync;");
+    asm volatile("tcgen05.dealloc.cta_group::2.sync.aligned.b32 %0, %1;" ::"r"(tmem), "r"(512));
+  }
+#endif
+}
+}  // namespace
+
+extern "C" int adamod_tc_pair2(const float* emb, const float* W, const float* bias, float* const* outs, int B, int nb,
+                               cudaStream_t stream) {
+  const int Ntile = ((B + nb - 1) / nb + 15) / 16 * 16;
+  if (B < 1 || Ntile <= 256 || Ntile > 512) return 420;
+  const int half = Ntile / 2;
+  const int perK = kWBlk + half * 128, avail = kSmemDyn - 1024;
+  int stages = avail / perK;   // 5 at Ntile 352-464
+  if (stages > kMaxStages) stages = kMaxStages;
+  CUtensorMap mW, mE;
+  cuuint64_t dW[3] = {(cuuint64_t)kBK, (cuuint64_t)kN, (cuuint64_t)kKB}, sW[2] = {(cuuint64_t)kD * 4, (cuuint64_t)kBK * 4};
+  cuuint32_t bW[3] = {kBK, kRows, 1}, es[3] = {1, 1, 1};
+  if (cuTensorMapEncodeTiled(&mW, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 3, (void*)W, dW, sW, bW, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 421;
+  cuuint64_t dE[2] = {(cuuint64_t)kD, (cuuint64_t)B}, sE[1] = {(cuuint64_t)kD * 4};
+  cuuint32_t bE[2] = {kBK, (cuuint32_t)half};
+  if (cuTensorMapEncodeTiled(&mE, CU_TENSOR_MAP_DATA_TYPE_TFLOAT32, 2, (void*)emb, dE, sE, bE, es, CU_TENSOR_MAP_INTERLEAVE_NONE,
+                             CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_256B,
+                             CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE) != CUDA_SUCCESS)
+    return 422;
+  static bool attr_set = false;
+  if (!attr_set) {
+    cudaFuncSetAttribute(tc_pair2_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, kSmemDyn);
+    attr_set = true;
+  }
+  OutPtrs op;
+  for (int i = 0; i < 6; ++i) op.p[i] = outs[i];
+  cudaLaunchConfig_t cfg = {};
+  cfg.gridDim = dim3(2 * kWTiles * nb);
+  cfg.blockDim = dim3(128);
+  cfg.dynamicSmemBytes = stages * perK + 1024;
+  cfg.stream = stream;
+  cudaLaunchAttribute at[1];
+  at[0].id = cudaLaunchAttributeClusterDimension;
+  at[0].val.clusterDim.x = 2;
+  at[0].val.clusterDim.y = 1;
+  at[0].val.clusterDim.z = 1;
+  cfg.attrs = at;
+  cfg.numAttrs = 1;
+  cudaLaunchKernelEx(&cfg, tc_pair2_kernel, mW, mE, bias, op, B, Ntile, nb, stages);
+  return (int)cudaGetLastError();
+}
+
+
+--- file kernel.cu ---
+#include <cuda_runtime.h>
+
+// One launch per call; the kernel is chosen from B only.
+//   B <= 131: hand-written tcgen05 TF32 kernel, one-SM CTAs, evict_first W stream (tc_small.cu).
+//   131 < B <= 256: hand-written 2SM tcgen05 TF32 kernel, cluster of 2, 2-k-block stages (tc_pair.cu).
+//   256 < B <= 720: CUTLASS sm100 2SM TF32 GEMM with fused bias + six-way epilogue (r1 tiles).
+//   720 < B <= 1024: hand-written 2SM two-accumulator kernel, 2 batch tiles of <= 512 columns (tc_pair2.cu).
+//   B > 1024: CUTLASS 256x192.
+extern "C" int adamod_tc_small(const float*, const float*, const float*, float* const*, int, cudaStream_t);
+extern "C" int adamod_tc_pair(const float*, const float*, const float*, float* const*, int, cudaStream_t);
+extern "C" int adamod_tc_pair2(const float*, const float*, const float*, float* const*, int, int, cudaStream_t);
+extern "C" int adamod_gemm_256x192(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+extern "C" int adamod_gemm_256x256(const float*, const float*, const float*, float* const*, int, int, int, cudaStream_t);
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream) {
+  if (B <= 131) return adamod_tc_small(emb, weight, bias, outs, B, stream);
+  if (B <= 256) return adamod_tc_pair(emb, weight, bias, outs, B, stream);
+  if (B > 720 && B <= 1024) return adamod_tc_pair2(emb, weight, bias, outs, B, 2, stream);
+  int device = 0;
+  cudaGetDevice(&device);
+  static int sms = 0;   // device property, queried once
+  if (sms == 0) cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
+  if (B <= 384) return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+  if (B <= 512) return adamod_gemm_256x256(emb, weight, bias, outs, B, device, sms, stream);
+  return adamod_gemm_256x192(emb, weight, bias, outs, B, device, sms, stream);
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+
+extern "C" int adamod_launch(const float* emb, const float* weight, const float* bias, float* const* outs, int B,
+                             cudaStream_t stream);
+
+void run(torch::Tensor emb, torch::Tensor weight, torch::Tensor bias,
+         torch::Tensor shift_msa, torch::Tensor scale_msa, torch::Tensor gate_msa,
+         torch::Tensor shift_mlp, torch::Tensor scale_mlp, torch::Tensor gate_mlp) {
+  TORCH_CHECK(emb.is_cuda() && emb.dtype() == torch::kFloat32 && emb.is_contiguous(), "emb must be contiguous fp32 cuda");
+  TORCH_CHECK(weight.is_contiguous() && weight.dtype() == torch::kFloat32, "weight must be contiguous fp32");
+  TORCH_CHECK(bias.is_contiguous() && bias.dtype() == torch::kFloat32, "bias must be contiguous fp32");
+  TORCH_CHECK(emb.dim() == 2 && emb.size(1) == 3072 && emb.size(0) >= 1, "emb must be [B, 3072]");
+  TORCH_CHECK(weight.size(0) == 6 * 3072 && weight.size(1) == 3072, "weight must be [18432, 3072]");
+  TORCH_CHECK(bias.numel() == 6 * 3072, "bias must be [18432]");
+  const int B = (int)emb.size(0);
+  torch::Tensor outs_t[6] = {shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp};
+  float* outs[6];
+  for (int i = 0; i < 6; ++i) {
+    TORCH_CHECK(outs_t[i].is_contiguous() && outs_t[i].dtype() == torch::kFloat32 && outs_t[i].size(0) == B &&
+                outs_t[i].size(1) == 3072, "bad output tensor");
+    outs[i] = outs_t[i].data_ptr<float>();
+  }
+  const c10::cuda::OptionalCUDAGuard guard(emb.device());
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+  int st = adamod_launch(emb.data_ptr<float>(), weight.data_ptr<float>(), bias.data_ptr<float>(), outs, B, stream);
+  TORCH_CHECK(st == 0, "adamod_launch failed with status ", st);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+  m.def("run", &run, "AdaLayerNormZero modulation: tcgen05 TF32 GEMM with bias and six-way split epilogue");
+}
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

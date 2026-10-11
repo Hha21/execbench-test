@@ -103,13 +103,18 @@ def low_precision_problem():
         return False
 
 
-def tf32_problem():
-    """True if the operator ruled TF32 compute in for the current problem (sol.yaml `precision: tf32`; its note says why)."""
+PRECISION_PATTERNS = {"tf32": r"allow_tf32|round_f32_to_tf32\s*=\s*True",
+                      "fp16": r"\.half\(\)|(?<!b)float16",
+                      "bf16": r"\.bfloat16\(\)|bfloat16"}
+
+
+def ruled_precisions():
+    """Formats the operator ruled in for the current problem (sol.yaml `precision: tf32, fp16`; its note says why)."""
     try:
         import problem
-        return problem.current().sol.get("precision") == "tf32"
+        return {p.strip() for p in str(problem.current().sol.get("precision") or "").split(",") if p.strip()}
     except Exception:
-        return False
+        return set()
 
 
 def strip_comments(code, path):
@@ -132,8 +137,8 @@ def lint(sol):
                 continue  # data_ptr<T>() is how C++/CUDA extensions pass tensors to kernels
             if why == "reduced precision" and low:
                 pat = r"allow_tf32|round_f32_to_tf32\s*=\s*True"   # fp16/bf16 is this problem's own dtype
-            elif why == "reduced precision" and tf32_problem():
-                pat = r"\.half\(\)|\.bfloat16\(\)|float16|bfloat16"   # operator ruling: TF32 allowed here
+            elif why == "reduced precision" and ruled_precisions():   # operator ruling: these formats allowed here
+                pat = "|".join(v for k, v in PRECISION_PATTERNS.items() if k not in ruled_precisions()) or r"(?!)"
             target = run_body if why == "torch op inside run()" else code
             if re.search(pat, target):
                 hits.append(f"{s['path']}: {why} ({pat})")

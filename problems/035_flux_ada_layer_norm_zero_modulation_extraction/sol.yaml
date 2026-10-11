@@ -1,11 +1,19 @@
 flops: "2 * batch_size * inner_dim * output_dim"     # fp32 GEMM emb @ weight.T (+ bias); weight 18432x3072 fp32 = 226 MB
-precision: tf32       # operator ruling 2026-10-10: plain TF32 compute allowed on this problem (lint follows it)
+precision: tf32, fp16   # operator rulings 2026-10-10 (TF32) and 2026-10-11 (FP16): lint follows them; bf16 stays flagged
 note: >-
-  Precision (operator ruling, 2026-10-10): plain TF32 tensor-core compute with fp32 accumulation IS allowed on this
-  problem: inputs and outputs stay fp32, the tolerance is met, the paper permits downcasting when input and output dtypes
-  match, and the portal's own scoring baseline runs at TF32 speed (613 TFLOP/s at B=919). bf16/fp16 operands stay
-  forbidden (they also fail the tolerance), and so does BF16x9 emulation. Keep a margin: TF32's max error is 1.6e-3
-  against atol 2e-3, so accumulate in fp32 and never round outputs or intermediates. For reference: emb ~N(0,1), weight ~N(0,1)/sqrt(3072) and bias ~N(0,1) give
-  outputs of std ~1.4. The tolerance is atol 0.002-0.0023, rtol 1e-5, on 99% of elements. Plain TF32 would pass it
-  (measured max error 1.6e-3, typical ~3e-4) and bf16 operands (~1.6e-3) would not. The paper allows downcasting when input and output dtypes match
-  and the tolerance is met.
+  Precision (operator policy, 2026-10-11): any compute precision is fine if the output meets the tolerance; the portal and
+  run_tests decide. TF32 and FP16 tensor-core compute with fp32 accumulation are both allowed here. Inputs and outputs stay
+  fp32, and the paper permits downcasting when input and output dtypes match and the tolerance is met.
+  FP16 has the same 10-bit mantissa as TF32. This problem's inputs (emb ~N(0,1) with |emb| <= ~5; weight ~N(0,1)/sqrt(3072)
+  with |w| <= ~0.1; 0.27% of weights below fp16's normal range) sit well inside fp16's range, so round-to-nearest FP16
+  operands round exactly as TF32 does. Simulated (B=256, 2048 features, fp64 reference): TF32 and FP16 both reach max err
+  1.51e-3, 99th percentile 7.6e-4, with 0% of elements outside atol 2e-3. BF16 operands fail: max 1.06e-2, with 39% of
+  elements outside the tolerance.
+  FP16 tensor cores (tcgen05 kind::f16, fp32 accumulate) run at 2x the kind::tf32 rate. The leader's 0.795 implies
+  ~1.2 PF/s at B=919, about 2x the portal's TF32 peak (~0.62 PF/s at the lock), so 16-bit tensor-core maths is the route
+  to the top scores.
+  W and emb arrive as fp32, so they must be converted (cvt.rn.f16x2.f32, round to nearest, never truncate). One way is
+  per tile after the TMA load, in shared memory. For emb, a small pre-pass into an fp16 scratch from torch.empty is
+  another (it is re-read by every CTA).
+  Keep a margin: accumulate in fp32 and never round outputs or intermediates. The tolerance is atol 0.002-0.0023 and
+  rtol 1e-5, on 99% of elements; outputs have std ~1.4.

@@ -1,0 +1,22 @@
+{
+ "best": "r5-e2-tc-ws-uniform-issue",
+ "best_score": 0.625594,
+ "tasks": [
+  {
+   "operation": "new_design",
+   "parents": [
+    "r5-e2-tc-ws-uniform-issue"
+   ],
+   "band": "all",
+   "niche": "exp:E1:H-fp16",
+   "model": "opus",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): move #35's tensor-core maths from TF32 to FP16 (tcgen05 kind::f16, fp16 operands, fp32 accumulation), which runs at 2x the kind::tf32 rate. Read the problem note first: the operator now allows any precision that meets the tolerance, and on this problem's inputs FP16 operands round exactly like TF32 (simulated max err 1.51e-3, 0% of elements outside atol 2e-3; BF16 fails, 39%).\nWhy: r5-e2-tc-ws-uniform-issue (portal 0.6256) runs the B > 256 band at 95-96% of the kind::tf32 MMA ideal, so TF32 is at its ceiling. The portal leader's 0.795 implies ~1.2 PF/s at B=919, about 2x the portal TF32 peak (~0.62 PF/s at the lock). By the Tsol model, halving MMA time for B >= 373 (portal 77.8-176 us now) gives about 0.71-0.74.\nStart from r5-e2-tc-ws-uniform-issue. Keep its B <= 131 path (DRAM-bound, FP16 cannot help there) and its warp-uniform role structure: whole-warp TMA producer, whole-warp MMA warp with elect.sync around the issue, multicast commit. r5's lesson: a single-lane issuer costs ~300-400 clk per stage through an ELECT waterfall.\nSteps:\n1. Conversion design. W (18432 x 3072 fp32, 226 MB, read once, evict_first) and emb (B x 3072 fp32) must become fp16 (cvt.rn.f16x2.f32, round to nearest, never truncate) in the UMMA-ready swizzled smem layout.\n   Option A: converter warps load W straight from global (ld.global.nc.L1::no_allocate.L2::evict_first v4.f32), convert and st.shared into the swizzled fp16 stage (SMEM traffic: 8 KB written + 16 KB read by the MMA per 128x32 k-block per SM).\n   Option B: TMA fp32 staging plus an SMEM-to-SMEM convert (24 KB extra SMEM traffic per k-block, which may make the stage SMEM-bound: estimate it first).\n   For emb, prefer a tiny pre-pass kernel that writes an fp16 copy into a torch.empty scratch, then load fp16 emb by TMA (it is re-read by every CTA). Compare with in-kernel conversion if launch count matters (2 launches are fine).\n   Show the per-k-block budget in clocks (MMA vs SMEM bytes/clk vs conversion ALU) before coding.\n2. Build tc_ws_f16 for B > 256 (one batch tile up to 512, two above, as tc_ws). The instruction descriptor must select kind::f16 with fp16 A/B and an f32 accumulator. Fix the K step per UMMA (16 for f16 vs 8 for tf32) and the smem descriptors/swizzle for 2-byte elements (a 128-byte swizzle row is 64 fp16).\n3. Correctness first: run_tests 16/16 x 10 rounds, and record max |err| per B (expect ~1.5e-3, the same as TF32). If any element pattern looks off, check rounding mode and descriptor K-major layout.\n4. Measure in SM cycles (clock64 + %globaltimer, report the clock), interleaved against r5-e2 in one container, at B = 373, 384, 449, 512, 691, 773, 853, 919. Report clk per k-block against the kind::f16 MMA ideal and find what binds (MMA, SMEM, conversion, DRAM).\n5. If 131 < B <= 256 is cycle-bound (tc_pair at ~50-54 us on the portal), try the same FP16 conversion there and keep it where it wins in cycles.\n6. Ship a dispatcher that picks per B whichever path is faster in cycles. Predict the portal time as rented cycles / ~1.45 GHz for cycle-bound paths (portal/rented 1.35 at r5) and max(that, DRAM time x 1.05).",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3 at every B; >= 25% fewer cycles than r5-e2 at B >= 373; predicted portal score >= 0.66.",
+   "refuted_if": "kind::f16 with on-the-fly conversion is within 10% of r5-e2's cycles at B >= 449: conversion or SMEM bandwidth, not the MMA, binds; record which and by how much."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

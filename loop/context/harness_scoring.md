@@ -147,7 +147,7 @@ Consequences [INFERRED from the code above]:
 | Host-side TMA descriptors built each call | reusing descriptors across calls (they point at the old addresses: wrong results) |
 | Cache-eviction hints, L2 prefetch hints inside your kernel | changing L2 persistence windows or device limits (environment manipulation; the harness resets persisting lines anyway) |
 | Programmatic dependent launch between **your** kernels on the current stream | other streams, events tricks, CUDA graphs that hide work (CUPTI window plus synchronise; streams disallowed) |
-| fp32 maths with any rounding order; approximate rsqrt (error ≤ 2^-22.9); TF32 compute only where the problem summary's note records an operator ruling for it (#35) | storing or computing in bf16/fp16/TF32 otherwise (tolerance; judge) |
+| fp32 maths with any rounding order; approximate rsqrt (error ≤ 2^-22.9); reduced-precision compute (TF32, FP16, …) wherever its error meets the tolerance with margin: operator policy 2026-10-11, formats recorded per problem in the note (#35: TF32 and FP16, which round identically there; BF16 fails) | precision that fails the tolerance or passes only through the 99% matched ratio (tolerance; judge) |
 | Triton, Gluon/TLX (ship with fbtriton), CuTe DSL, CUDA C++ with inline PTX | embedded cubin/ELF, `cuModuleLoadData` from bytes, `cpp_extension.load_inline` at runtime (blocked; judge) |
 | `@triton.autotune` keyed on shapes (runs during round 0) | autotuning or recompiling during the timed loop; threads; `torch.jit.fork` |
 

@@ -1,0 +1,22 @@
+{
+ "best": "r7-e1-fp16-rot3",
+ "best_score": 0.684794,
+ "tasks": [
+  {
+   "operation": "new_design",
+   "parents": [
+    "r7-e1-fp16-rot3"
+   ],
+   "band": "all",
+   "niche": "exp:E1:H28-overhead",
+   "model": "opus",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): cut the fixed per-call and per-wave overheads of the FP16 tc_h path in r7-e1-fp16-rot3 (portal 0.6848, our best). They now make up 20-30 us of every rented B > 256 call. Read ledger H28 (r6 and r7 evidence) and tricks.md section 5 first.\n\nPortal (#65302, r7-e1): 373/384 62.0, 449 66.4, 512 70.0, 691 106.1, 773 112.3, 853 117.1, 919 121.3 us. Portal/rented: 1.09 at 373/384 (DRAM-bound, as predicted), 1.17/1.21 at 449/512, 1.26-1.28 at 691-919. Public board today: 1st 0.7945, 4th 0.7254, 5th 0.6910; we are at 0.6848. The weakest band is 691-919 (0.62-0.64).\n\nWhere the time goes (r7 rented timeline):\n- nb1 (384): the main loop is 48 k-blocks x 763 ns = 36.6 us (6.2 TB/s, DRAM-bound) out of a 57.0 us harness time, so about 20 us is outside the main loop: pre-pass ends at 2.05 us, tc_h CTAs start at 4.6, prologue 0.8, first k-block 4.4-5.9 us after the prologue, epilogue 4.9 (store-bound).\n- nb2 (919): the main loop is 2 waves x 48 x 677 ns = 65 us (L2->SM about 13.6 TB/s) out of 95.7, so about 30 us is outside it. The prologue, the 3.8 us first-k-block fill and the 4.4-5.4 us epilogue are paid on both waves.\n- tc_small at B=5 streams the same 226 MB in 42.7 us rented, about 6 us outside the stream. So tc_h carries about 14 us (nb1) to 24 us (nb2) of overhead that is not compulsory.\n\nSteps:\n1. Measure first. Take a globaltimer timeline under the harness flush and harness queueing, not only standalone, at 384, 512, 691 and 919. Include the gap between the pre-pass and tc_h. Find why the first k-block takes 4.4-5.9 us when 14 MB requested at once is 2.3 us at 6.2 TB/s. Candidates: the dirty-L2 write-back left by the harness flush, all three converter groups completing together, TMEM alloc / barrier init / tensor-map prefetch ordering.\n2. nb2: a persistent kernel of 72-74 pairs (2-CTA clusters; 74 fit). Each pair processes its two batch tiles back to back with one prologue. The converter ring continues across tiles, so tile 2's W stages fill during tile 1's epilogue. If the TMEM columns allow, tile 2's first-accumulator MMAs start as soon as the epilogue has drained that range. Keep the sibling L2 sharing of W in mind (the two batch halves of a W tile now run on one pair, one after the other): estimate the DRAM and L2 effect of the new order before building.\n3. nb1: shorten the fill (stagger the groups' first loads so group 0's slice lands first; issue W loads before TMEM alloc and barrier init; whatever the timeline shows) and the pre-pass gap.\n4. If time remains: L2 traffic at nb2 (about 410 MB of emb plus 454 MB of W per call at 919).\n5. Keep B <= 256 unchanged. run_tests 16/16 x 10 rounds, recording max |err| per B. Predict portal times as DRAM-bound x1.05-1.10 and nb2 x1.26-1.28, and interleave r7-e1 as the control in the same container.",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3; in the same container as r7-e1, >= 8% faster at 691-919 and >= 5% at 373-512; predicted portal score >= 0.70.",
+   "refuted_if": "The timeline shows the time outside the main loop is compulsory (DRAM or L2 busy throughout, stores at the DRAM rate): record what fills each part."
+  }
+ ],
+ "lead": {
+  "model": "operator",
+  "cost_usd": 0
+ }
+}

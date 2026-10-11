@@ -1,0 +1,163 @@
+id: r11-e1-nb2-epiwarps-split
+parents:
+  - r10-e1-nb2-st4-919
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  E1 lever 1 (H30). At nb2 (B > 512) the MMA sat idle for 8.1 us (rented, 919) between items, because the 24
+  converter warps did the epilogue and TMEM was full. Now four dedicated epilogue warps drain the accumulators
+  (1024 threads, 64 registers, no spills). Each item finishes accumulator 0 first: its last `stages` k-blocks go to
+  accumulator 0, which is committed, and then the same k-blocks go to accumulator 1. The next item's first `stages`
+  k-blocks start on accumulator 0 as soon as it is drained, and the converters run straight on into the next item.
+  The TMEM-free arrives are relaxed (they only hand over completed TMEM reads), which saves about 1 us of
+  store-completion wait per hand-over. With this the idle gap at 919 falls to about 4.9 us. What remains is the
+  output drain itself: about 34 MB per round at about 6 TB/s of stores, which more warps cannot speed up. At the
+  portal clock the MMA work that hides the drain (tail and head together, about 3.8k clk) lasts about 2.5 us
+  instead of 1.9, so the portal gain should be at least the rented one. B <= 512 code is unchanged.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: high
+  L:
+    pct: -2.0
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 185472
+  threads_per_cta: 1024
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 98304
+  launches_per_call: 1
+knobs:
+  EPI_WARPS: "4 dedicated epilogue warps (warps 28-31) at nb = 2 only; nb = 1 keeps the r10 896-thread path"
+  TAIL_HEAD: "tail = head = stages (4 at B = 919, 3 at 691-853)"
+  TC_H_STAGES: "unchanged from r10: 4 if nb == 2 and ntile >= 464, else 3"
+  FREE_ARRIVE: "mbarrier.arrive.relaxed.cluster after tcgen05.wait::ld + tcgen05.fence::before_thread_sync"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+      skew: true
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+      skew: true
+  - max_tokens: 512
+    kernel: tc_h_kernel<false>
+    meta:
+      nb: 1
+      stages: 3
+      threads: 896
+  - max_tokens: 900
+    kernel: tc_h_kernel<true>
+    meta:
+      nb: 2
+      stages: 3
+      threads: 1024
+      tail: 3
+      head: 3
+  - max_tokens: null
+    kernel: tc_h_kernel<true>
+    meta:
+      nb: 2
+      stages: 4
+      threads: 1024
+      tail: 4
+      head: 4
+tests:
+  - H30
+findings:
+  - "lever 1 timeline (globaltimer, flush then a direct call, rented, B=919): r10 path full0 9.4, item-0 last full 40.3, accum commit 40.5, drain end 46.2, tfree seen 47.2, item-1 first full 48.6 (MMA idle 8.1 us), item-1 last full 79.5, epilogue end 85.8, end 86.7 us. r11 (4 epilogue warps, acc0-first, relaxed free): full0 9.9, last full 40.7, acc0 commit 40.8, acc1 commit 41.9, acc0 drained 45.4, tfree0 45.6, item-1 head starts 45.8, acc1 drained 47.7, tfree1 47.9 (MMA idle about 3.9 + 1.0 us), item-1 last full 78.0, epilogue end 83.8, end 84.6 us [probe_b200]"
+  - "B=691 timeline: r10 path item-0 last full 37.1, drain end 41.0, tfree 42.2, item-1 first full 43.3, end 77.9 us; r11 with release arrives: end 77.2 [probe_b200]"
+  - "4 epilogue warps drain 256 accumulator columns in about 4.6 us and 208 in about 2.3 us; 24 converter warps drained 464 columns in 5.7 us (r10). The drain is bound by global store throughput (about 6 TB/s while all 144 CTAs drain), not by the warp count [probe_b200]"
+  - "a release.cluster TMEM-free arrive from an epilogue warp waited about 1 us for the warp's output stores; the relaxed arrive removes it (drain end -> tfree seen 1.0 -> 0.2 us) [probe_b200]"
+  - "interleaved harness_time, 3 rounds, rented: r10 path vs r11 691 79.3-80.2 vs 78.3-78.8, 773 83.1-83.4 vs 82.0-82.3, 853 86.3-86.5 vs 84.9-85.4, 919 89.9-90.3 vs 87.9-88.3 us (-1.3..-2.2%). Same split without the relaxed arrive: 919 -1..-3%, 691-853 -0.3..-0.7% (earlier container) [probe_b200]"
+  - "dead end: converter warps joining the intermediate drains (28 warps per accumulator, 56 relaxed arrives per hand-over) is +4..+7% at 691-919: item 0 itself ran 2 us slower and the hand-overs got later [probe_b200]"
+  - "dead end: pipelined TMEM drain (two x16 buffers, next tcgen05.ld before the stores) spills at the 64-register cap of 1024 threads (128 B spill) and is +6-8% [probe_b200]"
+  - "dead end (lever 2 attempt): epilogue warps convert emb columns 0-255 straight from global first (phase A counter for the first 4 emb TMAs), staging moved to the top of shared memory, relaxed prologue cluster barrier. The prologue fell from 4.0 to 1.2 us, but phase A finished only at 6.8 us (the startup DRAM burst: 14 MB of first W loads + 11 MB of emb staging behind the dirty flush), so full0 stayed at 9.3 us. Combined with the spilling drain it was +15-20%; not isolated further [probe_b200]"
+  - "dead end: one more ring stage with the split (5 at 919 with kSmemDyn 226 KB, 4 at 691-853) is +3..+15% [probe_b200]"
+  - "nb1 (384/512) with the 1024-thread epilogue-warp kernel: 53.3-53.6 / 54.4-54.6 vs r10 path 53.0 / 54.7-55.1 us: neutral, so nb1 keeps the r10 path. The nb1 tail split can hide at most about 0.5 us of accumulator-1 MMA [probe_b200]"
+  - "run_tests: 16/16 PASS (10 rounds). vs r10 on the same GPU: 691 78.3 vs 79.6, 773 81.3 vs 83.8, 853 85.9 vs 86.8, 919 87.9 vs 90.3; the unchanged code moved -1.2..-3.6% (drift), so net of drift about -1% at 691-919 in this run; the interleaved probe (-1.3..-2.2%) is the better estimate. Emulator 0.6916 +- 0.0070 [run_tests]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn), identical to the r10 path on every draw (same operands and per-accumulator k order): 384 1.54-1.55e-3, 512 1.68e-3, 691 1.62-1.65e-3, 773 1.58-1.65e-3, 853 1.62-1.67e-3, 919 1.59-1.86e-3 (one draw at 1.86e-3, also on the r10 path; atol about 2.3e-3 at 919) [probe_b200]"
+  - "score model: L -2% gives 0.6970 (current 0.6939). Portal expectation: the transition idle is store/latency-bound, while the MMA work that hides it lasts 1.3x longer at 1.5 GHz, so 691-919 should gain about 2-4 us each [predict_score, analysis]"
+  - "next levers: (1) the remaining about 4-5 us transition idle at 919 is the output store burst while all 144 CTAs drain at once. Spreading drains in time (pairs out of phase, e.g. uneven item splits such as 512 + 416 columns) or keeping part of an accumulator in shared memory could hide it. (2) first full at about 9.5 us is set by the startup DRAM burst (W first loads + emb staging + dirty write-backs); only making the first k-block's bytes the first requested could move it [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    w: ef
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 896
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 1024
+    rows: 256
+    grid: persistent
+    mem: ldg
+    launches: 1
+    cluster: 2
+    w: ef
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "the rented gain (-1.3..-2.2% at 691-919) is below the 4-7% portal noise on the FP16 tensor path; one portal result cannot confirm it"
+  - "the relaxed TMEM-free arrive relies on tcgen05.wait::ld having completed the TMEM reads before tcgen05.fence::before_thread_sync and the arrive; no shared or global data is handed over by it (the MMA side keeps acquire.cluster + tcgen05.fence::after_thread_sync)"
+  - "1024 threads cap registers at 64 for the nb2 kernel; 0 spills now, but any added state in the converter or drain code spills (the pipelined drain did)"
+  - "B > 256 inherits r8's grid-wide self-resetting emb counter (same legitimacy note as r8)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -365,6 +365,29 @@
   }
  },
  "r10-e1-nb2-st4-919": {
+  "b200": {
+   "geomean_us": 62.046,
+   "score": 0.693864,
+   "submission": "65334",
+   "timings": {
+    "128": 46.800000000000004,
+    "131": 47.1,
+    "16": 44.6,
+    "192": 48.4,
+    "211": 52.400000000000006,
+    "32": 44.699999999999996,
+    "373": 59.8,
+    "384": 59.7,
+    "449": 64.60000000000001,
+    "5": 44.4,
+    "512": 68.4,
+    "691": 101.6,
+    "773": 107.1,
+    "853": 111.69999999999999,
+    "919": 112.5,
+    "96": 45.199999999999996
+   }
+  },
   "card": "id: r10-e1-nb2-st4-919\nparents:\n  - r9-e1-skew-uniform-s\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: rows128\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E1 lever study. cuBLAS FAST_16F, timelines and ring variants all show that the B > 256 gap to the leaders is not\n  in the prologue or the ring depth. In nb1 the W stream ends at about the same time whatever the start does\n  (DRAM-throughput-bound fill). In nb2 the MMA sits idle for 8 us at 919 while item 0 is drained; that cannot overlap\n  while the accumulators use all 512 TMEM columns. The only measured gain is a 4th ring stage for the MMA-heavier\n  nb2 tile of ntile 464 (B = 919), which lets the converter groups run one stage further ahead of the MMA. Every\n  other size keeps r9's code path exactly (4 stages measured slower there).\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: -0.5\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 72\n  smem_per_cta_bytes: 185344\n  threads_per_cta: 896\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  TC_H_STAGES: \"4 if nb == 2 and ntile >= 464 (B = 919), else 3\"\n  B_LE_256: \"tc_small / tc_pair exactly as r9\"\ndispatch:\n  - max_tokens: 131\n    kernel: tc_small_kernel\n    meta:\n      launches: 1\n      skew: true\n  - max_tokens: 256\n    kernel: tc_pair_kernel\n    meta:\n      launches: 1\n      kbs: 2\n      skew: true\n  - max_tokens: 512\n    kernel: tc_h_kernel\n    meta:\n      nb: 1\n      stages: 3\n  - max_tokens: 900\n    kernel: tc_h_kernel\n    meta:\n      nb: 2\n      stages: 3\n      persistent_pairs: 72\n  - max_tokens: null\n    kernel: tc_h_kernel\n    meta:\n      nb: 2\n      stages: 4\n      persistent_pairs: 72\ntests:\n  - H28\nfindings:\n  - \"lever 1 dead: cuBLAS cublasGemmEx with fp32 A/B/C and CUBLAS_COMPUTE_32F_FAST_16F (74) times identically to FAST_TF32 (77) and gives the same max |err| vs fp64: 373 73.9 us 1.57e-3, 512 77.9 1.54e-3, 691 105.6 1.64e-3, 919 135.0 1.66e-3 (harness_time). It runs the TF32 kernels, 1.4-1.5x slower than tc_h (53/55/79/90); the bias/split wiring was not built [probe_b200]\"\n  - \"tc_h timeline (globaltimer, flush then a direct call, rented), B=384: CTA entry 0-0.3 us, end of prologue (cluster barrier) 2.8, emb staging landed 2.8, emb slice converted 5.9-6.4, grid emb counter seen 7.4, group-0 first W stores 7.2, first full barrier 9.2, last full 45.6 median (max 47.6), accumulator ready 46.3, epilogue end 50.2, kernel end 51.2-53.2; harness 56.5. 512 similar (full0 9.7, last full 47.4, epilogue 5 us). 919: last full of item 0 43.5, item 0 epilogue to 48.9, tfree 49.9, item 1 first full 51.7 (8.2 us MMA idle between items), last full 85.5, end 92.4 [probe_b200]\"\n  - \"the release cluster barrier in the tc_h prologue waits for the thread's emb bulk copy (staging lands exactly at prologue end). barrier.cluster.arrive.relaxed (with __syncthreads for tmem_slot) cuts the prologue from 2.8 to 1.0-1.3 us, but harness time does not move: 384 54.5 vs 54.5, 512 56.7 vs 57.0, 691 82.4 vs 81.4, 919 93.4 vs 93.1 us. Keeping the bulk copy before a relaxed barrier: 53.3/56.0/81.6/93.0 (mixed, within noise). Not shipped [probe_b200]\"\n  - \"dead end: issuing the converters' first W loads before the prologue stretches the release cluster barrier to 5.1 us (release waits for the thread's own LDGs in flight) and gives the same last-full time; it also costs 4 B of spill at the 72-register cap [probe_b200]\"\n  - \"stale-emb bound (no fused conversion, emb16 precomputed): the first full barrier comes 1.8 us sooner (7.4 vs 9.2 us) but the last full only 0.8 us sooner (44.8 vs 45.6): the nb1 W stream is DRAM-throughput-bound from its first load, so the fill order barely matters [probe_b200]\"\n  - \"pure W stream with the tc_h converter mapping (144 x 768 threads, 8 LDG.128 per thread, rows 12 KB apart) under harness_time: 256 B / 512 B / 1 KB / 4 KB row segments 39.8 / 39.8 / 39.7 / 38.8 us with evict_first, 40.1-40.3 without the hint. Segment size is not the lever; tc_h's in-kernel stream (prologue end to last full, about 43 us) is about 3 us slower than this pattern alone [probe_b200]\"\n  - \"ring depth (one container, 3 rounds, harness_time us): 449 st3 54.4 vs st4 55.8; 691 st3 80.4, st4 84.0, st5 84.8; 773 st3 83.9, st4 85.9, st5 97.0; 853 st3 87.7 vs st4 88.7; 919 st3 91.6 vs st4 90.8. Earlier container: 384 54.5 vs 55.8, 512 57.0 vs 57.2, 691 81.4 vs 82.7, 919 93.1 vs 90.4. A 4th stage helps only at ntile 464 nb2 [probe_b200]\"\n  - \"clock diagnostic: looping tc_h at 919 back to back (warm L2, no flush) for 1.5 s power-caps the rented card at 1320-1372 MHz (858 W, 3 stages) and 1297-1327 MHz (973 W, 4 stages): 118 us per call, below the portal's 1500 MHz lock. The 4-stage ring draws about 13% more power per call. harness_time runs with flush gaps stay near the 1.9 GHz burst clock, which fits the 1.33-1.42 portal/rented ratio at nb2 [probe_b200]\"\n  - \"run_tests: 16/16 PASS (10 rounds). vs r8 on the same GPU: 919 88.5 vs 91.0 (-2.8%, the only changed size); unchanged sizes 373-853 -0.6..-1.3%, B <= 211 -4.1..+2.2% (drift; identical code). Emulator 0.6848 +- 0.0070 [run_tests]\"\n  - \"precision max |err| vs fp64 (W/sqrt(3072), bias randn): tc_h 3 stages = 4 stages = 5 stages at every B (same operands, same accumulation order): 384 1.55e-3, 449 1.56e-3, 512 1.68e-3, 691 1.59-1.62e-3, 773 1.68e-3, 853 1.57e-3, 919 1.58-1.65e-3 [probe_b200]\"\n  - \"portal prediction: identical to r9 except 919 (portal r8 119.9, r9 127.8 on identical code); -1..-3% there is within the 4-7% portal noise, score change about +0.0005. This candidate does not reach the 0.70 target [analysis]\"\n  - \"next levers (analysis): (1) nb2 epilogue overlap needs TMEM room. Both accumulators fill 464 of 512 columns, so the 8 us idle time between items stays unless the item shape changes (e.g. cta_group::2 with M = 128, 64 lanes per CTA, double-buffered); the ntile <= 256 double-buffer variant needs 1.3 GB of L2 reads at 919 against 0.85 GB. (2) The nb1 gap to its floor (about 44 us rented) is the 3 us in-kernel stream shortfall plus the 4-5 us serial epilogue, and the epilogue is DRAM-write-bound (28 MB at about 7 TB/s), so only the stream shortfall is open; candidates are converter convoying at the 8-warp group bar.sync, and per-pair DRAM-rate imbalance (last-full spread 44.0-47.9 us) [analysis]\"\npaths:\n  - max_tokens: 131\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 128\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 1\n    w: ef\n  - max_tokens: 256\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 256\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: 512\n    lang: cuda\n    width: 128\n    threads: 896\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: null\n    lang: cuda\n    width: 128\n    threads: 896\n    rows: 256\n    grid: persistent\n    mem: ldg\n    launches: 1\n    cluster: 2\n    w: ef\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM/cta_group::2 are sm_100a only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"the only change (4 stages at B = 919) is -1..-3% rented, well inside the 4-7% portal noise on the FP16 tensor path; the portal may show nothing or a regression from noise alone\"\n  - \"the 4-stage ring draws about 13% more power per call at 919 on the rented card; at the portal's locked 1500 MHz this should not matter, but it is untested there\"\n  - \"B > 256 inherits r8's grid-wide self-resetting emb counter (same legitimacy note as r8)\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r10-e1-nb2-st4-919",
   "language": "cuda_cpp",
@@ -384,7 +407,73 @@
   ],
   "round": "r10",
   "solution": "problems/035_flux_ada_layer_norm_zero_modulation_extraction/rounds/r10/candidates/r10-e1-nb2-st4-919.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_ZN39_GLOBAL__N__81a396a8_7_tc_h_cu_a679bf8a11tc_h_kernelEPKf14CUtensorMap_stS2_S1_NS_7OutPtrsES1_P5uint4PjNS_7TileCfgE",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 1,
+     "LDG.CONSTANT": 3,
+     "LDG.CONSTANT.128": 2,
+     "LDG.NA.CONSTANT.128": 24,
+     "STG": 48,
+     "STG.128": 8,
+     "UBLKCP": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 2
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 1136
+   },
+   {
+    "kernel": "_ZN39_GLOBAL__N__81a396a8_7_tc_h_cu_a679bf8a14emb_f16_kernelEPKfP5uint4i",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 1,
+     "LDG.CONSTANT": 3,
+     "LDG.CONSTANT.128": 2,
+     "LDG.NA.CONSTANT.128": 24,
+     "STG": 48,
+     "STG.128": 8,
+     "UBLKCP": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 2
+    },
+    "regs": 18,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_ZN44_GLOBAL__N__1606fecf_11_tc_small_cu_b6cfd58e15tc_small_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 32
+    },
+    "regs": 30,
+    "resident_per_sm": null,
+    "smem": 1296
+   },
+   {
+    "kernel": "_ZN43_GLOBAL__N__61da96b0_10_tc_pair_cu_8feb229414tc_pair_kernelE14CUtensorMap_stS0_PKfNS_7OutPtrsEiiiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.CONSTANT": 1,
+     "UTMACCTL": 2,
+     "UTMALDG": 32
+    },
+    "regs": 28,
+    "resident_per_sm": null,
+    "smem": 1296
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11): reach 0.70+ on #35. That means beating 5th place (Databricks, 0.6910) by a margin larger than the portal noise. Start from r9-e1-skew-uniform-s: it holds r9's B <= 211 paths and r8's B > 256 paths. Read ledger H28/H29 and tricks.md sections 2 and 5 first.\n\nPortal facts: best per workload over r6-r9 would be 0.6889. B > 256 (portal best, us): 373/384 60.9/60.8, 449 66.4, 512 70.0, 691 103.8, 773 109.9, 853 114.8, 919 119.9. Byte-identical tc_h code ran 4-7% slower on the next submission (#65321): do not chase < 3% effects at B > 256, and compare only on the rented card in one container. If 2nd-4th place (0.725-0.744) score about like us at B <= 211 (we sit near the stream floor there), their B > 256 must average about 0.77-0.78: roughly 47 us at 373, 56 at 512 and 90 at 919. The remaining gap is in B > 256.\n\nThree levers, cheapest first:\n1. Library lens, 20 minutes at most. cuBLAS/cuBLASLt with fp32 A/B/C and CUBLAS_COMPUTE_32F_FAST_16F (NVIDIA's own fp32-in, FP16-tensor-core mode). Time it under harness_time at B = 373, 512, 691 and 919, and record max |err| against fp64. The conversion rounding mode is unknown: if the error exceeds 1.8e-3 at any B, drop it. Note which kernels the heuristic picks. If it is within 10% of tc_h anywhere, wire the bias and the six-way split: for example one cuBLASLt call per output chunk (N = 3072 W rows each) with the BIAS epilogue writing straight into that chunk's output, or a grouped GEMM. Then compare full calls.\n2. nb1 (373-512): tc_h is about 5 us further from its byte floor than tc_small is.\n   - r8 rented: 373 53.3 us for about 260 MB (W 226, output 27.5, emb and its fp16 copy 7) = 43.7 us at the 5.96 TB/s best stream, a gap of 9.6 us.\n   - tc_small at 131: 44.3 us for 237 MB (39.8 us), a gap of 4.5 us.\n   - Put globaltimer timelines side by side (CTA start, first full barrier, last full barrier, epilogue end, per CTA): tc_small at 131 against tc_h at 373 and 512. Find the extra ~5 us: the fused emb counter wait, cluster and TMEM setup, ring stalls while the MMA waits for emb, per-SM imbalance. Fix what it shows.\n3. nb2 (691-919): portal/rented is 1.33-1.42, so the portal is clock-bound here.\n   - Overlap the epilogue with the next tile: the accumulator is N1 = 256 + N2 = 208 columns. Drain range N1 first, so the next tile's N1 MMAs can start while N2 drains. Estimate how far the 3-stage ring lets it run ahead first.\n   - Diagnostic: run nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv -lms 50 in the background while looping each variant for ~2 s. This shows whether the rented card is power-capped under tc_h and whether variants that move fewer bytes hold a higher clock; if so, energy per k-block is a lever on the portal too.\n4. Keep B <= 211 as in r9. run_tests 16/16 x 10 rounds, recording max |err| per B, with r9-e1 as the control in the same container. Predict portal times as DRAM-bound x1.05-1.10 and nb2 x1.33-1.42.",
@@ -396,6 +485,60 @@
    ],
    "refuted_if": "The library path is slower or less accurate, the nb1 timeline gap is compulsory (DRAM busy throughout) and the nb2 epilogue overlap saves < 3%: record each with its numbers.",
    "success": "16/16 x 10 rounds, max |err| < 1.8e-3; in the same container as r9-e1, >= 8% faster at 373-512 or at 691-919 (or a library path that wins by that much); predicted portal score >= 0.70."
+  },
+  "timings": {
+   "B200r": {
+    "128": 44.58,
+    "131": 44.08,
+    "16": 43.04,
+    "192": 45.4,
+    "211": 46.59,
+    "32": 43.09,
+    "373": 53.44,
+    "384": 53.16,
+    "449": 53.48,
+    "5": 42.76,
+    "512": 55.11,
+    "691": 79.11,
+    "773": 82.87,
+    "853": 85.98,
+    "919": 88.45,
+    "96": 43.91
+   }
+  }
+ },
+ "r11-e1-nb2-epiwarps-split": {
+  "card": "id: r11-e1-nb2-epiwarps-split\nparents:\n  - r10-e1-nb2-st4-919\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows128\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  E1 lever 1 (H30). At nb2 (B > 512) the MMA sat idle for 8.1 us (rented, 919) between items, because the 24\n  converter warps did the epilogue and TMEM was full. Now four dedicated epilogue warps drain the accumulators\n  (1024 threads, 64 registers, no spills). Each item finishes accumulator 0 first: its last `stages` k-blocks go to\n  accumulator 0, which is committed, and then the same k-blocks go to accumulator 1. The next item's first `stages`\n  k-blocks start on accumulator 0 as soon as it is drained, and the converters run straight on into the next item.\n  The TMEM-free arrives are relaxed (they only hand over completed TMEM reads), which saves about 1 us of\n  store-completion wait per hand-over. With this the idle gap at 919 falls to about 4.9 us. What remains is the\n  output drain itself: about 34 MB per round at about 6 TB/s of stores, which more warps cannot speed up. At the\n  portal clock the MMA work that hides the drain (tail and head together, about 3.8k clk) lasts about 2.5 us\n  instead of 1.9, so the portal gain should be at least the rented one. B <= 512 code is unchanged.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: high\n  L:\n    pct: -2.0\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 64\n  smem_per_cta_bytes: 185472\n  threads_per_cta: 1024\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 98304\n  launches_per_call: 1\nknobs:\n  EPI_WARPS: \"4 dedicated epilogue warps (warps 28-31) at nb = 2 only; nb = 1 keeps the r10 896-thread path\"\n  TAIL_HEAD: \"tail = head = stages (4 at B = 919, 3 at 691-853)\"\n  TC_H_STAGES: \"unchanged from r10: 4 if nb == 2 and ntile >= 464, else 3\"\n  FREE_ARRIVE: \"mbarrier.arrive.relaxed.cluster after tcgen05.wait::ld + tcgen05.fence::before_thread_sync\"\ndispatch:\n  - max_tokens: 131\n    kernel: tc_small_kernel\n    meta:\n      launches: 1\n      skew: true\n  - max_tokens: 256\n    kernel: tc_pair_kernel\n    meta:\n      launches: 1\n      kbs: 2\n      skew: true\n  - max_tokens: 512\n    kernel: tc_h_kernel<false>\n    meta:\n      nb: 1\n      stages: 3\n      threads: 896\n  - max_tokens: 900\n    kernel: tc_h_kernel<true>\n    meta:\n      nb: 2\n      stages: 3\n      threads: 1024\n      tail: 3\n      head: 3\n  - max_tokens: null\n    kernel: tc_h_kernel<true>\n    meta:\n      nb: 2\n      stages: 4\n      threads: 1024\n      tail: 4\n      head: 4\ntests:\n  - H30\nfindings:\n  - \"lever 1 timeline (globaltimer, flush then a direct call, rented, B=919): r10 path full0 9.4, item-0 last full 40.3, accum commit 40.5, drain end 46.2, tfree seen 47.2, item-1 first full 48.6 (MMA idle 8.1 us), item-1 last full 79.5, epilogue end 85.8, end 86.7 us. r11 (4 epilogue warps, acc0-first, relaxed free): full0 9.9, last full 40.7, acc0 commit 40.8, acc1 commit 41.9, acc0 drained 45.4, tfree0 45.6, item-1 head starts 45.8, acc1 drained 47.7, tfree1 47.9 (MMA idle about 3.9 + 1.0 us), item-1 last full 78.0, epilogue end 83.8, end 84.6 us [probe_b200]\"\n  - \"B=691 timeline: r10 path item-0 last full 37.1, drain end 41.0, tfree 42.2, item-1 first full 43.3, end 77.9 us; r11 with release arrives: end 77.2 [probe_b200]\"\n  - \"4 epilogue warps drain 256 accumulator columns in about 4.6 us and 208 in about 2.3 us; 24 converter warps drained 464 columns in 5.7 us (r10). The drain is bound by global store throughput (about 6 TB/s while all 144 CTAs drain), not by the warp count [probe_b200]\"\n  - \"a release.cluster TMEM-free arrive from an epilogue warp waited about 1 us for the warp's output stores; the relaxed arrive removes it (drain end -> tfree seen 1.0 -> 0.2 us) [probe_b200]\"\n  - \"interleaved harness_time, 3 rounds, rented: r10 path vs r11 691 79.3-80.2 vs 78.3-78.8, 773 83.1-83.4 vs 82.0-82.3, 853 86.3-86.5 vs 84.9-85.4, 919 89.9-90.3 vs 87.9-88.3 us (-1.3..-2.2%). Same split without the relaxed arrive: 919 -1..-3%, 691-853 -0.3..-0.7% (earlier container) [probe_b200]\"\n  - \"dead end: converter warps joining the intermediate drains (28 warps per accumulator, 56 relaxed arrives per hand-over) is +4..+7% at 691-919: item 0 itself ran 2 us slower and the hand-overs got later [probe_b200]\"\n  - \"dead end: pipelined TMEM drain (two x16 buffers, next tcgen05.ld before the stores) spills at the 64-register cap of 1024 threads (128 B spill) and is +6-8% [probe_b200]\"\n  - \"dead end (lever 2 attempt): epilogue warps convert emb columns 0-255 straight from global first (phase A counter for the first 4 emb TMAs), staging moved to the top of shared memory, relaxed prologue cluster barrier. The prologue fell from 4.0 to 1.2 us, but phase A finished only at 6.8 us (the startup DRAM burst: 14 MB of first W loads + 11 MB of emb staging behind the dirty flush), so full0 stayed at 9.3 us. Combined with the spilling drain it was +15-20%; not isolated further [probe_b200]\"\n  - \"dead end: one more ring stage with the split (5 at 919 with kSmemDyn 226 KB, 4 at 691-853) is +3..+15% [probe_b200]\"\n  - \"nb1 (384/512) with the 1024-thread epilogue-warp kernel: 53.3-53.6 / 54.4-54.6 vs r10 path 53.0 / 54.7-55.1 us: neutral, so nb1 keeps the r10 path. The nb1 tail split can hide at most about 0.5 us of accumulator-1 MMA [probe_b200]\"\n  - \"run_tests: 16/16 PASS (10 rounds). vs r10 on the same GPU: 691 78.3 vs 79.6, 773 81.3 vs 83.8, 853 85.9 vs 86.8, 919 87.9 vs 90.3; the unchanged code moved -1.2..-3.6% (drift), so net of drift about -1% at 691-919 in this run; the interleaved probe (-1.3..-2.2%) is the better estimate. Emulator 0.6916 +- 0.0070 [run_tests]\"\n  - \"precision max |err| vs fp64 (W/sqrt(3072), bias randn), identical to the r10 path on every draw (same operands and per-accumulator k order): 384 1.54-1.55e-3, 512 1.68e-3, 691 1.62-1.65e-3, 773 1.58-1.65e-3, 853 1.62-1.67e-3, 919 1.59-1.86e-3 (one draw at 1.86e-3, also on the r10 path; atol about 2.3e-3 at 919) [probe_b200]\"\n  - \"score model: L -2% gives 0.6970 (current 0.6939). Portal expectation: the transition idle is store/latency-bound, while the MMA work that hides it lasts 1.3x longer at 1.5 GHz, so 691-919 should gain about 2-4 us each [predict_score, analysis]\"\n  - \"next levers: (1) the remaining about 4-5 us transition idle at 919 is the output store burst while all 144 CTAs drain at once. Spreading drains in time (pairs out of phase, e.g. uneven item splits such as 512 + 416 columns) or keeping part of an accumulator in shared memory could hide it. (2) first full at about 9.5 us is set by the startup DRAM burst (W first loads + emb staging + dirty write-backs); only making the first k-block's bytes the first requested could move it [analysis]\"\npaths:\n  - max_tokens: 131\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 128\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 1\n    w: ef\n  - max_tokens: 256\n    lang: cuda\n    width: 128\n    threads: 128\n    rows: 256\n    grid: oneshot\n    mem: tma\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: 512\n    lang: cuda\n    width: 128\n    threads: 896\n    rows: 256\n    grid: oneshot\n    mem: ldg\n    launches: 1\n    cluster: 2\n    w: ef\n  - max_tokens: null\n    lang: cuda\n    width: 128\n    threads: 1024\n    rows: 256\n    grid: persistent\n    mem: ldg\n    launches: 1\n    cluster: 2\n    w: ef\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM/cta_group::2 are sm_100a only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"the rented gain (-1.3..-2.2% at 691-919) is below the 4-7% portal noise on the FP16 tensor path; one portal result cannot confirm it\"\n  - \"the relaxed TMEM-free arrive relies on tcgen05.wait::ld having completed the TMEM reads before tcgen05.fence::before_thread_sync and the arrive; no shared or global data is handed over by it (the MMA side keeps acquire.cluster + tcgen05.fence::after_thread_sync)\"\n  - \"1024 threads cap registers at 64 for the nb2 kernel; 0 spills now, but any added state in the converter or drain code spills (the pipelined drain did)\"\n  - \"B > 256 inherits r8's grid-wide self-resetting emb counter (same legitimacy note as r8)\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r11-e1-nb2-epiwarps-split",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows128"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r10-e1-nb2-st4-919"
+  ],
+  "round": "r11",
+  "solution": "problems/035_flux_ada_layer_norm_zero_modulation_extraction/rounds/r11/candidates/r11-e1-nb2-epiwarps-split.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E1 (single focused session, operator brief 2026-10-11, r11): only the sizes B >= 373 (tc_h nb1 and nb2). Keep the B <= 256 paths byte-identical to r10. Read ledger H28-H30 and tricks.md sections 2 and 5 first.\n\nWhy this round: a clean-room paper session saw only the problem and the hardware, never our kernel. It independently ranked our layout first: W rows in M = 256 per pair, the batch in N up to 512, LDG converters, kind::f16. It estimated 95 us at 919 and 53 at 512 on the portal, with only about 4 us of overhead per call. Our main loop already runs at that efficiency (nb2 about 1346 clk per k-block against 1299 ideal at N = 464). The gap is the time outside the loop. r10 timelines (rented, flush, globaltimer):\n- 919: first full about 9 us, item 0 last full 43.5, epilogue to 48.9, tfree 49.9, item 1 first full 51.7 (8.2 us MMA idle), last full 85.5, end 92.4.\n- 384: prologue end 2.8, emb slice converted 5.9-6.4, grid emb counter seen 7.4, first full 9.2, last full 45.6, epilogue end 50.2, kernel end 51-53, harness 56.5.\nOn the portal (about 1.5 GHz) the MMA loop stretches by 1.3-1.4x, but these overheads are latency and stay about the same. At 919 about 25 of the 112.5 us is outside the loop.\n\nPortal targets: 691/773/853/919 at about 87/93/97/98 us (now 101.6/107.1/111.7/112.5) and 373-512 about 6 us faster (now 59.8/59.7/64.6/68.4). Predicted mean about 0.71-0.72 (now 0.694).\n\nLevers, biggest first:\n1. nb2 drain overlap (the paper session's idea). Split each item's accumulator into acc0 and acc1 (e.g. 256 + 208 columns at 919). Issue the last s k-blocks (s <= stages) of acc0 before those of acc1 and commit acc0 to its own barrier. The epilogue then drains acc0 while acc1 finishes. Item 1's acc0 MMAs start as soon as acc0's columns are drained, while acc1 drains, and the W producer and converters keep running into item 1 across the boundary instead of waiting for the epilogue. Work out how many of item 1's k-blocks can run on acc0 alone before stages must wait for acc1 (4 stages at 919). Consider an uneven split, or the drain order, if that helps. r10 concluded that this needs spare TMEM; check that claim, since item 1's acc0 reuses acc0's columns. Measure the idle gap and the end-of-kernel drain with the same timeline.\n2. Start the MMA sooner, mainly at nb2 where it adds directly to the time. Possible routes:\n   - a relaxed cluster barrier in the prologue (r10: 2.8 -> 1.0-1.3 us);\n   - per-k-block emb readiness (convert emb in k order and publish one counter per k-block range, so the first stages do not wait for the whole emb);\n   - each pair converting its own first emb k-blocks from fp32 while the grid-wide conversion finishes.\n   Target: first full <= 4-5 us at 919. r10 showed that nb1 does not gain from this (it is DRAM-bound from its first load), so measure each regime separately.\n3. nb1 (373-512) is DRAM-bound. The in-kernel W stream takes about 43 us against 38.8 for the same pattern alone, and then a 4-5 us epilogue (28 MB of writes) runs serially.\n   (a) Use the same acc0-first ordering so the acc0 writes overlap the stream tail. The total bytes are fixed, so the overlap is free DRAM time.\n   (b) Close the stream gap. Look at converter convoying at the group bar.sync and per-pair DRAM-rate imbalance (last full spread 44.0-47.9 us), for example a dynamic split of the last k-range or tiles. Do not retry L2 prefetch ahead of the ring (r9: +5-10 us) unless a probe shows the converters are latency-bound.\n4. Optional, only if levers 1-2 land with time to spare: run both items of a W tile on two pairs in the same wave (wave 1 = tiles 0-35 x 2 items, wave 2 = tiles 36-71), so W comes from DRAM once instead of twice (about 450 -> 226 MB at 919). It lowers DRAM traffic and power, but the portal loop is MMA-bound, so expect a small effect.\nDo not build W-in-TMEM (A from tensor memory), cluster-4 DSMEM sharing or an L2 fp16 ring this round: the paper estimates show no gain while the main loop is not shared-memory-bound.\n\nMethod:\n- Probe each lever in isolation, with the r10-e1 kernel as the control in the same container: 3 interleaved rounds, harness_time.\n- Report the globaltimer timeline (first full, last full per item, MMA idle, epilogue end) at 384 and 919, before and after.\n- Predict portal times with the main loop x1.33-1.42 at nb2 and x1.09-1.21 at nb1, and overheads x1.0-1.1.\n- Before shipping, run run_tests 16/16 x 10 rounds and record max |err| per B (it must stay < 1.8e-3).",
+   "model": "opus",
+   "niche": "exp:E1:H30-overlap",
+   "operation": "new_design",
+   "parents": [
+    "r10-e1-nb2-st4-919"
+   ],
+   "refuted_if": "acc0-first ordering still leaves >= 6 us of MMA idle between items (ring dependency on acc1); per-k-block emb readiness does not bring first full below 7 us; nb1 epilogue overlap saves < 2 us. Record each with its numbers.",
+   "success": "16/16 x 10 rounds, max |err| < 1.8e-3; in the same container as r10-e1: 691-919 >= 8% faster or 373-512 >= 6% faster; the 919 timeline shows MMA idle between items <= 3 us and/or first full <= 5 us; predicted portal score >= 0.705."
   },
   "timings": {}
  },

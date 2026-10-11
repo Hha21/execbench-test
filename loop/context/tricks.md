@@ -111,7 +111,14 @@ may not transfer, so test it before relying on it. Problem-specific numbers live
   13-27% per k-block to this. Hand off through a warp that has no loads in flight (a forwarder after a named
   barrier recovered part of it), or keep global loads out of the arriving threads (TMA or cp.async staging,
   or several warp groups taking k-blocks in turn with nothing prefetched at the arrive). A relaxed arrive is
-  fast but leaves the shared-memory writes unordered: do not ship it.
+  fast but leaves the shared-memory writes unordered: do not ship it. The same wait hits global stores (#35 r11):
+  an epilogue warp's release arrive on the TMEM-free barrier waited ~1 us for its own output stores. That arrive
+  hands over only the end of TMEM reads, so tcgen05.wait::ld + tcgen05.fence::before_thread_sync + a relaxed arrive
+  is enough there.
+- **Overlap the accumulator drain with the next tile's MMA** (#35 r11): give the epilogue its own warps and finish
+  one accumulator early (its last k-blocks first), so it drains while the other accumulator completes. This cut an
+  8 us MMA idle to ~5 us. What is left is store-bound: when every CTA drains at the same moment, the output burst
+  runs at ~6 TB/s whatever the warp count. Stagger the CTAs' drains in time to hide more.
 - **Per-stage floor**: a rotating ring's stage costs max(MMA clk, ~565 clk fixed with uniform issue). Make stages carry
   ≥ ~600 clk of MMA, e.g. 2 k-blocks per stage, or 48-k stages via a 32-k plus a 16-k TMA box.
 - **Wave and tile quantisation**: 320 pair tiles over 74 SM pairs = 4.32 waves cost ~13% at L on #30. Pick tile counts

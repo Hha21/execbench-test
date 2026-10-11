@@ -29,10 +29,13 @@ LB = ROOT / "poc" / "results" / "leaderboards" / "leaderboards_b200_v1.1.csv"
 WL = ROOT / "poc" / "results" / "b200_portal_workloads.csv"
 
 # Portal-lock ceilings. DRAM: 8.18 TB/s peak; public read+write streams reach 7.05-7.1 TB/s marginal (b200_sota.md),
-# read-heavy streams ~7.5 (STREAM triad 7.48); our #88 portal fit was 6.82 + ~2-5 us fixed. TF32: #35 r5 tc_ws at 95-96% of
-# the kind::tf32 MMA ideal ran 104 GFLOP in 176 us at B=919 -> ~0.62 PF/s achieved, ~0.65 ideal. FP16/BF16 and FP8
-# tensor rates are 2x and 4x TF32 per clock on sm_100. FP32 SIMT: ~80 TF/s at boost scaled by the lock (~1/1.35).
-CEIL = [("fp32 SIMT", 0.058e15), ("TF32 tensor", 0.65e15), ("FP16/BF16 tensor", 1.3e15), ("FP8 tensor", 2.6e15)]
+# read-heavy streams ~7.5 (STREAM triad 7.48); our #88 portal fit was 6.82 + ~2-5 us fixed. Tensor cores: datasheet
+# per-SM rates at the portal's 1500 MHz lock (harness device_config 1500/3996) x 148 SMs: kind::tf32 4,096 FLOP/clk/SM
+# = 0.91 PF/s, kind::f16 8,192 = 1.82 PF/s, kind::f8f6f4 16,384 = 3.64 PF/s. Our #35 r6 ledger's MMA ideal (928 clk per
+# 64-k block at N = 464 per SM) is this rate. Achieved, for scale: cuBLAS bf16 1.47 PF/s at 1500 MHz (#30 probe), #35
+# r5 TF32 tc_ws about 0.62 PF/s on the portal at B=919. (Until 2026-10-11 this table used 0.65/1.3/2.6, our *achieved*
+# TF32 rate x 1/2/4: that understated every tensor ceiling by 1.4x.) FP32 SIMT: 128 lanes x 2 FLOP x 148 x 1.5 GHz.
+CEIL = [("fp32 SIMT", 0.057e15), ("TF32 tensor", 0.91e15), ("FP16/BF16 tensor", 1.82e15), ("FP8 tensor", 3.64e15)]
 DRAM_TBS = 7.05      # read+write streams; read-dominated streams can reach about DRAM_READ_TBS
 DRAM_READ_TBS = 7.5
 FIXED_US = 2.0

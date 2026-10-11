@@ -15,7 +15,10 @@ Most numbers here come from our own #35 / #30 / #009 rounds. A few come from pub
    - kind::tf32 is 1x.
    - kind::f16 (FP16/BF16 operands, fp32 accumulate) is 2x.
    - kind::f8f6f4 is 4x.
-   - Portal lock: kind::tf32 ≈ 0.62-0.65 PF/s measured (#35); FP16 ≈ 2x that.
+   - Peaks at the portal lock (1500 MHz × 148 SMs): kind::tf32 4,096 FLOP/clk/SM = 0.91 PF/s, kind::f16 8,192 =
+     1.82 PF/s, kind::f8f6f4 16,384 = 3.64 PF/s. Per 64-k block of a 128 × N tile, the kind::f16 MMA ideal is 2·N clk
+     (N = 464: 928 clk). Achieved, for scale: cuBLAS bf16 1.47 PF/s at 1500 MHz (#30); #35 TF32 tc_ws ~0.62 PF/s.
+     Do not use an achieved rate as a ceiling: 1.3 PF/s for FP16 (our TF32 rate × 2) misled #35 r10-r11.
    - SOLAR's Tsol uses ~1.8 PF/s.
 3. Check the tolerance arithmetic before writing code (tricks.md §1):
    - FP16 operands equal TF32 accuracy when the inputs fit FP16's range.

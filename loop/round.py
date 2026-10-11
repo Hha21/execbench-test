@@ -110,7 +110,7 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
     # arrives, so a session can be watched live (loop/dashboard); the final "result" event carries the same fields
     # as --output-format json.
     t0 = time.time()
-    out, timed_out = None, threading.Event()
+    out, timed_out, sid = None, threading.Event(), None
     with open(sdir / f"{name}.stream.jsonl", "a") as log, open(sdir / f"{name}.stderr.txt", "a") as err:
         p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True, cwd=sdir)
         timer = threading.Timer(timeout_s, lambda: (timed_out.set(), p.kill()))
@@ -126,6 +126,7 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
                         ev = json.loads(line)
                     except ValueError:
                         continue
+                    sid = ev.get("session_id") or sid       # lets a session killed at its time limit be resumed
                     if ev.get("type") == "result":
                         out = ev
             p.wait()
@@ -133,7 +134,8 @@ def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout
             timer.cancel()
     if out is None:
         tail = (sdir / f"{name}.stderr.txt").read_text()[-3000:]
-        out = dict(is_error=True, result="", subtype="timeout" if timed_out.is_set() else "error", stderr=tail)
+        out = dict(is_error=True, result="", subtype="timeout" if timed_out.is_set() else "error", stderr=tail,
+                   session_id=sid)
     out["seconds"] = round(time.time() - t0, 1)
     return out
 
@@ -492,6 +494,14 @@ def cmd_research(a):
                       "--probes", str(a.probes), "--b200-minutes", str(a.b200_minutes)], d, "research",
                      a.session_timeout * 60, max_turns=a.max_turns)
     text = out.get("result") or ""
+    if not (reply.candidates(text) and "card" in text) and out.get("session_id"):   # e.g. killed at its time limit
+        more = run_claude("Time is up. Do not call any more tools. Write your final answer now in the output format "
+                          "of the RESEARCH PHASE PROTOCOL (card, ledger, first kernel). Hand in exactly the source of "
+                          "the last version that passed run_tests everywhere; put later probe results in the card.",
+                          None, a.lead_model, a.effort, ["--name", "research", "--round", "r0", "--dir", str(d),
+                          "--no-gpu"], d, "research", 1800, resume=out["session_id"], max_turns=4)
+        text = more.get("result") or text
+        out["total_cost_usd"] = (out.get("total_cost_usd") or 0) + (more.get("total_cost_usd") or 0)
     (d / "reply.md").write_text(text)
     (d / "research.claude.json").write_text(json.dumps({k: v for k, v in out.items() if k != "result"}, indent=1))
     finish_research(p, d, text, out)

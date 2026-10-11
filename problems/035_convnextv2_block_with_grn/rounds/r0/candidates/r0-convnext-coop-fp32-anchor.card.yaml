@@ -1,0 +1,62 @@
+id: r0-convnext-coop-fp32-anchor
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: all
+hypothesis: >-
+  Research anchor: one cooperative fp32 SIMT launch (296 persistent CTAs, two grid.sync()s) with three phases: channel-chunked
+  depthwise 7x7 patch tiles writing K-major activations plus LayerNorm partial sums; 128x128/128x96/64x64/32x32 SIMT GEMM1
+  with exact-erf GELU and per-image GRN sums; GEMM2 with the GRN affine applied to A, cross-CTA split-K atomics at small
+  sizes and the residual added into NCHW. Correct on all 16 workloads; it exists to obtain Tb and Tsol.
+expected_effect:
+  S: {pct: -45, confidence: medium}
+  M: {pct: -20, confidence: medium}
+  L: {pct: -10, confidence: low}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 70208
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {BM: 128, BN: 128, BK: 32, GEMM_CFGS: 4, SPLITK_MAX: 16, P1_PATCH: 4x4, NT: 256, GRID: 296}
+tests: [H4, H5, H6]
+findings:
+  - "precision: with the harness generators (weights /sqrt(fan_in), LN weight ones) fp16/fp16 and tf32/tf32 GEMMs give err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol over 6 workloads x 2 seeds; bf16 fails 28-50% [probe_b200]"
+  - "fp32 SIMT peak: FFMA 67.7 TF/s and packed fma.f32x2 74.0 TF/s at 1965 MHz = 128 FMA/clk/SM either way; 56.8 TF/s at the 1500 MHz lock [probe_b200]"
+  - "launch floor: empty kernel 1.8 us, +2.0 us per extra launch; 296-CTA atomic grid barrier ~1.5 us, 1184 CTAs ~5 us per barrier [probe_b200]"
+  - "reference profile: 17-18 kernels per call; cuDNN depthwise conv 492 us, two simt sgemm 400+346 us, six GRN elementwise kernels ~190 us each at 32,128,64,64 [probe_b200]"
+  - "cuBLAS fp32 sgemm both GEMMs (warm): 36-52 us at S sizes (8-28 TF/s), 2758 us at the largest (41-45 TF/s) [probe_b200]"
+  - "v1 (all-channel dwconv tiles, [M][C] layout, transposed smem stores): 16/16 pass but 546 us at 1,192,28,28 and 2091 us at 2,768,7,7 because phase 1 ran on 1-28 CTAs [run_tests]"
+  - "v2 (this kernel): 16/16 pass, 65-140 us at S, 124-353 us at M, 265-5596 us at L; still slower than the reference at 8,384,14,14, 16,384,14,14, 8,768..32,768,7,7 and 8,320,32,32 [run_tests]"
+  - "v2 phase breakdown (separate launches): 32,768,7,7 P1 333 / P2 425 / P3 359 us; 64,96,112,112 544 / 2973 / 2709 us; GEMM phases 17-25 TF/s [probe_b200]"
+  - "bare 128x128x32 SIMT core on the same shapes: 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads; lane layouts within 5% [probe_b200]"
+  - "ablations: removing the GELU/store/warp-sum epilogue lifts P2 to 32-35 TF/s; removing the per-element GRN affine lifts P3 to 33-35 TF/s; prologue ~5%; launch_bounds(256,1) (238-255 regs) is slower everywhere [probe_b200]"
+  - "phase 1: block-level weight transposes 42 us at C=768 vs 11.5 us warp-level; per-token conv 4 tokens/lane 306 us vs 1 token/lane 59 us at 32,768,7,7; zero-padded smem planes 35.5/12.7/32.4 us at 32,768,7,7 / 2,768,7,7 / 16,384,14,14 (correct to 1e-5); prefetching 4x4 patch conv 516 vs 549 us at the largest (FMA bound 134 us at 1500 MHz) [probe_b200]"
+  - "dead end: cooperative single kernel measured 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison) [run_tests, probe_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: true, note: "cooperative launch and cg grid sync work on sm_90; fp32 SIMT rate differs"}
+  A100: {runs: true, representative: false, note: "needs cudaLaunchCooperativeKernel and 70 KB dynamic smem (ok on sm_80); ranking signal only"}
+  L40S: {runs: true, representative: false, note: "100 KB smem per SM allows only 1 CTA/SM; correctness smoke test"}
+risks:
+  - "fp32 SIMT GEMMs are 10-30x off the FP16 tensor-core design that the tolerance permits; L-band times are 2-12x the stream floor"
+  - "cooperative launch fails if the device cannot co-schedule sms x 2 CTAs at 70 KB smem each; grid is sized from the occupancy API at first call"
+  - "split-K phase 3 relies on fp32 atomics into an x+b2-initialised output (non-deterministic summation order, within tolerance)"
+  - "workspace up to 1.6 GB (hidden fp32 [4C][Mp]) allocated with torch.empty each call via the caching allocator"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

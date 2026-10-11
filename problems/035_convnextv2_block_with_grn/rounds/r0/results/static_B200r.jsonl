@@ -1,0 +1,1 @@
+{"id": "r0-convnext-coop-fp32-anchor", "kernels": [{"kernel": "_Z14convnext_fused6Params", "num_warps": null, "regs": 128, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"STG": 75, "LDG": 137, "LDG.CONSTANT": 727, "LDG.CONSTANT.128": 154, "STG.128": 4, "LDG.CONSTANT.64": 496}}], "error": ""}

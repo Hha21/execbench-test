@@ -108,6 +108,9 @@ enough that later design rounds start from solid ground, and to hand in a simple
 3. Write a first kernel: simple, correct for every workload and tolerance, reasonably fast (one fused launch if the
    maths allows). Test it with run_tests until it passes everywhere. It will be submitted to the portal to obtain the
    hidden baseline and SOL anchors per workload, so correctness matters more than speed.
+   Stop at the first version that passes everywhere: do not optimise it (the design rounds do that, with several
+   independent approaches). The session is killed after 60 minutes with nothing saved, so write your final answer by
+   about 40 minutes even if questions remain open; list them in the card instead.
 Output, in this order:
 ```markdown card
 (the problem card, in the style of the example card: 1. semantics; 2. numerics and tolerance; 3. the workloads

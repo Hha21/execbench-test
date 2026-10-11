@@ -1,0 +1,153 @@
+id: r6-e1-fp16-tch-fwd
+parents:
+  - r5-e2-tc-ws-uniform-issue
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows128
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  The B > 256 band moves to tcgen05 kind::f16. W stays fp32 in global and is read once by 8 converter warps per CTA
+  (coalesced LDG.128, evict_first, 2 k-blocks of register prefetch). They round with cvt.rn.f16x2 and store into the
+  SW128 stage. emb is converted by a small pre-pass kernel and loaded by TMA. A release arrive from a thread that has
+  loads in flight waits for those loads, about one DRAM latency per k-block. So converters hand off through a named
+  barrier to a forwarder warp with no loads, and that warp does the release.cluster arrive. The kernel then waits on
+  load latency and DRAM, not on the MMA: 1150-1300 clk per 64-k block against 1600-2150 for r5 TF32 (-22..-40%). It
+  should lose less to the 1.5 GHz portal clock than r5's TF32 kernel did (r5: 1.36 portal/rented).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -7
+    confidence: low
+  L:
+    pct: -28
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 149
+  smem_per_cta_bytes: 148480
+  threads_per_cta: 384
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 2
+knobs:
+  TCH_MAX_STAGES: 3
+  TCH_PF: 2
+  CVT_WARPS: 8
+  LOAD_LAYOUT: "coalesced, warp = 16 rows, lane = float4 (lane & 15) of rows rb + 2i"
+  HANDOFF: "bar.arrive (converters) + bar.sync and release.cluster arrive (forwarder warp 2)"
+  W_HINT: evict_first
+  NB: "1 for B <= 512, 2 above"
+  EMB: "fp16 pre-pass kernel into a torch::empty scratch, TMA FLOAT16 SW128"
+dispatch:
+  - max_tokens: 131
+    kernel: tc_small_kernel
+    meta:
+      launches: 1
+  - max_tokens: 256
+    kernel: tc_pair_kernel
+    meta:
+      launches: 1
+      kbs: 2
+  - max_tokens: 512
+    kernel: emb_f16_kernel + tc_h_kernel
+    meta:
+      launches: 2
+      nb: 1
+  - max_tokens: null
+    kernel: emb_f16_kernel + tc_h_kernel
+    meta:
+      launches: 2
+      nb: 2
+tests:
+  - H19
+  - H22
+findings:
+  - "run_tests final: 16/16 PASS (10 rounds each). Rented us vs r5-e2 on the same GPU: 373 58.1 vs 57.2 (+1.5%), 384 57.8 vs 57.3 (+0.8%), 449 59.3 vs 67.2 (-11.7%), 512 60.5 vs 73.2 (-17.4%), 691 94.1 vs 101.2 (-7.1%), 773 97.0 vs 112.5 (-13.8%), 853 100.7 vs 120.1 (-16.2%), 919 102.8 vs 128.2 (-19.8%); B <= 256 unchanged code within +-1%. Bands S +0.1% M +0.8% L -14.4%; emulator 0.6525 +- 0.009 (P beat 100%) [run_tests]"
+  - "precision max |err| vs fp64 (W/sqrt(3072), bias randn, kind::f16 with cvt.rn operands): 384 1.54e-3, 512 1.56e-3, 691 1.65e-3, 919 1.65-1.68e-3, the same class as TF32. 0 elements outside atol+rtol over 3 calls per B. One draw per B; 3-draw statistics not collected [probe_b200]"
+  - "draft 1 (converter lane-0 arrive.release.cluster on the leader barrier, 8 warps, 16-B lane chunks, all stages that fit): 16/16 correct but 373/384 101 us, 773/853 177-182 us. Configs with 5 stages (smem >= 200 KB) were about 40% slower than those with 4 stages: deep smem rings starve the L1 that the in-flight LDGs need. Capping at 3 stages gives 1820 clk/kb [run_tests, probe_b200]"
+  - "clk per 64-k block is the same (1730-1850) for ntile 384/512/nb2 464 and for PF 2/3. At nb2 half the W reads hit L2 and the time is unchanged, and the no-MMA run gives the same time: the converter path, not DRAM or the MMA, sets the pace [probe_b200]"
+  - "dead end: fence.proxy.async is not the cost. Removing it gives 1816 vs 1845 clk/kb; issuing the prefetch loads after the arrive is worse (2193) [probe_b200]"
+  - "coalescing: 16-B lane chunks at a 32-B stride (2 LDG.128 per 32-B sector pair) cost 1840 clk/kb. Coalesced float4-per-lane loads with STS.64 and ld.global.v8.f32 (LDG.E.NA.ENL2.256) both cost 1730. Small gain; v8 equals coalesced v4 [probe_b200]"
+  - "ROOT CAUSE: mbarrier.arrive.release (cluster or cta scope) from a thread with LDGs in flight waits for those loads. clk/kb at 384: release.cluster 1737, local release.cta + forwarder 1509, relaxed.cluster 1145 (DRAM-bound, 53 us). Relaxed is formally unordered and is not shipped [probe_b200]"
+  - "fix: converters bar.arrive on a per-stage named barrier (ids 1-3, 288 threads), and forwarder warp 2 bar.syncs and does the release.cluster arrive (full count 3). clk/kb 1257 (384), 1287 (512), 1102 (691 nb2), 1180 (919 nb2) at about 1.5-1.56 GHz rented; 59.2/62.6/96.3/107.1 us. bar.arrive still pays part of the load wait (relaxed: 1097/1114/800/954) [probe_b200]"
+  - "dead end: L2 tensor prefetch of W (cp.async.bulk.prefetch.tensor.2d, distance 6 or 10 k-blocks, hinted or not) with converter PF 0/1/2 is 2-10% slower at every B than the plain bar version (384 60.6-65.7 vs 58.0) [probe_b200]"
+  - "dead end: PF 5 spills (256 B stack, 168 regs) and is about 30% slower; PF 3 is no better than 2; 4 stages equal 3 within 2% [probe_b200]"
+  - "per-k-block budget (64 k, per SM): MMA 2 x ntile clk (768 at 384, 1024 at 512, 928 at 464); SMEM per k-block (16 KB STS + emb TMA + MMA reads) equals the TF32 ring at the same clk; conversion ALU 128 F2FP + 64 LDG + 64 STS warp instructions (< 150 issue clk); W DRAM 32 KB/SM per k-block = about 1260 clk at 1.5 GHz and 5.8 TB/s. So nb1 should be DRAM-bound, and nb2 MMA-bound at about 930 clk. Measured 1100-1290: the converter load-to-handoff latency binds [analysis]"
+  - "the lint rejects PDL (griddepcontrol, ProgrammaticStreamSerialization) and __nanosleep, so the emb pre-pass is a separate plain launch. The epilogue stays unoverlapped (8.7-10.6k clk per CTA) [compile_b200]"
+  - "probe infra: /tmp in probe containers was wiped between every probe this session; each probe embedded and rebuilt its full source (nvcc of one TU about 2 s). harness_time once failed with 'Expected kernel activity sequence not found' on a 2-kernel variant (iteration 34, only the pre-pass seen); a retry worked; run_tests passed twice with 2 launches [probe_b200]"
+  - "portal prediction: tc_h waits on load latency (ns) more than on cycles. Rented runs at 1.5-1.7 GHz gave 57.8-60.5 us at 373-512 and 94-103 us at 691-919. Portal estimate x1.05-1.15: 373/384 about 61-66 us (r5 portal 77.8, -15..-22%), 449/512 about 63-69 (r5 91.8/100.7, -30..-37%), 691-919 about 99-118 (r5 138.6-176.2, -28..-35%). The emulator assumes r5-like ratios (0.6525) and is the conservative case [analysis]"
+  - "not done (budget): step 5 (FP16 for 131 < B <= 256; the n2 = 0 tc_h path is untested and not dispatched), the cycle-interleaved comparison against r5 in one container (r5 clk/kb from its card: 806 x 2 at 384, 968 x 2 at 449, 962 x 2 at nb2 464), and 3-draw max-error statistics [analysis]"
+paths:
+  - max_tokens: 131
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 128
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 1
+    w: ef
+  - max_tokens: 256
+    lang: cuda
+    width: 128
+    threads: 128
+    rows: 256
+    grid: oneshot
+    mem: tma
+    launches: 1
+    cluster: 2
+    w: ef
+  - max_tokens: 512
+    lang: cuda
+    width: 128
+    threads: 384
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 2
+    cluster: 2
+    w: ef
+  - max_tokens: null
+    lang: cuda
+    width: 128
+    threads: 384
+    rows: 256
+    grid: oneshot
+    mem: ldg
+    launches: 2
+    cluster: 2
+    w: ef
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM/cta_group::2 are sm_100a only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "two launches per call for B > 256 (fp16 emb pre-pass + GEMM); the gap and the pre-pass are timed. PDL is lint-blocked. One harness_time CUPTI sequence-match failure was seen in a probe (retry passed; run_tests passed twice)"
+  - "373/384 are flat on the rented card (+1%); the portal gain there assumes the kernel scales with ns rather than SM cycles, which is unverified until the portal result"
+  - "the hand-off relies on bar.arrive/bar.sync memory ordering plus the forwarder's release.cluster; the faster relaxed arrive is not shipped because it is formally unordered"
+  - "FP16 operands: max |err| 1.54-1.68e-3 against atol 2e-3, the same margin as TF32. emb values beyond about 65504 would overflow fp16; randn inputs are about 6 at most"
+  - "the 131 < B <= 256 band stays on TF32 tc_pair (portal 50.9/54.3 us); FP16 there is untested"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

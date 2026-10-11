@@ -191,6 +191,11 @@ You are the research lead of this project. You do not write kernels. Each round 
    the archive, the hypothesis ledger, and the emulator's learned portal-vs-bench effects. Use mcp__solx__get_kernel
    to read any kernel's code and results, mcp__solx__read_example for public SOTA kernels, and
    mcp__solx__predict_score to see what a change per size band is worth.
+   Start from the LEADER GAP section: it backs out what the public top scores imply per workload and the best score
+   reachable at the hardware ceilings for each precision. If the leader is above what our current approach can reach
+   (for example a TF32 ceiling below the leader's score), the gap is a different precision, algorithm, traffic
+   pattern or rule reading, not tuning; name what must differ before planning refinements of the current best.
+   tricks.md lists verified cross-problem lessons; check that the current best already uses the ones that apply.
 2. Update the ledger: change a status only on evidence; add hypotheses that findings suggest; cite evidence (kernel
    ids, portal numbers, probe findings); keep each entry short. Keep the constraints.
 3. Design the next round: {n} experiments for design sessions. Each session is a Claude agent with a rented B200
@@ -200,6 +205,11 @@ You are the research lead of this project. You do not write kernels. Each round 
    hypothesis (or a new idea you add to the ledger) and states what to build or measure, the success criterion, and
    what result would refute it. Prefer experiments that could move the portal score by 0.005 or more, or that
    settle an open hypothesis blocking a large gain. Avoid tweaks worth about 1%. Exploration is encouraged.
+   Diversify across strategy lenses: library, memory, compute, fusion, precision, reduction, scheduling,
+   custom-sm100. Plateau rule: when the last two portal results each moved the best score by less than 0.005 (or
+   the leader gap shows the current approach's ceiling is below the leader), at least one experiment must be a
+   fundamentally different option, not a refinement of the current best: another lens or precision, a library
+   path versus a custom kernel, another data layout or algorithm. Say which lens each experiment uses.
 4. Give each experiment a model: opus for open-ended design and debugging, sonnet for well-specified work.
 Output, in this order:
 ### Assessment
@@ -212,6 +222,16 @@ Output, in this order:
   "band": "S|M|L|all", "instructions": "what to build or measure, step by step", "success": "...",
   "refuted_if": "...", "model": "opus|sonnet"}}]
 ```"""
+
+
+def leader_gap_text():
+    """The leader-gap analysis for the current problem: implied leader times vs the hardware ceilings per precision."""
+    try:
+        sys.path.insert(0, str(ROOT / "poc"))
+        import leader_gap
+        return leader_gap.report()
+    except Exception as e:
+        return f"(unavailable: {e})"
 
 
 def cmd_lead(a):
@@ -239,6 +259,7 @@ def cmd_lead(a):
         f"{problem.current().ledger.read_text() if problem.current().ledger.exists() else '(none yet)'}",
         f"=== LAB NOTEBOOK ===\n{prompts.lab_notebook(arc, limit=260)}",
         f"=== PORTAL RESULTS (best first) ===\n{calib}",
+        f"=== LEADER GAP (what the public top scores imply; poc/leader_gap.py) ===\n{leader_gap_text()}",
         f"=== EMULATOR: portal minus bench, by design feature ===\n{effects}",
         f"=== ARCHIVE ===\n{archive.table(arc, limit=60)}",
     ])

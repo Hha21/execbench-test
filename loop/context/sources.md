@@ -135,3 +135,14 @@ were executed.
 8. **evict_first on stores**: `playbook_membound.md` §6 recommends it (`cache:stream`). On B200, quack (GEMM), CAKE
    (paired search) and our portal data all point against it.
 9. **arXiv 2512.02189 latency claim**: our docs read it as B200 DRAM latency; the paper's number is TMEM latency.
+
+## Added 2026-10-11 (compute playbook, tricks, leader gap)
+
+| Key | Where | What we took |
+|---|---|---|
+| [kernelarc] | https://arxiv.org/abs/2608.17071 (v2, 20 Aug 2026), KernelArc: a multi-agent framework for GPU kernel optimization (IMEC) | Ranked 1st on its evaluated L1/L2/Quant/FI boards (snapshot 2026-08-20). Strategy lenses (library, memory, compute, fusion, precision, reduction, scheduling, custom-b200); a conclusions-only wins/traps memory; plateau-triggered drafting of a different algorithm, DSL or layout; L1-030 at 0.546 via output aliasing onto the residual (C == D cuBLASLt epilogue) plus a per-M algorithm table |
+| [modular-p3] | https://modular.com/blog/matrix-multiplication-on-nvidias-blackwell-part-3-the-optimizations-behind-85-of-sota-performance (2025-09-12) | 2SM + multicast 360 TFLOP/s; 5-stage ring + warp specialisation 1430; ping-pong TMA-store epilogue 1493 (4096³ BF16) |
+| [modular-p4] | https://www.modular.com/blog/matrix-multiplication-on-blackwell-part-4---breaking-sota (2025-09-19) | CLC persistent tile scheduler, TMEM double-buffered accumulators, zig-zag raster: 1773 TFLOP/s = 100.6% of cuBLAS at 4096³; 256x224 instruction shape gives 148 CTAs at M=512, N=8192 |
+| [cursor-mak] | https://cursor.com/blog/multi-agent-kernels | Planner + workers, a coordination protocol in one markdown file; SOL-ExecBench median SOL 0.56 over 235 problems; BF16 GEMM at 86% of cuBLAS |
+| [colfax-bw] | https://research.colfax-intl.com/cutlass-tutorial-writing-gemm-kernels-using-tensor-memory-for-nvidia-blackwell-gpus/ | 3-part tutorial: tcgen05 and TMEM; clusters, CTA pairs, multicast; low precision and block scaling |
+| [mlc-gemm] | https://mlc.ai/modern-gpu-programming-for-mlsys/chapter_gemm_advanced/index.html | Step-by-step warp specialisation, then a 2-CTA cluster (256x256 tile), then multiple consumers |

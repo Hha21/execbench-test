@@ -12,8 +12,8 @@ from pathlib import Path
 from archive import ROOT, band_geomeans, fmt, table
 
 CTX = ROOT / "loop" / "context"
-STATIC_DOCS = ["core_brief.md", "PROBLEM_CARD", "harness_scoring.md", "b200_arch.md", "b200_sota.md",
-               "playbook_membound.md", "generation_protocol.md"]      # PROBLEM_CARD = problems/<name>/card.md
+STATIC_DOCS = ["core_brief.md", "tricks.md", "PROBLEM_CARD", "harness_scoring.md", "b200_arch.md", "b200_sota.md",
+               "playbook_membound.md", "playbook_compute.md", "generation_protocol.md"]   # PROBLEM_CARD = problems/<name>/card.md
 CONTRACT = """=== OUTPUT CONTRACT ===
 Optional "### Rationale" (<=150 words). Then, per candidate:
 1) ```json solution-spec``` (the solution JSON without "sources")
@@ -23,11 +23,12 @@ No other fenced code blocks. Never use a forbidden behaviour; if the task needs 
 
 
 MEMORY_ONLY_DOCS = ("b200_sota.md", "playbook_membound.md")
+COMPUTE_ONLY_DOCS = ("playbook_compute.md",)
 
 # Fresh-eyes sessions get the rules, the harness and the hardware, but none of the project's own design history
 # (problem card, playbook, SOTA notes with our results, ledger, notebook, archive kernels): every normal session reads
 # that history and tends to refine the existing design instead of looking for a different, possibly simpler one.
-FRESH_DOCS = ["core_brief.md", "harness_scoring.md", "b200_arch.md", "OUTPUT_FORMAT"]
+FRESH_DOCS = ["core_brief.md", "tricks.md", "harness_scoring.md", "b200_arch.md", "OUTPUT_FORMAT"]
 
 
 def protocol_section(n):
@@ -45,6 +46,9 @@ def static_prompt(fresh=False):
     docs = FRESH_DOCS if fresh else STATIC_DOCS
     if p.kind == "compute":                         # the playbook and SOTA notes are about memory-bound norms (#38)
         docs = [d for d in docs if d not in MEMORY_ONLY_DOCS]
+    else:
+        docs = [d for d in docs if d not in COMPUTE_ONLY_DOCS]
+    docs = [d for d in docs if d in ("OUTPUT_FORMAT", "PROBLEM_CARD") or (CTX / d).exists()]
     for name in docs:
         if name == "OUTPUT_FORMAT":
             parts.append(f"=== output format (generation_protocol.md section 3) ===\n{protocol_section(3)}")

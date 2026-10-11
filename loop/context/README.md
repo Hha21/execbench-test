@@ -9,6 +9,8 @@ to any memory-bound problem, and partly to later compute-bound ones.
 
 | File | Purpose | ≈ tokens |
 |---|---|---|
+| `tricks.md` | **Every call** (also fresh-eyes sessions). Verified cross-problem lessons: leader-gap first, precision ladder, portal vs rented, harness L2 effects, memory-bound and tcgen05 GEMM lessons | 3.5k |
+| `playbook_compute.md` | Compute problems only (sol.yaml has `flops`): precision/ceiling first, the tcgen05 structure ladder, libraries, diagnosis, search lenses, references | 3k |
 | `core_brief.md` | **Every call.** Objective (portal score), timing in brief, forbidden behaviour and its detection, B200 facts that change designs, toolchain, output contract, confidence labels | 1.9k |
 | the problem card (`problems/<name>/card.md`) | #38 problem card: semantics and reference, numerics against 1e-5, the 16 workloads with bytes and floors, size bands, leaderboard anchors, score targets and sensitivity, PoC lessons, priorities, open questions | 3.3k |
 | `playbook_membound.md` | design axes with niche tags; when each helps, effect on the S/M/L bands, compile-verified Triton 3.7 recipes, CUDA C++/Gluon/CuTe pointers, anti-patterns, porting notes | 6.2k |

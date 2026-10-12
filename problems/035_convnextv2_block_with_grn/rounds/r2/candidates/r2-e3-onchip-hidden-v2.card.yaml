@@ -1,0 +1,70 @@
+id: r2-e3-onchip-hidden-v2
+parents: [r1-convnext-cluster16-dsmem]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H20 (lineage C, E3): one cooperative launch with a single grid.sync. Each CTA owns T tokens of one image times a BN
+  slice of the hidden layer. W1 and W2 slices go into fp32-resident smem through one-shot cp.async.bulk and are converted
+  to fp16 at fragment load. Conv, LN, GEMM1 (mma.sync f16) and GELU leave the hidden tile in smem across the barrier. GRN
+  sums go through per-CTA slots. GEMM2 split-K partials are red.added into out, which is pre-filled with x + b2.
+  REFUTED at the S rows. Rented times: 1,192,28,28 30.8 us; 1,96,56,56 29.1; 2,96,56,56 46.3; 4,192,28,28 90.6;
+  4,96,56,56 88.0; 1,160,449,7 66.7. Targets were <= 18-32 us; the kill line was 25 us at 1,192 and 2,96. Weight ingest
+  is not the bound. The bound is the chain of dependent rounds inside phase A: conv loads, GEMM1 and the prefill, plus
+  a 5 us post-barrier GRN phase. Each CTA spends a full SM on 36 tokens.
+expected_effect:
+  S: {pct: -45, confidence: medium}
+  M: {pct: -25, confidence: medium}
+  L: {pct: -35, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 125
+  smem_per_cta_bytes: 224448
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 110592
+  launches_per_call: 1
+knobs: {E3_NT: 512, NB: 4, CH: "48/32/16 by smem", NH: "planner (1,192: 6; 1,96 and 2,96 and 4,96: 2; 4,192: 6; 1,160: 4)", T: "ceil(HW / (148 / (B*NH))) rounded to 4"}
+dispatch:
+  - {shapes: "C<=256, C%32==0, W%4==0 or W==7, plan fits 227 KB and Tp<=256 (1,192 / 1,96 / 1,160,449,7 / 2,96 / 4,192 / 4,96)", kernel: e3_kernel, meta: {cooperative: true, threads: 512, grid: "<=148"}}
+  - {shapes: "C%128==0 and 7x7 / 14x14", kernel: cl_kernel, meta: {cluster: 16, threads: 512}}
+  - {shapes: "all others (8,192 / 8,320 / 32,128 / 64,96)", kernel: convnext_fused, meta: {cooperative: true, threads: 256, grid: 296}}
+tests: [H20]
+findings:
+  - "probe step 1 (go): 148 CTAs, one-shot cp.async.bulk into fp32 smem after the 2xL2 flush, harness_time minus the empty kernel (1.9 us): 150 KB/SM 1.2 us, 300 KB 2.4 us, 590 KB 5.0 us (~120 GB/s/SM, ~16 TB/s aggregate from L2). With 37 distinct slices (more DRAM) 300 KB takes 4.3 us [probe_b200]"
+  - "dead end: a 4-stage 8-16 KB ring that converts each stage to fp16 into smem is 2-2.5x slower (300 KB 6.7-10 us, 590 KB 13-20 us); keep the slices fp32-resident and convert at fragment load (cvt.rn.f16x2), which fits 110-172 KB per slice [probe_b200]"
+  - "smem capacity is the binding constraint: with an fp32 W1 slice resident, BN=192 at C=192 needs 254 KB, so 1,192 runs BN=128 (NH=6, 132 CTAs, T=36). 8,192,28,28 has no plan (its hidden of 9.6 MB fp16 plus the weight slices exceed 148 x 227 KB), and neither do 32,128 / 64,96 / C>=320 [INFERRED from the planner]"
+  - "v1 timeline at 1,192,28,28 (globaltimer, CTA median/max, us): DW+prefill 1.5/9.5; conv+LN+W1 wait 13.3/20.5; GEMM1 end 17.9/25.1; after grid.sync 26.4; GRN slots + scale + W2 wait 31.7; GEMM2 + red.add end 34.8. Total 37.2. Ablations: no conv 28.6 (conv = 8.6 us), no prefill 30.5 [probe_b200]"
+  - "v1 timeline at 4,192,28,28 (NH=6, T=132, CH=16): phase A ends at a 74.8 us median / 90.9 us max; the conv costs 32 us of 108 (25k conv outputs per CTA, 6x redundant across the hidden blocks) [probe_b200]"
+  - "pitfall (repeat of r1): '#pragma unroll 2' over a runtime K around mma.sync gave 42 WARPSYNC for 24 HMMA (GEMM1 4.6 us for a 48x128x192 tile). Fixed 32-wide K steps with all fragment LDS issued first, plus a shfl-uniform warp index, removed it. 125 regs, no spills [probe_b200]"
+  - "cold dependent loads: dwb/lnw/lnb/b1/gw/gb fetched with __ldg at their point of use each add a DRAM round. Bulk-loading them at entry, and splitting the x+b2 prefill over the NH CTAs of a tile, cut 1,192 from 37.2 to 30.8 us and 4,192 from 107 to 90.6 us [run_tests]"
+  - "final run_tests v2 (rented, 16/16 PASS), us (E3 rows): 1,192,28,28 30.8; 1,96,56,56 29.1; 1,160,449,7 66.7; 2,96,56,56 46.3; 4,192,28,28 90.6; 4,96,56,56 88.0. Lineage B on the same rows: 30.9 / 28.3 / 55.2 / 42.2 / 47.2 / 62.5. Other rows use the parent paths and are unchanged within 2%. Projected portal 0.4175 +- 0.008 (anchor 0.304) [run_tests]"
+  - "verdict H20 REFUTED: 30.8 us at 1,192 and 46.3 us at 2,96 are over the 25 us kill line. The on-chip hidden gives no edge over B's materialised fp16 hidden. Per CTA the cost is serial dependent rounds (conv loads ~3-4 rounds of 21 LDG.128 per item, GRN slot reads, red.add), not bytes. Conv redundancy of 4C/BN (2-6x) dominates at T>=88 [probe_b200, run_tests]"
+  - "precision: run_tests passes 16/16 x 10 rounds; per-workload max |err| and the beyond-atol count were NOT logged this session. The hidden is rounded to fp16 twice (GELU output, then the in-place GRN affine), as in r1 C, which passed [run_tests]"
+  - "open lever if the lineage continues: 2-D token tiles (4-row patches, 30 LDG.128 per 16 outputs instead of 21 per 4) and a conv shared across hidden blocks would attack the conv term. The ledger routes C to H23 (tcgen05) in r3 instead [INFERRED]"
+paths:
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 512, rows: 36, grid: oneshot, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: false, note: "cp.async.bulk, mbarrier and mma.sync exist on sm_90; 227 KB smem fits; the 16-CTA cluster path needs non-portable cluster support"}
+  A100: {runs: false, representative: false, note: "no cp.async.bulk/mbarrier tx on sm_80"}
+  L40S: {runs: false, representative: false, note: "no bulk copies; 100 KB smem"}
+risks:
+  - "E3 smem plans run at up to 224-226 KB per CTA (1,192 and 1,160,449,7). Any change to the padding or the small region can exceed 227 KB; the planner then falls to a smaller CH or another NH."
+  - "Keeps the parent's 16-CTA cluster path for 7x7/14x14 rows, which needs operator review under the clusters constraint."
+  - "The hidden is rounded to fp16 twice. Max-error logging is still owed (H22) before a portal slot."
+  - "The cooperative grid is <= 148 CTAs at 1 CTA/SM. Co-residency holds because smem forces 1 CTA/SM and grid <= SM count."
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

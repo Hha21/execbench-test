@@ -106,7 +106,73 @@
   ],
   "round": "r1",
   "solution": "problems/035_convnextv2_block_with_grn/rounds/r1/candidates/r1-convnext-cluster16-dsmem.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z9cl_kernelILi4ELi7ELi4EEv8ClParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 1054,
+     "LDG.CONSTANT.128": 246,
+     "LDG.CONSTANT.64": 496,
+     "STG": 87,
+     "STG.128": 4
+    },
+    "regs": 126,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9cl_kernelILi9ELi13ELi3EEv8ClParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 1054,
+     "LDG.CONSTANT.128": 246,
+     "LDG.CONSTANT.64": 496,
+     "STG": 87,
+     "STG.128": 4
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9cl_kernelILi7ELi13ELi4EEv8ClParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 1054,
+     "LDG.CONSTANT.128": 246,
+     "LDG.CONSTANT.64": 496,
+     "STG": 87,
+     "STG.128": 4
+    },
+    "regs": 127,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z14convnext_fused6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 1054,
+     "LDG.CONSTANT.128": 246,
+     "LDG.CONSTANT.64": 496,
+     "STG": 87,
+     "STG.128": 4
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E3 (tests H13): Cluster-per-image kernel for the 7x7 and 14x14 rows (hidden slices in smem, DSMEM reductions, no grid barrier), with cluster-occupancy, DSMEM and TFLOAT32-rounding probes; other shapes dispatched to the anchor path. Step 0 probes (<= 20 min, record each as a finding): (a) cudaOccupancyMaxActiveClusters for cluster sizes 8 and 16 (cudaFuncAttributeNonPortableClusterSizeAllowed) with 200 KB dynamic smem and 256 threads per CTA: how many clusters run concurrently and the launch-to-first-instruction latency under harness timing; (b) DSMEM microbench in clocks: 16 CTAs all-gather a 75 KB fp16 tile (each writes its 1/16 into every CTA via st.shared::cluster) and reduce-scatter 16 x [768 x 49] fp32 partials (each CTA reads 15 slices via ld.shared::cluster); (c) H14: TMA-load fp32 values with chosen low mantissa bits through a TFLOAT32 tensor map and check bit-exactly whether the result is round-to-nearest or truncation. If (a) gives fewer than 6 concurrent 16-CTA clusters, use 8-CTA clusters (two clusters per image pair is not allowed; use 8 slices of 4C/8). Step 1 kernel, for 2/8/16/32,768,7,7 and 8/16,384,14,14 (dispatch every other shape to the anchor's cooperative kernel copied from the r0 baseline): one cluster per image (two 7x7 images per cluster when B >= 8), CTA j owns C/G channels for the dwconv (zero-padded smem planes) and hidden slice j of 4C/G. LN: per-token partial sums exchanged through DSMEM (one cluster barrier), each CTA normalises its channels and writes the fp16 a tile [tokens][C] into every CTA's smem via st.shared::cluster (second barrier). GEMM1 swap-AB: A = W1 slice [4C/G x C] (fp32 from global/L2 converted to fp16 in smem, or TF32 if (c) confirms rounding), B = a^T, N = tokens; use whichever engine you can get correct in the session (mma.sync FP16 is acceptable; tcgen05 is not required for the thesis). GELU (exact erf) in registers; gf_k = sqrt(sum over tokens of h^2) is thread-local per hidden channel; one DSMEM reduce of the per-CTA partial sums of gf gives mean_k gf (third barrier); s_k = 1 + gw_k*gf_k/(mean+eps), h' = s_k*h + gb_k in registers, written fp16 to the CTA's own smem. GEMM2 partial: W2[:, slice] [C x 4C/G] x h'^T -> [C x tokens] fp32; reduce across the cluster by DSMEM reduce-scatter (CTA j finalises output channels j*C/G .. (j+1)*C/G: + b2 + x, store NCHW with lanes along hw). Weights: each CTA reads only its two slices (1.2 MB at C=768) and ideally once per cluster via TMA multicast or plain L2 reads; measure which. Time each phase in clocks for one cluster at 32,768,7,7 and compare with the 12 us kill criterion from the probe. run_tests on all 16 workloads x 10 rounds; report per-workload rented times. Success: 16/16 pass; rented <= 30 us at 2,768,7,7 and 8,768,7,7, <= 45 us at 16,768,7,7 and 32,768,7,7, <= 40 us at 8/16,384,14,14 (anchor: 124-1217 us); projected portal score >= 0.50 with the other 10 rows still on the anchor path; probe numbers (concurrent clusters, DSMEM gather/reduce clocks, TFLOAT32 rounding) recorded. Refuted if: fewer than 4 concurrent 8-CTA clusters, or weight-slice ingest plus one GEMM1 per CTA > 12 us at 32,768,7,7 under harness timing, or DSMEM all-gather of the 75 KB a tile > 3 us; any of these means the cluster path cannot beat ~30 us per row and the lineage is retired after incubation with the probe numbers as its conclusions. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -118,7 +184,26 @@
     "r0-convnext-coop-fp32-anchor"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 110.27,
+    "1,192,28,28": 89.19,
+    "1,96,56,56": 64.26,
+    "16,384,14,14": 259.47,
+    "16,768,7,7": 224.07,
+    "2,768,7,7": 79.36,
+    "2,96,56,56": 100.1,
+    "32,128,64,64": 1649.42,
+    "32,768,7,7": 333.21,
+    "4,192,28,28": 139.13,
+    "4,96,56,56": 141.94,
+    "64,96,112,112": 5586.43,
+    "8,192,28,28": 217.19,
+    "8,320,32,32": 626.88,
+    "8,384,14,14": 173.8,
+    "8,768,7,7": 117.32
+   }
+  }
  },
  "r1-convnext-coop-hmma-ring": {
   "card": "id: r1-convnext-coop-hmma-ring\nparents: [r0-convnext-coop-fp32-anchor]\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: cpasync\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows128\n  red: cta\n  cache: default\n  spec: all\nhypothesis: >-\n  Lineage B, E2 (H12). Legacy mma.sync.m16n8k16 FP16 with fp32 accumulate runs at 2048 FLOP/clk/SM, which is\n  0.455 PF/s at 1.5 GHz, so the GEMMs stop being the bottleneck except at the top two sizes. The kernel stays one\n  cooperative launch: phase 1 does the weight pass (fp16, native [N][K] layout; LN and gb folded into row sums) and\n  the dwconv, writing raw fp16 d and LN partials; GEMM1 uses a 4-stage cp.async ring with the LN algebra in the\n  epilogue, then GELU and fp16 hidden plus GRN sums; GEMM2 uses a 4-stage ring with the GRN scale as an smem pass,\n  then the residual. Rented B200: 16/16 pass, -59/-65/-74 % vs the anchor in S/M/L; projected portal score 0.561.\nexpected_effect:\n  S: {pct: -59, confidence: medium}\n  M: {pct: -65, confidence: medium}\n  L: {pct: -74, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 128\n  smem_per_cta_bytes: 106272\n  threads_per_cta: 256\n  ctas_per_sm: 2\n  bytes_in_flight_per_sm: 151552\n  launches_per_call: 1\nknobs:\n  NT: 256\n  GRID: 296\n  GEMM_CFGS: \"128x128/128x96/64x64(KS2)/32x32(KS8,BK16)\"\n  STAGES: 4\n  BK: 32\n  TABK: 1024\n  P1_CPW: \"4, or 1 for patch tiles when 32-ch tiles < grid\"\ntests: [H12, H11, H4, H5, H17]\nfindings:\n  - \"H12 supported: mma.sync m16n8k16 f16->f32 = 2048 FLOP/clk/SM with 1 CTA/SM (4-16 warps, 8 or 16 independent chains) = 0.455 PF/s at 1.5 GHz, 1/4 of tcgen05 kind::f16; wall 520-546 TF/s at boost. Per-CTA clock64 with 2 CTAs/SM gives bogus 2700-4090 (CTAs not co-resident) [probe_b200]\"\n  - \"H11 fixed floor F: this kernel with all three phases stubbed (296 CTAs, 104 KB smem, 2 grid.sync) = 4.2-4.7 us on every shape; three plain launches stubbed = 9.7-10.1 us [probe_b200 harness_time]\"\n  - \"H4: full kernel, coop vs three plain launches, 3 interleaved repeats: 1,192,28,28 29.7 vs 36.3 us; 2,768,7,7 46.7 vs 50.2; 64,96,112,112 1793 vs 1749 (coop 2.5% slower at the largest). Regs: 128 for all four kernel variants (PH0 has 64 B spill) [probe_b200]\"\n  - \"H5: split-K auto vs forced 1: 1,192,28,28 29.9 vs 30.6 us (no effect); 2,768,7,7 46.5 vs 64.6; 8,768,7,7 86.1 vs 120.6 (split worth 28-29% at C=768) [probe_b200]\"\n  - \"run_tests (rented B200, us): 1,192 30.9; 1,96 28.3; 1,160,449,7 55.2; 2,96 42.2; 4,192 47.2; 8,384 85.8; 4,96 62.5; 8,192 66.1; 16,384 113.0; 2,768 47.9; 8,768 87.1; 16,768 107.9; 8,320 175.3; 32,768 179.5; 32,128 587.2; 64,96 1786.6; projected portal 0.561 +- 0.008 [run_tests]\"\n  - \"per-phase (cumulative masks, includes F ~4.6): 1,192,28,28 P1 13.2 / +P2 20.1 / all 29.7; 1,160,449,7 17.1/30.6/56.4; 2,768,7,7 19.7/33.2/47.1; 32,768,7,7 48.2/106.0/180.6; 32,128,64,64 107/309/586; 64,96,112,112 446/1290/1793 [probe_b200]\"\n  - \"precision: err rms 3.9-4.2e-4, max 1.9-2.8e-3, <=1e-7 fraction beyond atol 2.4e-3 with randomized lnw/lnb (stricter than harness); raw fp16 d with LN folded into the GEMM1 epilogue (r*(acc - mu*s1) + c1) is as accurate as an fp16 LN'd operand [probe_b200]\"\n  - \"phase-1 parallelism: 8-channel tiles (1 channel per warp) when 32-channel tiles < grid cut P1 at 1,192,28,28 from ~25 us to ~9 us; the 4x4 register-patch conv is latency-bound (10 serial row loads per channel), so tile count matters more than FMA rate at S [probe_b200]\"\n  - \"dead end: applying 8-ch tiles to the 7x7 smem-plane path made the GEMM1 prologue sum 96 partials per token serially (P1+P2 at 8,768,7,7 61 -> 93 us); planes keep 32-ch tiles and the prologue now splits partials over NT/BM threads per token [probe_b200]\"\n  - \"dead end: cp.async-staged smem bands for the dwconv (per-warp double buffer, 16B interior + 4B halo cp.async, float4 LDS) were slower than direct __ldg 4x4 patches: P1 41 vs 29 us at 1,192,28,28 and 515 vs 385 us at 64,96,112,112 (cause not isolated) [probe_b200]\"\n  - \"GEMM main loop: register-prefetched 1-deep A -> 4-stage pure cp.async rings (LN algebra in epilogue, GRN as in-smem scale pass) cut P2 at 8,384,14,14 from ~31 to ~21 us but barely moved the largest (950 -> 888 us), where each tile is a serial prologue/3-chunk/GELU-epilogue chain [probe_b200]\"\n  - \"GEMM2 epilogue: issuing all residual x loads of a tile before use (NPT registers) cut P3 at 64,96,112,112 from 896 to 504 us [probe_b200]\"\n  - \"weight pass at C=768 (fp16 conversion + row sums, 19 MB) costs ~10 us of P1 (P1 with only the weight pass = 14.8-15.5 us vs F 4.6) [probe_b200]\"\n  - \"success criteria: S rows <= 45 us missed at 1,160,449,7 (55) and 4,192,28,28 (47); 2,768,7,7 47.9 <= 60 met; 32,768,7,7 179.5 > 150 missed; largest 1787 <= 2500 met; F 4.6 <= 15 and HMMA 0.455 >= 0.15 PF/s, so neither refutation clause fires [run_tests, probe_b200]\"\n  - \"remaining gaps: largest P2 ~840 us vs ~150 us roofline (short-K per-tile chain + erf GELU epilogue), P1 ~440 us vs ~105 us FMA bound; 1,160,449,7 P3 ~26 us (N=160 padded to 2x128 tiles); C=768 rows P3 60-75 us [probe_b200]\"\npaths:\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"mma.sync/cp.async/ldmatrix/cooperative launch all exist on sm_90; 104 KB smem x2 fits; HMMA rate and clocks differ\"}\n  A100: {runs: true, representative: false, note: \"sm_80 has mma.sync m16n8k16 and cp.async; 2 x 105 KB smem exceeds 164 KB so 1 CTA/SM (grid 108); correctness only\"}\n  L40S: {runs: true, representative: false, note: \"100 KB smem per SM < 104 KB dynamic smem: launch would fail; not runnable as is\"}\nrisks:\n  - \"cooperative launch needs 2 CTAs/SM at 104 KB dynamic smem and 128 regs; the grid comes from the occupancy API at first call\"\n  - \"split-K phase 3 uses fp32 atomics into an x+c2-initialised output (order-nondeterministic, within tolerance)\"\n  - \"hidden fp16 is rounded twice (GELU output, then after the GRN scale): err rms 4e-4 vs atol 2.4e-3, about 6 sigma\"\n  - \"workspace up to ~0.9 GB at the largest size (xh fp16, LN partials, hidden fp16) via torch.empty each call\"\n  - \"portal/rented ratio unknown for the mixed HMMA/SIMT/DRAM profile (anchor was 1.30-1.32 clock-bound)\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -140,7 +225,89 @@
   ],
   "round": "r1",
   "solution": "problems/035_convnextv2_block_with_grn/rounds/r1/candidates/r1-convnext-coop-hmma-ring.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z10convnext_kILi3EEv6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 106,
+     "LDG.128": 120,
+     "LDG.64": 56,
+     "LDG.CONSTANT": 578,
+     "LDG.CONSTANT.128": 228,
+     "LDGDEPBAR": 60,
+     "LDGSTS.128": 240,
+     "STG": 326,
+     "STG.128": 36,
+     "STG.64": 76
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z10convnext_kILi2EEv6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 106,
+     "LDG.128": 120,
+     "LDG.64": 56,
+     "LDG.CONSTANT": 578,
+     "LDG.CONSTANT.128": 228,
+     "LDGDEPBAR": 60,
+     "LDGSTS.128": 240,
+     "STG": 326,
+     "STG.128": 36,
+     "STG.64": 76
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z10convnext_kILi1EEv6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 106,
+     "LDG.128": 120,
+     "LDG.64": 56,
+     "LDG.CONSTANT": 578,
+     "LDG.CONSTANT.128": 228,
+     "LDGDEPBAR": 60,
+     "LDGSTS.128": 240,
+     "STG": 326,
+     "STG.128": 36,
+     "STG.64": 76
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z10convnext_kILi0EEv6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 106,
+     "LDG.128": 120,
+     "LDG.64": 56,
+     "LDG.CONSTANT": 578,
+     "LDG.CONSTANT.128": 228,
+     "LDGDEPBAR": 60,
+     "LDGSTS.128": 240,
+     "STG": 326,
+     "STG.128": 36,
+     "STG.64": 76
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E2 (tests H12): Anchor with mma.sync FP16 GEMM cores, fp16 transposed weights and the measured phase-1 fixes; probes for the HMMA rate, the fixed floor, coop vs three launches and split-K. Step 0 (<= 10 min): microbench mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 throughput on the rented B200: 148 CTAs x 4 and 8 warps, each warp running 8+ independent accumulator chains from registers, timed with clock64 and %globaltimer; report FLOP/clk/SM and PF/s at 1.5 GHz, and record it as a finding whatever the result (H12). Step 1, phase 1 of the anchor: switch transpose_mat to the measured warp-level transposes and emit fp16 W1t [C][4C] and W2t [4C][C] (cvt.rn); for W <= 14 use the zero-padded smem-plane dwconv (measured 35.5 us at 32,768,7,7); keep xn fp32 K-major [C][Mp] and the LN partial sums. Step 2, GEMM phases: keep the CTA tiles (128x128, 128x96, 64x64, 32x32), 8 warps, BK=32 and the register double-buffering, but store A as fp16 [k][m] (affine applied per element in fp32 before cvt.rn.f16x2, as now) and B from the fp16 Wt into padded smem, load fragments with ldmatrix (.trans where the layout needs it) and accumulate with mma.sync m16n8k16 in fp32; keep the exact-erf GELU epilogue, write the hidden as fp16 [4C][Mp] (halves P2 store and P3 load traffic; it is the GEMM2 operand rounding already simulated), keep per-image sumsq atomics, split-K and the x+b2 output init. Keep registers <= 128 so 2 CTAs/SM stay resident. Step 3 probes under harness timing, 3 interleaved repeats each: (a) the fixed floor F: this kernel with all three phases stubbed to a trivial write (grid syncs intact) at 1,192,28,28 and 2,768,7,7; (b) H4: the same phase code as one cooperative launch vs three plain launches at 1,192,28,28, 2,768,7,7 and 64,96,112,112, recording regs per phase kernel; (c) H5: split3 forced to 1 vs auto at 2,768,7,7, 8,768,7,7 and 1,192,28,28; (d) a per-phase breakdown at 1,192,28,28 and 1,160,449,7. run_tests on all 16 workloads x 10 rounds; report per-workload rented times. Success: 16/16 pass; rented <= 45 us on every S row, <= 60 us at 2,768,7,7, <= 150 us at 32,768,7,7, <= 2500 us at the largest; projected portal score >= 0.55; F, the HMMA rate, the coop-vs-3-launch and split-K numbers recorded as findings. Refuted if: mma.sync FP16 throughput < 0.15 PF/s at 1.5 GHz with the GEMM phases still > 100 us at 32,768,7,7 (then B moves to a tcgen05 engine in r2), or the stubbed-phase floor F > 15 us (then one cooperative launch with grid syncs cannot reach S ~0.85 and B's thesis changes to counters/dataflow). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -152,7 +319,26 @@
     "r0-convnext-coop-fp32-anchor"
    ]
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 55.23,
+    "1,192,28,28": 30.91,
+    "1,96,56,56": 28.34,
+    "16,384,14,14": 112.95,
+    "16,768,7,7": 107.89,
+    "2,768,7,7": 47.86,
+    "2,96,56,56": 42.17,
+    "32,128,64,64": 587.23,
+    "32,768,7,7": 179.53,
+    "4,192,28,28": 47.24,
+    "4,96,56,56": 62.49,
+    "64,96,112,112": 1786.6,
+    "8,192,28,28": 66.08,
+    "8,320,32,32": 175.29,
+    "8,384,14,14": 85.83,
+    "8,768,7,7": 87.11
+   }
+  }
  },
  "r1-lib-cublaslt-fp16-v3": {
   "card": "id: r1-lib-cublaslt-fp16-v3\nparents: [r0-convnext-coop-fp32-anchor]\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: cpasync\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows2\n  red: warp\n  cache: default\n  spec: all\nhypothesis: >-\n  Lineage A / E1 (H15, H16). A phase-separated library pipeline needs no tcgen05 code: custom depthwise conv, cuBLASLt\n  fp16 GEMMs, custom GELU/GRN. LayerNorm is folded away (W1' = W1*lnw, with u[k] and cst[k] computed on the side) so the\n  conv needs no per-token all-channel tile. 5 launches (6 on small images) should land S rows at 25-35 us.\n  Result: 16/16 pass, run_tests projects 0.594 (anchor 0.304), but S rows are 35-55 us and 7x7 rows 57-89 us. cuBLASLt\n  and the fp16 hidden round trip are cheap; each custom launch costs 6-17 us, not 2 us.\nexpected_effect:\n  S: {pct: -54, confidence: high}\n  M: {pct: -68, confidence: high}\n  L: {pct: -82, confidence: high}\nresources_sm100a:\n  regs_per_thread: 80\n  smem_per_cta_bytes: 28000\n  threads_per_cta: 32\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 24000\n  launches_per_call: 5\nknobs: {WT: \"16/14/7 by W\", NWc: \"1 small, 3-6 large\", RT: \"tallest tile with >=150 CTAs\", NC: 4, tokb: \"<=192 token blocks per image\", branch_B_threshold_MB: 16, useCL: \"HW%8!=0 or HW<256\"}\ndispatch:\n  - {max_tokens: null, kernel: k1_dw+cublasLt+k2_gelu+k3a_w2|k3b_scale+cublasLt(+k4_transpose_add), meta: {per-shape plan keyed on (B,C,H,W)}}\ntests: [H15, H16]\nfindings:\n  - \"run_tests (rented B200, 16/16 pass, final v3), us: 1,192,28,28 34.5; 1,96,56,56 39.1; 1,160,449,7 47.7; 2,96,56,56 50.0; 4,192,28,28 53.6; 8,384,14,14 70.1; 4,96,56,56 56.5; 8,192,28,28 65.5; 16,384,14,14 84.5; 2,768,7,7 58.9; 8,768,7,7 57.2; 16,768,7,7 70.3; 8,320,32,32 130.4; 32,768,7,7 89.3; 32,128,64,64 445.4; 64,96,112,112 1789.9 (anchor 88.6/62.8/110.7/97.5/139.3/272.7/141.6/216.4/351.8/123.9/261.7/587.4/622.9/1214/1658/5584). Projected portal 0.5937 +-0.008 [run_tests]\"\n  - \"history of this lineage: v1 (LN-fused conv, 128-thread warps looping channel chunks) 0.455 projected; v2 (conv without LN, 32-channel warp chunks, LN folded into W1/K2, channels-last GEMM2 + transpose) 0.566; v3 (1-warp CTAs + tall tiles for small shapes, 4 sumsq copies, K3a prefetch) 0.594 [run_tests]\"\n  - \"success criteria vs result: S/M rows <= 40 us met only at 1,192 (34.5) and 1,96 (39.1); 8/16/32,768,7,7 <= 80 us met at 8 (57.2) and 16 (70.3), missed at 32 (89.3); largest <= 700 us missed (1790); projected 0.594 < 0.60 target. Refutation tests: cuBLASLt GEMM1+GEMM2 <= 12 us at 1,192 (5.1+6.8), so the library floor is NOT the limit; H16 round trip <= 4 us at 20 MB, so NOT refuted [probe_b200]\"\n  - \"per-launch cumulative cold-L2 breakdown, us (K1 conv+weight prep / GEMM1 / K2 GELU+stats / K3 GRN scale / GEMM2 / K4 transpose): 1,192,28,28 12.8/5.1/9.8/6.2/6.8/- = 40.6; 1,96,56,56 16.4/5.0/10.5/6.6/6.9/- = 45.4; 2,768,7,7 18.6/6.0/8.4/17.3/9.6/4.1 = 64.1; 8,384,14,14 28.4/7.0/14.3/11.8/10.2/5.2 = 77; 32,768,7,7 33.5/10.1/19.0/10.8/13.8/8.2 = 95.3; 8,320,32,32 61.4/11.0/37.8/11.0/14.2/- = 135.4; 32,128,64,64 234/44/113/8/52/- = 451; 64,96,112,112 954/191/447/11/194/- = 1798 (harness_time probe, adds ~5 us over run_tests) [probe_b200]\"\n  - \"launch floor on this B200: an empty-ish 1-block kernel measures 2.4 us under harness timing; but every custom launch here costs 6-17 us because each is a chain of 2-3 dependent global round trips plus a ramp. The lineage assumption '2 us per launch' is wrong by 3-5x; the 5-launch fixed floor is ~35-40 us at S, not ~12 [probe_b200]\"\n  - \"cold dependent-load latency is 0.44 us per step (chain of 8 = 5.5 us, 1 = 2.4 us); a round of loads costs ~1 us once the SM is loaded [probe_b200]\"\n  - \"K1 staging dominates the conv: removing the global->smem staging cut K1 from 20.7 to 6.5 us (1,96,56,56) and 148 to 28 us (8,320,32,32); plain LDG+STS staging (no cp.async) was equal (23 vs 20 us), so the cost is not the LDGSTS instruction. A 64-channel 7-row stage-only kernel took 9.5 us vs 5.9 us for a contiguous float4 read of the same bytes vs 1.9 us floor, i.e. about 8 GB/s per SM through LDG/LDGSTS. Total staged bytes (halo redundancy 5-13x) spread over all SMs is what matters, hence 1-warp CTAs and tall tiles in v3 [probe_b200]\"\n  - \"dead end: same-address float4 atomics from 784 blocks into 384 sums cost K2 21 us at 1,96,56,56; fixed with 4 accumulator copies and at most 48*NC token blocks per image [probe_b200, run_tests]\"\n  - \"cuBLASLt returns 8 heuristic algos for all 16 shapes; top-3 totals are equal within 0.3% at 1,192,28,28 (40.9/41.0/41.0 us), so algo choice is not a lever; the second probe crashed on a later CL-shape algo (illegal launch), not investigated [probe_b200]\"\n  - \"dead end: NCHW strided-batched GEMM2 (m=HW) is slow for HW=49/196/odd and for stride-0 batch: 20-200 us (v1: 8,384,14,14 29.5 us, 2,768,7,7 24 us, 8,768 69 us, 16,768 126 us, 32,768 201 us). Channels-last GEMM2 (m=C) + a 32x32 transpose-add kernel (4-8 us) replaces it for HW<256 or HW%8!=0 [probe_b200]\"\n  - \"TF32 (fp32 operands, torch allow_tf32) vs fp16, cold, us: 784x192x768 5.4/3.3; 784x768x192 6.2/4.3; 98x768x3072 7.3/5.2; 98x3072x768 11.8/7.2; 1568x768x3072 20.2/9.6; 8192x320x1280 19.1/9.7; 8192x1280x320 22.1/11.4; 131072x128x512 57.1/31.4; 802816x96x384 270/129. TF32 avoids the 4.7-14 MB weight conversion but is 1.4-2.1x slower; it only helps if the conversion cannot be overlapped [probe_b200]\"\n  - \"H16: write then read a fp16 scratch after the 2xL2 zero-fill (two launches), us: 0.01 MB 5.4, 20 MB 9.0, 42 MB 14.6, 134 MB 57.4 (ideal at 7 TB/s 5.7/12/38). The hidden round trip costs ~3.6 us over the two-launch floor at 20 MB (the size of the 8,320,32,32 hidden), well under the 10 us refutation bar, and about 1.4x ideal at 134 MB: the materialised fp16 hidden is cheap [probe_b200]\"\n  - \"precision: folding LayerNorm into the GEMM (fp16 d, fp32 partial stats, z = rstd*(Y - mean*u) + cst) and fp16 hidden with b2' as hi/lo fp16 columns passed 16/16 x 10 rounds; per-size max error was not logged by run_tests [run_tests]\"\n  - \"residual weaknesses by launch: K2 reaches 447 us for the 616 MB hidden at the largest size (ideal ~175) and 113 us at 32,128,64,64 (ideal ~40); K1 is 954 us at the largest; K3 costs 6-17 us at every small row because it is a 3-round chain (sumsq, sqrt-reduce, W2 rows). Fusing K2+K3 work into the neighbouring GEMM (custom epilogue) or a TMA-fed conv would remove ~20 us at S [probe_b200]\"\npaths:\n  - {max_tokens: 3200, lang: cuda, width: 128, threads: 32, rows: 2, grid: oneshot, mem: cpasync, launches: 5, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 128, rows: 2, grid: oneshot, mem: cpasync, launches: 5, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"sm_90: cuBLASLt and float4 atomicAdd work, but the stage cost model differs\"}\n  A100: {runs: false, representative: false, note: \"float4 atomicAdd needs sm_90\"}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"launches_per_call is 5 (6 for HW<256 or odd HW); portal launch gaps may add 1-2 us each beyond the rented numbers\"\n  - \"workspace up to ~800 MB via torch.empty at 64,96,112,112; allocator reuse is assumed\"\n  - \"cuBLASLt heuristic result order is assumed stable; plans are cached per (B,C,H,W) only, never re-tuned\"\n  - \"fp16 hidden and LN-folding error was only checked pass/fail (about 3.5-5 sigma margin from the card), not per-size max error\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -174,7 +360,149 @@
   ],
   "round": "r1",
   "solution": "problems/035_convnextv2_block_with_grn/rounds/r1/candidates/r1-lib-cublaslt-fp16-v3.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z5k1_dwILi16EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi14EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi7EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z16k4_transpose_addPKfS0_Pfii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 26,
+    "resident_per_sm": null,
+    "smem": 5248
+   },
+   {
+    "kernel": "_Z9k3b_scaleP6__halfPKfS2_iiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z6k3a_w2PKfS0_S0_S0_S0_P6__halfiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z7k2_geluP6__halfPKfS2_PK6float2Pfiiiiiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 23552
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (tests H15): Library pipeline: custom dwconv+LN, cuBLASLt FP16 GEMMs with fused bias/residual, fp16 hidden, strided-batched NCHW output. Build a C++ solution (languages cuda_cpp + cublas; add -lcublasLt -lcublas to ld_flags; binding.cpp + kernel.cu layout; the cuBLASLt handle, matmul descriptors and the per-shape algorithm table are module-level caches keyed on (B,C,H,W) only, created on first call with cublasLtMatmulAlgoGetHeuristic and never re-tuned). Launch sequence per call, identical for a given shape: K1 custom: depthwise 7x7 conv + bias + LayerNorm -> A1 fp16 [M][C] row-major (use zero-padded smem planes per warp for W<=14, register patches or TMA-free float4 rows otherwise; LN needs all C per token so tile tokens x all channels); extra blocks of K1 convert W1 -> fp16 [4C][C] and W2 -> fp16 [C][4C] with cvt.rn.f16x2 and compute b2' = b2 + W2*gb (GEMV). GEMM1: cublasLtMatmul fp16 x fp16, fp32 compute, BIAS epilogue (b1), output fp16 or fp32 [M][4C] (fp16 only if run_tests passes 16/16; report max err both ways). K2 custom: exact erf GELU (erff, not tanh), write h fp16 [M][4C], per-(image,k) sum of squares via warp reduce + atomics into a [B][4C] fp32 workspace zeroed by K1. K3 custom: s_b[k] = 1 + gw[k]*sqrt(gf2)/(mean_k sqrt(gf2) + eps) and apply it: when B*C*4C*2 bytes <= 16 MB write W2_b = W2*diag(s_b) fp16 per image, else scale h rows in place (half2). GEMM2: strided-batched cublasLtMatmul computing D_b^T [C][HW] = W2_b [C][4C] x h_b^T so D lands directly in NCHW, beta=1 with C operand = x_b (stride C*HW) and D = output_b, bias b2' per output channel (either in the epilogue or pre-added to the C operand by K1 writing output = x + b2' and using beta=1 with C == D). All workspaces from torch.empty in run(). Then measure, under harness timing on the rented B200: (1) per-launch times at 1,192,28,28; 2,768,7,7; 32,768,7,7; 32,128,64,64; 64,96,112,112; (2) for GEMM1/GEMM2 at every one of the 16 shapes, the top-3 heuristic algorithms, FP16 operands vs CUBLAS_COMPUTE_32F_FAST_TF32 on the fp32 A1/W (no conversion kernel): pick the faster per shape into the table and record both; (3) the H16 probe: a kernel that writes then reads back a 20, 42 and 134 MB fp16 scratch after the harness's 2xL2 zero-fill, versus the same kernel with no scratch, to price the hidden round trip per size. run_tests on all 16 workloads x 10 rounds; report per-workload rented times, not band geomeans. Success: 16/16 pass; rented time <= 40 us on every S/M row (1,192 .. 2,768), <= 80 us at 8/16/32,768,7,7, <= 700 us at the largest; run_tests projected portal score >= 0.60; the per-launch breakdown and the H15/H16 numbers are recorded as findings. Refuted if: cuBLASLt GEMM1+GEMM2 together exceed 20 us at the S shapes for every heuristic algorithm (then the library floor caps the lineage near 0.6 and r2 replaces the GEMMs with custom tensor-core kernels), or the H16 probe shows the fp16 hidden round trip costs > 10 us at 8,320,32,32. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -184,7 +512,26 @@
    "operation": "new_design",
    "parents": []
   },
-  "timings": {}
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 47.68,
+    "1,192,28,28": 34.5,
+    "1,96,56,56": 39.14,
+    "16,384,14,14": 84.45,
+    "16,768,7,7": 70.27,
+    "2,768,7,7": 58.93,
+    "2,96,56,56": 49.96,
+    "32,128,64,64": 445.35,
+    "32,768,7,7": 89.26,
+    "4,192,28,28": 53.57,
+    "4,96,56,56": 56.5,
+    "64,96,112,112": 1789.88,
+    "8,192,28,28": 65.5,
+    "8,320,32,32": 130.36,
+    "8,384,14,14": 70.08,
+    "8,768,7,7": 57.24
+   }
+  }
  },
  "r1-lib-cublaslt-fp16-v3fix": {
   "card": "id: r1-lib-cublaslt-fp16-v3fix\nparents: [r1-lib-cublaslt-fp16-v3]\noperation: repair\nlanguage: cuda_cpp\nniche:\n  mem: cpasync\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows2\n  red: warp\n  cache: default\n  spec: all\nhypothesis: >-\n  Lineage A / E1 (H15, H16). A phase-separated library pipeline needs no tcgen05 code: custom depthwise conv, cuBLASLt\n  fp16 GEMMs, custom GELU/GRN. LayerNorm is folded away (W1' = W1*lnw, with u[k] and cst[k] computed on the side) so the\n  conv needs no per-token all-channel tile. 5 launches (6 on small images) should land S rows at 25-35 us.\n  Result: 16/16 pass, run_tests projects 0.594 (anchor 0.304), but S rows are 35-55 us and 7x7 rows 57-89 us. cuBLASLt\n  and the fp16 hidden round trip are cheap; each custom launch costs 6-17 us, not 2 us.\nexpected_effect:\n  S: {pct: -54, confidence: high}\n  M: {pct: -68, confidence: high}\n  L: {pct: -82, confidence: high}\nresources_sm100a:\n  regs_per_thread: 80\n  smem_per_cta_bytes: 28000\n  threads_per_cta: 32\n  ctas_per_sm: 8\n  bytes_in_flight_per_sm: 24000\n  launches_per_call: 5\nknobs: {WT: \"16/14/7 by W\", NWc: \"1 small, 3-6 large\", RT: \"tallest tile with >=150 CTAs\", NC: 4, tokb: \"<=192 token blocks per image\", branch_B_threshold_MB: 16, useCL: \"HW%8!=0 or HW<256\"}\ndispatch:\n  - {max_tokens: null, kernel: k1_dw+cublasLt+k2_gelu+k3a_w2|k3b_scale+cublasLt(+k4_transpose_add), meta: {per-shape plan keyed on (B,C,H,W)}}\ntests: [H15, H16]\nfindings:\n  - \"run_tests (rented B200, 16/16 pass, final v3), us: 1,192,28,28 34.5; 1,96,56,56 39.1; 1,160,449,7 47.7; 2,96,56,56 50.0; 4,192,28,28 53.6; 8,384,14,14 70.1; 4,96,56,56 56.5; 8,192,28,28 65.5; 16,384,14,14 84.5; 2,768,7,7 58.9; 8,768,7,7 57.2; 16,768,7,7 70.3; 8,320,32,32 130.4; 32,768,7,7 89.3; 32,128,64,64 445.4; 64,96,112,112 1789.9 (anchor 88.6/62.8/110.7/97.5/139.3/272.7/141.6/216.4/351.8/123.9/261.7/587.4/622.9/1214/1658/5584). Projected portal 0.5937 +-0.008 [run_tests]\"\n  - \"history of this lineage: v1 (LN-fused conv, 128-thread warps looping channel chunks) 0.455 projected; v2 (conv without LN, 32-channel warp chunks, LN folded into W1/K2, channels-last GEMM2 + transpose) 0.566; v3 (1-warp CTAs + tall tiles for small shapes, 4 sumsq copies, K3a prefetch) 0.594 [run_tests]\"\n  - \"success criteria vs result: S/M rows <= 40 us met only at 1,192 (34.5) and 1,96 (39.1); 8/16/32,768,7,7 <= 80 us met at 8 (57.2) and 16 (70.3), missed at 32 (89.3); largest <= 700 us missed (1790); projected 0.594 < 0.60 target. Refutation tests: cuBLASLt GEMM1+GEMM2 <= 12 us at 1,192 (5.1+6.8), so the library floor is NOT the limit; H16 round trip <= 4 us at 20 MB, so NOT refuted [probe_b200]\"\n  - \"per-launch cumulative cold-L2 breakdown, us (K1 conv+weight prep / GEMM1 / K2 GELU+stats / K3 GRN scale / GEMM2 / K4 transpose): 1,192,28,28 12.8/5.1/9.8/6.2/6.8/- = 40.6; 1,96,56,56 16.4/5.0/10.5/6.6/6.9/- = 45.4; 2,768,7,7 18.6/6.0/8.4/17.3/9.6/4.1 = 64.1; 8,384,14,14 28.4/7.0/14.3/11.8/10.2/5.2 = 77; 32,768,7,7 33.5/10.1/19.0/10.8/13.8/8.2 = 95.3; 8,320,32,32 61.4/11.0/37.8/11.0/14.2/- = 135.4; 32,128,64,64 234/44/113/8/52/- = 451; 64,96,112,112 954/191/447/11/194/- = 1798 (harness_time probe, adds ~5 us over run_tests) [probe_b200]\"\n  - \"launch floor on this B200: an empty-ish 1-block kernel measures 2.4 us under harness timing; but every custom launch here costs 6-17 us because each is a chain of 2-3 dependent global round trips plus a ramp. The lineage assumption '2 us per launch' is wrong by 3-5x; the 5-launch fixed floor is ~35-40 us at S, not ~12 [probe_b200]\"\n  - \"cold dependent-load latency is 0.44 us per step (chain of 8 = 5.5 us, 1 = 2.4 us); a round of loads costs ~1 us once the SM is loaded [probe_b200]\"\n  - \"K1 staging dominates the conv: removing the global->smem staging cut K1 from 20.7 to 6.5 us (1,96,56,56) and 148 to 28 us (8,320,32,32); plain LDG+STS staging (no cp.async) was equal (23 vs 20 us), so the cost is not the LDGSTS instruction. A 64-channel 7-row stage-only kernel took 9.5 us vs 5.9 us for a contiguous float4 read of the same bytes vs 1.9 us floor, i.e. about 8 GB/s per SM through LDG/LDGSTS. Total staged bytes (halo redundancy 5-13x) spread over all SMs is what matters, hence 1-warp CTAs and tall tiles in v3 [probe_b200]\"\n  - \"dead end: same-address float4 atomics from 784 blocks into 384 sums cost K2 21 us at 1,96,56,56; fixed with 4 accumulator copies and at most 48*NC token blocks per image [probe_b200, run_tests]\"\n  - \"cuBLASLt returns 8 heuristic algos for all 16 shapes; top-3 totals are equal within 0.3% at 1,192,28,28 (40.9/41.0/41.0 us), so algo choice is not a lever; the second probe crashed on a later CL-shape algo (illegal launch), not investigated [probe_b200]\"\n  - \"dead end: NCHW strided-batched GEMM2 (m=HW) is slow for HW=49/196/odd and for stride-0 batch: 20-200 us (v1: 8,384,14,14 29.5 us, 2,768,7,7 24 us, 8,768 69 us, 16,768 126 us, 32,768 201 us). Channels-last GEMM2 (m=C) + a 32x32 transpose-add kernel (4-8 us) replaces it for HW<256 or HW%8!=0 [probe_b200]\"\n  - \"TF32 (fp32 operands, torch allow_tf32) vs fp16, cold, us: 784x192x768 5.4/3.3; 784x768x192 6.2/4.3; 98x768x3072 7.3/5.2; 98x3072x768 11.8/7.2; 1568x768x3072 20.2/9.6; 8192x320x1280 19.1/9.7; 8192x1280x320 22.1/11.4; 131072x128x512 57.1/31.4; 802816x96x384 270/129. TF32 avoids the 4.7-14 MB weight conversion but is 1.4-2.1x slower; it only helps if the conversion cannot be overlapped [probe_b200]\"\n  - \"H16: write then read a fp16 scratch after the 2xL2 zero-fill (two launches), us: 0.01 MB 5.4, 20 MB 9.0, 42 MB 14.6, 134 MB 57.4 (ideal at 7 TB/s 5.7/12/38). The hidden round trip costs ~3.6 us over the two-launch floor at 20 MB (the size of the 8,320,32,32 hidden), well under the 10 us refutation bar, and about 1.4x ideal at 134 MB: the materialised fp16 hidden is cheap [probe_b200]\"\n  - \"precision: folding LayerNorm into the GEMM (fp16 d, fp32 partial stats, z = rstd*(Y - mean*u) + cst) and fp16 hidden with b2' as hi/lo fp16 columns passed 16/16 x 10 rounds; per-size max error was not logged by run_tests [run_tests]\"\n  - \"residual weaknesses by launch: K2 reaches 447 us for the 616 MB hidden at the largest size (ideal ~175) and 113 us at 32,128,64,64 (ideal ~40); K1 is 954 us at the largest; K3 costs 6-17 us at every small row because it is a 3-round chain (sumsq, sqrt-reduce, W2 rows). Fusing K2+K3 work into the neighbouring GEMM (custom epilogue) or a TMA-fed conv would remove ~20 us at S [probe_b200]\"\npaths:\n  - {max_tokens: 3200, lang: cuda, width: 128, threads: 32, rows: 2, grid: oneshot, mem: cpasync, launches: 5, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 128, rows: 2, grid: oneshot, mem: cpasync, launches: 5, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"sm_90: cuBLASLt and float4 atomicAdd work, but the stage cost model differs\"}\n  A100: {runs: false, representative: false, note: \"float4 atomicAdd needs sm_90\"}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"launches_per_call is 5 (6 for HW<256 or odd HW); portal launch gaps may add 1-2 us each beyond the rented numbers\"\n  - \"workspace up to ~800 MB via torch.empty at 64,96,112,112; allocator reuse is assumed\"\n  - \"cuBLASLt heuristic result order is assumed stable; plans are cached per (B,C,H,W) only, never re-tuned\"\n  - \"fp16 hidden and LN-folding error was only checked pass/fail (about 3.5-5 sigma margin from the card), not per-size max error\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
@@ -206,7 +553,149 @@
   ],
   "round": "r1",
   "solution": "problems/035_convnextv2_block_with_grn/rounds/r1/candidates/r1-lib-cublaslt-fp16-v3fix.json",
-  "status": "proposed",
+  "static_sm100": [
+   {
+    "kernel": "_Z5k1_dwILi16EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi14EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi7EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z16k4_transpose_addPKfS0_Pfii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 26,
+    "resident_per_sm": null,
+    "smem": 5248
+   },
+   {
+    "kernel": "_Z9k3b_scaleP6__halfPKfS2_iiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z6k3a_w2PKfS0_S0_S0_S0_P6__halfiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z7k2_geluP6__halfPKfS2_PK6float2Pfiiiiiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 58,
+     "LDG.128": 8,
+     "LDG.64": 31,
+     "LDG.CONSTANT": 61,
+     "LDG.CONSTANT.128": 169,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 69,
+     "STG.128": 13,
+     "STG.64": 109
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 23552
+   }
+  ],
+  "status": "passed",
   "task": {
    "band": "all",
    "instructions": "Experiment E1 (tests H15): Library pipeline: custom dwconv+LN, cuBLASLt FP16 GEMMs with fused bias/residual, fp16 hidden, strided-batched NCHW output. Build a C++ solution (languages cuda_cpp + cublas; add -lcublasLt -lcublas to ld_flags; binding.cpp + kernel.cu layout; the cuBLASLt handle, matmul descriptors and the per-shape algorithm table are module-level caches keyed on (B,C,H,W) only, created on first call with cublasLtMatmulAlgoGetHeuristic and never re-tuned). Launch sequence per call, identical for a given shape: K1 custom: depthwise 7x7 conv + bias + LayerNorm -> A1 fp16 [M][C] row-major (use zero-padded smem planes per warp for W<=14, register patches or TMA-free float4 rows otherwise; LN needs all C per token so tile tokens x all channels); extra blocks of K1 convert W1 -> fp16 [4C][C] and W2 -> fp16 [C][4C] with cvt.rn.f16x2 and compute b2' = b2 + W2*gb (GEMV). GEMM1: cublasLtMatmul fp16 x fp16, fp32 compute, BIAS epilogue (b1), output fp16 or fp32 [M][4C] (fp16 only if run_tests passes 16/16; report max err both ways). K2 custom: exact erf GELU (erff, not tanh), write h fp16 [M][4C], per-(image,k) sum of squares via warp reduce + atomics into a [B][4C] fp32 workspace zeroed by K1. K3 custom: s_b[k] = 1 + gw[k]*sqrt(gf2)/(mean_k sqrt(gf2) + eps) and apply it: when B*C*4C*2 bytes <= 16 MB write W2_b = W2*diag(s_b) fp16 per image, else scale h rows in place (half2). GEMM2: strided-batched cublasLtMatmul computing D_b^T [C][HW] = W2_b [C][4C] x h_b^T so D lands directly in NCHW, beta=1 with C operand = x_b (stride C*HW) and D = output_b, bias b2' per output channel (either in the epilogue or pre-added to the C operand by K1 writing output = x + b2' and using beta=1 with C == D). All workspaces from torch.empty in run(). Then measure, under harness timing on the rented B200: (1) per-launch times at 1,192,28,28; 2,768,7,7; 32,768,7,7; 32,128,64,64; 64,96,112,112; (2) for GEMM1/GEMM2 at every one of the 16 shapes, the top-3 heuristic algorithms, FP16 operands vs CUBLAS_COMPUTE_32F_FAST_TF32 on the fp32 A1/W (no conversion kernel): pick the faster per shape into the table and record both; (3) the H16 probe: a kernel that writes then reads back a 20, 42 and 134 MB fp16 scratch after the harness's 2xL2 zero-fill, versus the same kernel with no scratch, to price the hidden round trip per size. run_tests on all 16 workloads x 10 rounds; report per-workload rented times, not band geomeans. Success: 16/16 pass; rented time <= 40 us on every S/M row (1,192 .. 2,768), <= 80 us at 8/16/32,768,7,7, <= 700 us at the largest; run_tests projected portal score >= 0.60; the per-launch breakdown and the H15/H16 numbers are recorded as findings. Refuted if: cuBLASLt GEMM1+GEMM2 together exceed 20 us at the S shapes for every heuristic algorithm (then the library floor caps the lineage near 0.6 and r2 replaces the GEMMs with custom tensor-core kernels), or the H16 probe shows the fp16 hidden round trip costs > 10 us at 8,320,32,32. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
@@ -215,6 +704,127 @@
    "niche": "lin:A:E1:H15",
    "operation": "new_design",
    "parents": []
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 54.23,
+    "1,192,28,28": 40.42,
+    "1,96,56,56": 45.21,
+    "16,384,14,14": 89.0,
+    "16,768,7,7": 77.59,
+    "2,768,7,7": 64.45,
+    "2,96,56,56": 56.14,
+    "32,128,64,64": 450.36,
+    "32,768,7,7": 95.3,
+    "4,192,28,28": 58.46,
+    "4,96,56,56": 63.07,
+    "64,96,112,112": 1794.97,
+    "8,192,28,28": 72.04,
+    "8,320,32,32": 135.62,
+    "8,384,14,14": 77.33,
+    "8,768,7,7": 62.4
+   }
+  }
+ },
+ "r2-coop-flat-s": {
+  "card": "id: r2-coop-flat-s\nparents: [r1-convnext-coop-hmma-ring]\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: cpasync\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: rows128\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  Lineage B, E2 (H19). The hypothesis was that the S-row time above the fixed floor F is mostly dependent global\n  rounds, so collapsing each phase to one load round would cut 1,192,28,28 from 29.7 to <= 22 us. To test it, a\n  second cooperative kernel (convnext_flat) gives each phase exactly one load round. The conv issues all of its\n  loads up front, GEMM1 runs full-K tiles with the LN stats in the same round, GEMM2 runs split-K units with\n  sumsq/gw/A/B in one round, and the residual init is folded into the conv. Measured result: refuted at the target\n  size. After each grid sync the first round still costs 2-4 us, and the SM-cycle parts (GELU epilogue, conv) remain.\n  The flat kernel wins only on two shape classes (-7% each), so it ships behind a shape dispatch and every other\n  shape keeps the r1 ring kernel unchanged.\nexpected_effect:\n  S: {pct: -2, confidence: medium}\n  M: {pct: -1, confidence: medium}\n  L: {pct: 0, confidence: high}\nresources_sm100a:\n  regs_per_thread: 128\n  smem_per_cta_bytes: 107296\n  threads_per_cta: 256\n  ctas_per_sm: 2\n  bytes_in_flight_per_sm: 151552\n  launches_per_call: 1\nknobs:\n  NT: 256\n  GRID: 296\n  FLAT_G1_TILES: \"64x64 / 128x96 / 128x128 full-K\"\n  FLAT_G2_TILES: \"64x64 / 64x96 / 128x96 / 64x192 / 64x160, split-K <= 24\"\n  FLAT_DISPATCH: \"W % 4 != 0, or C <= 96 and M > 8192 (and C <= 192, HW >= 128)\"\n  RING_PATH: \"unchanged r1 kernel for all other shapes\"\ntests: [H19]\nfindings:\n  - \"audit, parent at 1,192,28,28 (globaltimer, CTA median/max from the first CTA start, us): P1 end 1.8/8.6 (the conv runs on only 48 CTAs), sync1 9.9, out-init +1.8, LN-stats round +2.0, MMA +1.4, GELU epilogue +2.4, sync2 20.4, GRN prologue +2.4, MMA +2.4, epilogue +1.6, end 28.2. About 12 dependent steps of 1.5-2.5 us; clock 1.86-1.92 GHz [probe_b200]\"\n  - \"audit, parent mask ablations (harness_time, us), 1,192: full 30.0 / F 4.9 / weight pass only 7.8 / conv only 13.2 / P1 13.3 / P1+P2 20.3. The conv alone is 8.3 us above F at 1,192 and 9-25 us at the other S rows [probe_b200]\"\n  - \"H19 refuted for the target size. Collapsing every phase to one load round did not move 1,192 (30.5 flat vs 30.4 ring, interleaved). Even a 12-32 KB per-CTA cp.async round right after a grid sync takes 2-4 us (about 4-8 B/clk/SM, the same pathology as lineage A's 8 GB/s-per-SM staging). Success criteria missed: 1,192 29.8 (<=22), 2,96 43.4 (<=30), 4,192 46.3 (<=34), 2,768 48.1 (<=40, ring path); projected 0.566 < 0.60 [run_tests, probe_b200]\"\n  - \"flat-kernel stamps at 1,192 relative to sync2: issuing the P3 cp.asyncs 2.75 us (1.98 with no A tile), sumsq read + reduction 2.0 us, scale + 64x64x128 MMA 2.0 us, red.add epilogue 1.3 us. Removing the sumsq read entirely saves only ~1 us, so a last-arriver s_b publisher (step 4) cannot remove a round: the per-CTA redundant reduce already sits in the same round as the A/B tiles [probe_b200]\"\n  - \"step 3 (in-CTA fp32 weight conversion) not built: the GEMM1 A tile (xh) is produced in P1 and must be loaded after sync1 whatever happens, so prefetching W1 before sync1 removes bytes but no round. The weight pass costs ~2-3 us concurrent with the conv at C<=192 [INFERRED from audit]\"\n  - \"dead end: a dwconv with lane = channel (32 channels x 4 columns per warp) makes every LDG.128 touch 32 cache lines. W+conv 26.9 vs 15.5 us at 2,96 and 39.1 vs 18.9 at 1,160,449,7 against the coalesced CTA unit (32 ch x 8 four-column positions, lanes along w, LN partials reduced in smem). The coalesced CTA unit is about 2x faster than the parent's 48-CTA patch conv at S [probe_b200]\"\n  - \"dead end: a fully unrolled register-direct GELU epilogue (48 erff per thread, 4-byte hidden stores) took 16-17 us per 128x96 tile at 2,96/4,192 (7.3 us without GELU; stores and atomics ~1 us each). An smem-staged, rolled loop of 8 columns x RS rows with 16-byte stores fixed it: flat 2,96 51.2 -> 43.5 us [probe_b200]\"\n  - \"interleaved A/B, flat vs ring in one .so, harness_time x3 (us): 1,192 30.5/30.4; 1,96 30.8/28.8; 1,160,449,7 51.2/55.5 (-7%); 2,96 43.2/42.7; 4,192 49.5/45.7 (+8%); 4,96 56.8/61.2 (-7%); 8,192 79.6/66.3 (+20%). Dispatch set accordingly [probe_b200]\"\n  - \"final run_tests (rented, 16/16 PASS, us): 1,192 29.8; 1,96 28.4; 1,160,449,7 51.8; 2,96 43.4; 4,192 46.3; 8,384 86.6; 4,96 56.5; 8,192 66.5; 16,384 113.6; 2,768 48.1; 8,768 86.3; 16,768 109.1; 8,320 174.4; 32,768 179.8; 32,128 594.3; 64,96 1790.9; projected portal 0.5657 +- 0.008 (parent 0.561) [run_tests]\"\n  - \"precision, flat path with randomized lnw/lnb (stricter than the harness), 2 seeds: max |err| 1.98-2.70e-3; 1 element beyond 2.4e-3 at 4,96 and at 8,192 (seed 1), 0 elsewhere. With the harness generators run_tests passes 16/16 x 10 rounds. Same scheme and tail as the parent (H22) [probe_b200]\"\n  - \"registers: flat kernel 128 regs, 0 spill; ring kernel 128 regs with a 72-byte stack (68 B spill stores, as in r1) [probe_b200 ptxas -v]\"\n  - \"lineage verdict: one cooperative mma.sync kernel lands at 28-46 us on the S rows. Post-barrier rounds of about 2-4 us x 3 phases plus about 5 us of F set a floor near 20 us before any SM work, so the 'S rows <= 20 us' thesis needs fewer barriers (H10 per-image dataflow) or faster post-sync L2 rounds, not flatter phases [INFERRED from audit]\"\npaths:\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: \"flat kernel: W%4!=0 or (C<=96 and M>8192), C<=192, HW>=128\"}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: \"r1 ring kernel: all other shapes\"}\nruns_on:\n  H200: {runs: true, representative: false, note: \"mma.sync/cp.async/cooperative launch exist on sm_90; clocks and HMMA rate differ\"}\n  A100: {runs: true, representative: false, note: \"2 x 105 KB smem exceeds 164 KB, so 1 CTA/SM; correctness only\"}\n  L40S: {runs: false, representative: false, note: \"100 KB smem per SM < 107 KB dynamic smem\"}\nrisks:\n  - \"Gain is small (two rows, -7% each); portal noise of +-0.008 can hide it\"\n  - \"Flat path has a randomized-LN error tail touching atol (1 element in 2.4M at 4,96); harness inputs (lnw=1, lnb=0) pass\"\n  - \"Split-K red.add into out (pre-filled with x by the conv) is order-nondeterministic, within tolerance\"\n  - \"Both kernels set MaxDynamicSharedMemorySize once to the same value (no per-shape shrink; portal-order safe)\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-coop-flat-s",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "cpasync",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows128"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r1-convnext-coop-hmma-ring"
+  ],
+  "round": "r2",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r2/candidates/r2-coop-flat-s.json",
+  "status": "proposed",
+  "task": {
+   "band": "S",
+   "instructions": "Experiment E2 (tests H19): Flatten the cooperative kernel's latency chain: cross-barrier prefetch, in-CTA weight conversion at C<=384, per-image s_b publisher. Step 1 (audit, 20 min): add %globaltimer and clock64 stamps at each phase boundary and after each dependent wait (weight pass, conv loads, sumsq read, s_b read, W2 first stage) at 1,192,28,28, 2,768,7,7 and 8,384,14,14 (CTA medians). Build a loads-only stub (same loads and stores, MMA and conv FMAs removed) and record how much of the ~25 us above F is pure latency vs SM cycles. Step 2: issue every phase-2 operand (first W1 cp.async stages, the d tile, b1, u/c1 vectors) before grid.sync 1 so the barrier wait overlaps the loads; before grid.sync 2 prefetch the W2 K-slices and the x residual tile; after sync 2 only the s_b read remains. Keep every arrive in warps that have no loads in flight. Step 3: for C <= 384 drop the global weight pass: load fp32 W1/W2 tiles with cp.async into an fp32 staging stage, cvt.rn.f16x2 and STS into the fp16 ring inside the consuming CTA (row sums for the LN fold from the converted values); keep the global pass only at C=768. Step 4: replace the sumsq-atomics-then-reread round with a per-image last-arriver (counter in the torch.empty workspace, self-resetting) that computes and publishes s_b[4C]. Step 5: keep registers at 128 (check for spills; a PF-deep prefetch that spills is a dead end). Step 6: run_tests 16/16 x 10 rounds, interleaved with the parent, and log per workload the max |err| and the count beyond atol. Success: Rented, interleaved: 1,192,28,28 <= 22 us (from 29.7), 2,96,56,56 <= 30 (42.2), 4,192,28,28 <= 34 (47.2), 2,768,7,7 <= 40 (47.9), no row slower than the parent by more than 2%; projected score >= 0.60 (from 0.561). Refuted if: The loads-only stub shows less than 8 us of latency in the ~25 us of phases at 1,192,28,28 (then the lever is instruction count per phase, not round trips), or the cross-barrier prefetch spills and the S rows do not move. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "lineage": "B",
+   "model": "opus",
+   "niche": "lin:B:E2:H19",
+   "operation": "structural_mutation",
+   "parents": [
+    "r1-convnext-coop-hmma-ring"
+   ]
+  },
+  "timings": {}
+ },
+ "r2-e3-onchip-hidden-v2": {
+  "card": "id: r2-e3-onchip-hidden-v2\nparents: [r1-convnext-cluster16-dsmem]\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: bulk1d\n  st: direct\n  grid: oneshot\n  launch: fused\n  tile: token\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  H20 (lineage C, E3): one cooperative launch with a single grid.sync. Each CTA owns T tokens of one image times a BN\n  slice of the hidden layer. W1 and W2 slices go into fp32-resident smem through one-shot cp.async.bulk and are converted\n  to fp16 at fragment load. Conv, LN, GEMM1 (mma.sync f16) and GELU leave the hidden tile in smem across the barrier. GRN\n  sums go through per-CTA slots. GEMM2 split-K partials are red.added into out, which is pre-filled with x + b2.\n  REFUTED at the S rows. Rented times: 1,192,28,28 30.8 us; 1,96,56,56 29.1; 2,96,56,56 46.3; 4,192,28,28 90.6;\n  4,96,56,56 88.0; 1,160,449,7 66.7. Targets were <= 18-32 us; the kill line was 25 us at 1,192 and 2,96. Weight ingest\n  is not the bound. The bound is the chain of dependent rounds inside phase A: conv loads, GEMM1 and the prefill, plus\n  a 5 us post-barrier GRN phase. Each CTA spends a full SM on 36 tokens.\nexpected_effect:\n  S: {pct: -45, confidence: medium}\n  M: {pct: -25, confidence: medium}\n  L: {pct: -35, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 125\n  smem_per_cta_bytes: 224448\n  threads_per_cta: 512\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 110592\n  launches_per_call: 1\nknobs: {E3_NT: 512, NB: 4, CH: \"48/32/16 by smem\", NH: \"planner (1,192: 6; 1,96 and 2,96 and 4,96: 2; 4,192: 6; 1,160: 4)\", T: \"ceil(HW / (148 / (B*NH))) rounded to 4\"}\ndispatch:\n  - {shapes: \"C<=256, C%32==0, W%4==0 or W==7, plan fits 227 KB and Tp<=256 (1,192 / 1,96 / 1,160,449,7 / 2,96 / 4,192 / 4,96)\", kernel: e3_kernel, meta: {cooperative: true, threads: 512, grid: \"<=148\"}}\n  - {shapes: \"C%128==0 and 7x7 / 14x14\", kernel: cl_kernel, meta: {cluster: 16, threads: 512}}\n  - {shapes: \"all others (8,192 / 8,320 / 32,128 / 64,96)\", kernel: convnext_fused, meta: {cooperative: true, threads: 256, grid: 296}}\ntests: [H20]\nfindings:\n  - \"probe step 1 (go): 148 CTAs, one-shot cp.async.bulk into fp32 smem after the 2xL2 flush, harness_time minus the empty kernel (1.9 us): 150 KB/SM 1.2 us, 300 KB 2.4 us, 590 KB 5.0 us (~120 GB/s/SM, ~16 TB/s aggregate from L2). With 37 distinct slices (more DRAM) 300 KB takes 4.3 us [probe_b200]\"\n  - \"dead end: a 4-stage 8-16 KB ring that converts each stage to fp16 into smem is 2-2.5x slower (300 KB 6.7-10 us, 590 KB 13-20 us); keep the slices fp32-resident and convert at fragment load (cvt.rn.f16x2), which fits 110-172 KB per slice [probe_b200]\"\n  - \"smem capacity is the binding constraint: with an fp32 W1 slice resident, BN=192 at C=192 needs 254 KB, so 1,192 runs BN=128 (NH=6, 132 CTAs, T=36). 8,192,28,28 has no plan (its hidden of 9.6 MB fp16 plus the weight slices exceed 148 x 227 KB), and neither do 32,128 / 64,96 / C>=320 [INFERRED from the planner]\"\n  - \"v1 timeline at 1,192,28,28 (globaltimer, CTA median/max, us): DW+prefill 1.5/9.5; conv+LN+W1 wait 13.3/20.5; GEMM1 end 17.9/25.1; after grid.sync 26.4; GRN slots + scale + W2 wait 31.7; GEMM2 + red.add end 34.8. Total 37.2. Ablations: no conv 28.6 (conv = 8.6 us), no prefill 30.5 [probe_b200]\"\n  - \"v1 timeline at 4,192,28,28 (NH=6, T=132, CH=16): phase A ends at a 74.8 us median / 90.9 us max; the conv costs 32 us of 108 (25k conv outputs per CTA, 6x redundant across the hidden blocks) [probe_b200]\"\n  - \"pitfall (repeat of r1): '#pragma unroll 2' over a runtime K around mma.sync gave 42 WARPSYNC for 24 HMMA (GEMM1 4.6 us for a 48x128x192 tile). Fixed 32-wide K steps with all fragment LDS issued first, plus a shfl-uniform warp index, removed it. 125 regs, no spills [probe_b200]\"\n  - \"cold dependent loads: dwb/lnw/lnb/b1/gw/gb fetched with __ldg at their point of use each add a DRAM round. Bulk-loading them at entry, and splitting the x+b2 prefill over the NH CTAs of a tile, cut 1,192 from 37.2 to 30.8 us and 4,192 from 107 to 90.6 us [run_tests]\"\n  - \"final run_tests v2 (rented, 16/16 PASS), us (E3 rows): 1,192,28,28 30.8; 1,96,56,56 29.1; 1,160,449,7 66.7; 2,96,56,56 46.3; 4,192,28,28 90.6; 4,96,56,56 88.0. Lineage B on the same rows: 30.9 / 28.3 / 55.2 / 42.2 / 47.2 / 62.5. Other rows use the parent paths and are unchanged within 2%. Projected portal 0.4175 +- 0.008 (anchor 0.304) [run_tests]\"\n  - \"verdict H20 REFUTED: 30.8 us at 1,192 and 46.3 us at 2,96 are over the 25 us kill line. The on-chip hidden gives no edge over B's materialised fp16 hidden. Per CTA the cost is serial dependent rounds (conv loads ~3-4 rounds of 21 LDG.128 per item, GRN slot reads, red.add), not bytes. Conv redundancy of 4C/BN (2-6x) dominates at T>=88 [probe_b200, run_tests]\"\n  - \"precision: run_tests passes 16/16 x 10 rounds; per-workload max |err| and the beyond-atol count were NOT logged this session. The hidden is rounded to fp16 twice (GELU output, then the in-place GRN affine), as in r1 C, which passed [run_tests]\"\n  - \"open lever if the lineage continues: 2-D token tiles (4-row patches, 30 LDG.128 per 16 outputs instead of 21 per 4) and a conv shared across hidden blocks would attack the conv term. The ledger routes C to H23 (tcgen05) in r3 instead [INFERRED]\"\npaths:\n  - {max_tokens: 12544, lang: cuda, width: 128, threads: 512, rows: 36, grid: oneshot, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"cp.async.bulk, mbarrier and mma.sync exist on sm_90; 227 KB smem fits; the 16-CTA cluster path needs non-portable cluster support\"}\n  A100: {runs: false, representative: false, note: \"no cp.async.bulk/mbarrier tx on sm_80\"}\n  L40S: {runs: false, representative: false, note: \"no bulk copies; 100 KB smem\"}\nrisks:\n  - \"E3 smem plans run at up to 224-226 KB per CTA (1,192 and 1,160,449,7). Any change to the padding or the small region can exceed 227 KB; the planner then falls to a smaller CH or another NH.\"\n  - \"Keeps the parent's 16-CTA cluster path for 7x7/14x14 rows, which needs operator review under the clusters constraint.\"\n  - \"The hidden is rounded to fp16 twice. Max-error logging is still owed (H22) before a portal slot.\"\n  - \"The cooperative grid is <= 148 CTAs at 1 CTA/SM. Co-residency holds because smem forces 1 CTA/SM and grid <= SM count.\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-e3-onchip-hidden-v2",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "fused",
+   "mem": "bulk1d",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r1-convnext-cluster16-dsmem"
+  ],
+  "round": "r2",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r2/candidates/r2-e3-onchip-hidden-v2.json",
+  "status": "proposed",
+  "task": {
+   "band": "S",
+   "instructions": "Experiment E3 (tests H20): One-barrier on-chip-hidden kernel for the C<=192 rows: smem hidden tile, bulk weight rings, red.add split-K GEMM2. Pivot: no clusters, no DSMEM. Step 1 (probe, 15 min): 148 CTAs (1/SM, cooperative launch) each cp.async.bulk-load 300 KB and 590 KB of fp32 from an L2-resident buffer through a 4-stage ring and convert to fp16 in smem; time under harness_time after the 2xL2 zero-fill and report GB/s per SM. Go if 300 KB takes <= 3 us; if above 6 us, use BN = C slices (more conv redundancy, half the ingest). Step 2 (kernel, dispatch:size, other rows routed to the lineage's existing paths so 16/16 passes): one cooperative launch, one grid.sync. Per-shape planner picks T tokens x BN hidden channels per CTA (tiles never straddle images; e.g. 1,192: 37 token tiles x 4 hidden blocks of 192; 1,96: BN=384 with ~21 tokens per CTA) so that conv x (4C/BN) / 148 + weight bytes(BN) / ingest rate + red.add M*C*4*(4C/BN) / 4.3 TB/s is minimised. Phase A, all loads issued at entry: the x halo patch for the CTA's tokens over all C channels, the W1 slice [BN x C] and W2 slice [C x BN] fp32 through the rings, converted to fp16 on the way into smem (no weight pass, no second barrier). Conv (register patches, plane fill with 16 loads issued before stores), LN per token (mean/rstd in fp32), mma.sync m16n8k16 GEMM1 (per-shape template, no runtime guard around HMMA), erf GELU, hidden tile [T x BN] fp16 kept in smem; per-(image, k) sumsq partials written to per-CTA slots in the torch.empty workspace (no atomics, no zeroing). CTAs of hidden block 0 write out = x + b2 with plain stores. grid.sync. Phase B: read the slots of the CTA's image (<= 60 KB from L2), mu_b and s_b, scale the smem hidden in place (h*s_b[k] + gb[k]), GEMM2 partial [T x C] over K = BN with the W2 slice, red.global.add.f32 into out (plain stores when BN = 4C). Step 3: run_tests 16/16 x 10 rounds; log per workload the max |err| and the count beyond atol; report the phase timeline (globaltimer) at 1,192 and 4,192. Success: Rented: 1,192,28,28 <= 18 us, 1,96,56,56 <= 16, 2,96,56,56 <= 20, 4,192,28,28 <= 24, 4,96,56,56 <= 26, 8,192,28,28 <= 32 (lineage B today: 30.9 / 28.3 / 42.2 / 47.2 / 62.5 / 66.1); 16/16 pass with zero beyond-atol elements. Refuted if: The bulk-ring ingest probe exceeds 6 us for 300 KB per SM, or the full kernel exceeds 25 us at 1,192,28,28 and 2,96,56,56 (then on-chip hidden has no edge over B's phases at S and lineage C is re-seeded from the tcgen05 family, H23, in r3). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "lineage": "C",
+   "model": "opus",
+   "niche": "lin:C:E3:H20",
+   "operation": "new_design",
+   "parents": [
+    "r1-convnext-cluster16-dsmem"
+   ]
+  },
+  "timings": {}
+ },
+ "r2-lib-cublaslt-fp16-tmaconv": {
+  "card": "id: r2-lib-cublaslt-fp16-tmaconv\nparents: [r1-lib-cublaslt-fp16-v3fix]\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows8\n  red: cta\n  cache: default\n  spec: all\nhypothesis: >-\n  Lineage A / E1 (H18). For W%4==0 rows the depthwise conv K1 stages x through a 3-D TMA tensor map\n  ({W,H,B*C} fp32, box {W+8, RT+6, CS} starting at w=-4, h=h0-3) with hardware zero fill, in a 4-deep mbarrier ring\n  over a channel group. Threads take 4 output columns x 2 rows of one channel each (lane along w, so LDS.128 is\n  conflict-free and LN partial sums stay in registers without shuffles) and write d channel-major (fp16 d[c][m];\n  GEMM1 now reads it with transB=T). K1 cold, rented: 1,96,56,56 5.9 us conv (16.4 before); 8,320,32,32 23.0 (61.4);\n  64,96,112,112 315 (954). 7x7/14x14/449x7 rows keep the old LDGSTS K1 (TMA rows need 16 B strides; the 1-D bulk\n  plane path was not built). run_tests 16/16, projected portal 0.6135 (v3fix 0.594).\nexpected_effect:\n  S: {pct: -8, confidence: medium}\n  M: {pct: -4, confidence: medium}\n  L: {pct: -17, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 64\n  smem_per_cta_bytes: 76000\n  threads_per_cta: 224\n  ctas_per_sm: 3\n  bytes_in_flight_per_sm: 160000\n  launches_per_call: 5\nknobs: {R: 2, cols_per_thread: 4, RT: \"8/4/2, tallest with >=296 CTAs\", CG: \"widest divisor of C with >=296 CTAs\", CS: \"<=256 threads, stage <=18 KB\", STG: 4, Wbox: \"W+8\"}\ndispatch:\n  - {max_tokens: null, kernel: \"k1_tma (W%4==0) | k1_dw (W=7,14) + cublasLt + k2_gelu + k3a|k3b + cublasLt (+k4)\", meta: {per-shape plan keyed on (B,C,H,W)}}\ntests: [H18, H2, H22]\nfindings:\n  - \"step 0: nvidia-smi -lgc 1500 fails on the rented card (no permission); all timings at unlocked clocks (~1.86-1.94 GHz per clock64/globaltimer) [probe_b200]\"\n  - \"PITFALL: cp.async.bulk.tensor raises 'illegal instruction' when the innermost box start coordinate is not a multiple of 16 B (x=-3, -1, +1 fault; x=-4, 0 work, for FLOAT32 maps). Start halo boxes at w=-4 with box width W+8, and offset the taps by +1 in smem [probe_b200]\"\n  - \"stage-only TMA ring (4 stages, cold after 2xL2 flush): 1,96,56,56 4.6 us (3.4 MB staged); 1,192,28,28 3.9 us; 8,320,32,32 10.4 us (15 GB/s/SM, vs ~120 us of LDGSTS staging in v3fix K1, 11x); 32,128,64,64 45 us (20 GB/s/SM); 64,96,112,112 115 us = 34 GB/s/SM, 2.67 TB/s on x with CS=2 and 52 KB smem; CS=4 (105 KB) 190 us and RT=16 156 us are worse. Under the 40 GB/s/SM bar at the largest but >2x the old staging everywhere [probe_b200]\"\n  - \"full K1 conv (no role CTAs), cold, R=2: 1,192,28,28 5.6 us; 1,96,56,56 5.9; 4,192,28,28 8.7; 8,320,32,32 23.0; 32,128,64,64 81.2; 64,96,112,112 314.6 (v3fix K1 12.8/16.4/-/61.4/234/954). R=4 (128 regs) 25.0/79.8/354.8: no better [probe_b200]\"\n  - \"step 3 clock64+globaltimer at 1,192,28,28: span 4.6 us, per-CTA 3.96 us = 7692 clk at 1944 MHz, of which 2.45 us (4683 clk) is waiting for the first TMA stage + weight LDG (latency, ns-bound), ~1.5 us is compute (cycles). At 1,96,56,56 2.0 of 4.2 us is first-stage wait. So small-row K1 is ~55% latency, ~40% cycles [probe_b200]\"\n  - \"at 64,96,112,112 each CTA runs 129 us = 240k clk for 131k warp-FMA; with 3 CTAs/SM the FMA pipe is ~40% busy (FMA bound ~105 us at 1.9 GHz). The rest is LDS bandwidth (12 floats per input row per 4 columns, LDS about equal to FMA), the per-stage __syncthreads, and 2 waves of 3 CTAs/SM. 3x off the FMA bound [probe_b200]\"\n  - \"run_tests 16/16 (rented, us): 1,192 34.8; 1,96 35.0; 1,160,449,7 54.3; 2,96 39.7; 4,192 42.4; 8,384 77.6; 4,96 50.8; 8,192 59.3; 16,384 89.3; 2,768 64.3; 8,768 63.1; 16,768 77.7; 8,320 95.0; 32,768 97.0; 32,128 298.4; 64,96 1151.4. vs v3fix's earlier run: 64,96 -36%, 32,128 -33%, 8,320 -27%, 2,96/4,192 -21%, 1,96 -10%; W=7/14 rows unchanged within the ~6 us cross-session drift. Projected portal 0.6135 +-0.008 [run_tests]\"\n  - \"caveat: the control in run_tests was the r0 anchor; v3fix was NOT interleaved in the same container, so the per-row deltas above are cross-session [run_tests]\"\n  - \"precision (fp64 torch reference, harness-like generators, 1-3 rounds per row): 0 elements beyond 2.4e-3 + 1e-5|ref| on all 16 rows; max |err| 1.7-2.4e-3, closest 2.39e-3 at 32,128,64,64, 2.37e-3 at 8,768,7,7 and 32,768,7,7; ~0.2% of elements beyond 1.2e-3. The margin to the smallest atol is thin: the H22 hi/lo split stays a candidate if a portal row ever fails [probe_b200]\"\n  - \"cuBLASLt accepts the TT fp16 layout (d channel-major, transB=T) and finds heuristic algos for all 9 TMA shapes; no slowdown was visible in the totals [run_tests]\"\n  - \"next levers in this lineage: K2 (447 us at the largest, 113 at 32,128) is now the biggest custom launch; the 7x7/14x14/449x7 rows still use the slow staging (1-D bulk plane copies untested); conv compute is LDS/sync-bound, so taller per-thread strips need registers that limit occupancy [INFERRED]\"\npaths:\n  - {max_tokens: 3200, lang: cuda, width: 128, threads: 112, rows: 4, grid: oneshot, mem: tma, launches: 5, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 224, rows: 8, grid: oneshot, mem: tma, launches: 5, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"TMA tensor maps work on sm_90; cuBLASLt kernels and float4 atomics differ\"}\n  A100: {runs: false, representative: false, note: \"TMA and float4 atomicAdd need sm_90+\"}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"max |err| is within 1e-5 of the smallest atol on three rows (fp16 d + fp16 hidden); a different seed could push a few elements over, though the 98% matched ratio would still pass\"\n  - \"launches_per_call 5 (6 for HW<256 or odd HW)\"\n  - \"TMA box start must be 16 B-aligned in the inner dimension (now -4); any change to the box origin must keep that\"\n  - \"workspace up to ~800 MB via torch.empty at the largest row\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r2-lib-cublaslt-fp16-tmaconv",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "all",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r1-lib-cublaslt-fp16-v3fix"
+  ],
+  "round": "r2",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r2/candidates/r2-lib-cublaslt-fp16-tmaconv.json",
+  "status": "proposed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E1 (tests H18): TMA/bulk-staged depthwise conv (K1) with hardware zero padding, replacing LDG/LDGSTS staging. Step 0: try `nvidia-smi -lgc 1500` on the rented card once and record whether it works (if it does, use it for every timing in this session and say so in findings). Interleave r1-lib-cublaslt-fp16-v3fix as the control in the same container for every comparison (3 rounds). Step 1 (stage-only probe, 15 min): a kernel that only stages x into smem through a 4-stage mbarrier ring and touches nothing else. For W%4==0 rows (28,32,56,64,112) build a 3-D CUtensorMap over x as dims {W, H, B*C} fp32, box {WT+6 rounded up to a 16 B multiple, RT+6, 8 channels}, coordinates (w0-3, h0-3, c0); the TMA unit zero-fills out-of-bounds rows and columns. For 7x7, 14x14 and 449x7 rows the row stride (28/56/28 B) is not a 16 B multiple, so stage whole planes with 1-D cp.async.bulk: 4-channel groups (784 B for 7x7, 50288 B for 449x7) or one 14x14 plane (784 B), and pad by index math in smem (issue all copies before any wait). 2 CTAs/SM, 64-100 KB smem per CTA. Measure GB/s per SM cold (after the 2xL2 zero-fill) at 64,96,112,112, 8,320,32,32 and 1,96,56,56 against the current staging (148 us at 8,320; 9.5 us for the 64-channel band). Kill if under 40 GB/s per SM or not 2x faster than the current staging. Step 2: put the winning staging into K1 (conv math, weight prep, LN partial stats and fp16 d output unchanged from v3fix); keep the 1-warp/tall-tile dispatch for small shapes only if it still wins. Keep attributes only ever raised (portal-order constraint) and rebuild the tensor map on the host every call (pointers shift). Step 3: add clock64 + globaltimer stamps inside K1 at 1,192,28,28 to report how much of K1 is cycles vs ns (audit item). Step 4: run_tests 16/16 x 10 rounds and log per workload the max |err| and the count of elements beyond atol; report them in findings. Success: K1 cold at 1,96,56,56 <= 9 us (from 16.4), at 8,320,32,32 <= 30 us (from 61.4), at 64,96,112,112 <= 500 us (from 954); run_tests 16/16 with zero beyond-atol elements; projected score >= 0.62 (from 0.594) with v3fix interleaved as control. Refuted if: The stage-only TMA/bulk ring is less than 2x faster than the LDG staging at 8,320,32,32 or below 40 GB/s per SM at the largest (then the cost is halo redundancy / request pattern, not the instruction path, and conv work must move to fewer, taller tiles or tensor cores). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).",
+   "lineage": "A",
+   "model": "opus",
+   "niche": "lin:A:E1:H18",
+   "operation": "structural_mutation",
+   "parents": [
+    "r1-lib-cublaslt-fp16-v3fix"
+   ]
   },
   "timings": {}
  }

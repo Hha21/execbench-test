@@ -1,41 +1,57 @@
 lineages:
 - id: A
-  thesis: Phase-separated pipeline of plain launches (custom dwconv+LN, library then custom tensor-core GEMMs, fp16 materialised
-    hidden) that wins by per-phase efficiency and accepts about 2 us per launch; the control lineage expected to match the
-    leader within one round.
+  thesis: Phase-separated pipeline of plain launches (custom dwconv+LN, cuBLASLt FP16 GEMMs, fp16 materialised hidden) that
+    wins by per-phase efficiency; the control lineage, and the carrier of techniques (conv staging, epilogue fusion) that
+    other lineages adopt through conclusions.
   status: active
   started: r1
-  best: null
+  best: r1-lib-cublaslt-fp16-v3fix
   conclusions:
-  - 'Seed: cuBLASLt FP16/TF32 GEMMs need no tcgen05 code; 5 launches put the fixed floor near 10-12 us plus GEMM ramps, so
-    S rows land at ~25-35 us (S ~0.7), L rows at tensor rates (~0.9).'
-  - 'Ceiling argument: 3 launches at ~2 us each plus ramps gives F ~8 us, i.e. ~0.82-0.85 mean if every phase is near its
-    floor.'
-  - Owns the premise tests for the materialised hidden under the dirty-L2 flush (H16) and cuBLASLt small-M heuristics (H15).
+  - 'Library GEMMs are not the limit: cuBLASLt FP16 GEMM1+GEMM2 = 5.1+6.8 us at 1,192,28,28; FP16 is 1.4-2.1x faster than
+    TF32 at every shape, so the weight conversion must be hidden, not avoided.'
+  - Each custom launch costs 6-17 us (K1 12.8-18.6, K2 8-14, K3 6-17 us at S), not 2 us; the 5-launch floor is 35-40 us at
+    S, so A's ceiling is ~0.70-0.75 only with K2/K3/K4 fused into GEMM epilogues and a conv that is not staging-bound.
+  - K1 staging through LDG/LDGSTS runs at ~8 GB/s per SM (954 us at the largest, 234 at 32,128, 12.8-18.6 us at S); removing
+    staging cuts K1 3x, so the conv needs TMA/bulk staging with hardware zero fill (E1).
+  - 'H16: the fp16 hidden round trip is cheap under the dirty-L2 flush (3.6 us over the floor at 20 MB, 1.4x ideal at 134
+    MB); materialising the hidden is fine except at the top two rows.'
+  - 'Portal #65570 timed 8 rows of v3 at 1.27-1.28x rented on S and L alike (S 0.59-0.65 per row); per-shape cudaFuncSetAttribute
+    broke the other 8 (fixed in v3fix: attributes only ever raised).'
 - id: B
   thesis: One cooperative launch with every phase fused, FP16 tensor cores through legacy mma.sync (registers and smem, no
-    TMEM/TMA), grid syncs between phases; the fixed-cost specialist aiming at F <= 10 us on the S/M rows.
+    TMEM/TMA), fp16 hidden materialised in L2 between grid syncs; the fixed-cost specialist aiming at S rows <= 20 us rented
+    by flattening dependent round trips.
   status: active
   started: r1
-  best: null
+  best: r1-convnext-coop-hmma-ring
   conclusions:
-  - 'Seed: mutates the r0 anchor (same phases, split-K, dwconv geometry); only the GEMM core, the weight transposes (emit
-    fp16) and the W<=14 dwconv path change.'
-  - 'Ceiling argument: launch 1.8 + two 148-296-CTA barriers ~3 us + three short phases -> 8-12 us at S (S ~0.87); L bound
-    by the unknown HMMA rate on sm_100 (H12).'
-  - Owns the premise tests on cooperative vs three launches (H4), split-K at small M (H5) and the fixed floor F (H11).
+  - 'H4 refuted at S: coop beats three plain launches by 3-7 us (29.7 vs 36.3 at 1,192; 46.7 vs 50.2 at 2,768); stubbed floor
+    F = 4.6 us vs 9.9 for three launches; 2.5% slower only at the largest row.'
+  - 'mma.sync m16n8k16 f16->f32 = 0.455 PF/s at 1.5 GHz (1/4 of tcgen05): enough for every row except 8,320 / 32,768 / 32,128
+    / 64,96, where the GEMM alone costs 29 / 33 / 76 / 260 us ideal.'
+  - 'Per phase at 1,192,28,28: P1 13.2 (F 4.6 + conv + weight pass), P2 +7, P3 +9.6 us for 0.46 GFLOP; each phase is 2-3 dependent
+    rounds plus ramps, i.e. the lever is overlap across barriers and fewer rounds, not the barrier count (E2).'
+  - 'Pitfalls: a runtime guard around mma.sync costs ~470 clk per k-block (use per-shape templates); a release arrive from
+    a thread with loads in flight stalls; split-K is worth 28% at C=768 and nothing at 1,192; the C=768 weight pass costs
+    ~10 us of P1.'
+  - 'Largest row: P1 446 us (conv, FMA bound 134) and P2 ~840 us (short-K serial tile chain + erf epilogue) vs ~150 roofline;
+    the conv staging lesson from A applies here too.'
 - id: C
-  thesis: 'Cluster-per-image in-SM fusion: an 8-16 CTA cluster owns one image (two at 7x7), each CTA holds a hidden slice
-    in smem, LN/GRN statistics and GEMM2 partials reduce through DSMEM; no grid barrier, no global intermediates; 14 of 16
-    workloads fit, the top two are dispatched to the r0 anchor path for now.'
+  thesis: 'On-chip hidden with no global intermediates and one grid barrier: each CTA owns a token tile x hidden slice, keeps
+    the hidden in shared memory across the barrier, ingests its weight slices from L2 through cp.async.bulk rings, reduces
+    GEMM2 split-K partials with red.global.add into an output pre-filled with x + b2; clusters dropped after the r1 probes.'
   status: active
   started: r1
-  best: null
+  best: r1-convnext-cluster16-dsmem
   conclusions:
-  - 'Seed: targets the six 7x7/14x14 rows first (anchor S 0.10-0.23, Tb 76-181 us); if they land at 15-30 us the kernel alone
-    is worth ~+0.2 of mean score.'
-  - 'Kill criterion from the probe: fewer than 6 concurrent 16-CTA clusters at 1 CTA/SM, or weight-slice ingest plus one swap-AB
-    GEMM per CTA above 12 us under harness timing -> fall back to 8-CTA clusters or retire.'
-  - Cluster use here is a GEMM split (hidden slices = split-N of GEMM1 / split-K of GEMM2 reduced via DSMEM); flagged to the
-    operator against the clusters constraint before any portal slot.
-  - Owns the TFLOAT32 TMA rounding probe (H14).
+  - 'H13 refuted: 16-CTA clusters schedule (7 concurrent at 200 KB smem) and cluster launch is no dearer than plain, but DSMEM
+    moves ~12 B/clk/SM (reduce-scatter 128 KB = 8 us) and register-streamed weight slices ingest at 37 GB/s per SM (590 KB
+    = 16 us), so cluster-per-image floors at 50-60 us at C=768.'
+  - 'H14 supported: TFLOAT32 TMA maps round to nearest even (bit-exact), so kind::tf32 could read fp32 weights straight from
+    the inputs; FLOAT32 maps leave bits unchanged.'
+  - red.global.add.f32 into L2 reaches 4.1-4.4 TB/s from 256-512 CTAs (1.0 TB/s from 32), so a split-K reduce of a few MB
+    costs ~1 us; the v4 form is no faster.
+  - Zero-padded plane fills serialise on DRAM latency unless 16 loads are issued before the stores (15-20 us -> ~3 us for
+    48 planes).
+  - 'Pivot r2: keep the in-SM thesis, replace DSMEM with one grid.sync + red.add and register prefetch with bulk rings; target
+    the seven C <= 192 rows at <= 15-20 us rented (E3).'

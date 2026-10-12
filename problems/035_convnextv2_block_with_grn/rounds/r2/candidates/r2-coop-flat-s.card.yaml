@@ -1,0 +1,73 @@
+id: r2-coop-flat-s
+parents: [r1-convnext-coop-hmma-ring]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: cpasync
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage B, E2 (H19). The hypothesis was that the S-row time above the fixed floor F is mostly dependent global
+  rounds, so collapsing each phase to one load round would cut 1,192,28,28 from 29.7 to <= 22 us. To test it, a
+  second cooperative kernel (convnext_flat) gives each phase exactly one load round. The conv issues all of its
+  loads up front, GEMM1 runs full-K tiles with the LN stats in the same round, GEMM2 runs split-K units with
+  sumsq/gw/A/B in one round, and the residual init is folded into the conv. Measured result: refuted at the target
+  size. After each grid sync the first round still costs 2-4 us, and the SM-cycle parts (GELU epilogue, conv) remain.
+  The flat kernel wins only on two shape classes (-7% each), so it ships behind a shape dispatch and every other
+  shape keeps the r1 ring kernel unchanged.
+expected_effect:
+  S: {pct: -2, confidence: medium}
+  M: {pct: -1, confidence: medium}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 107296
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 151552
+  launches_per_call: 1
+knobs:
+  NT: 256
+  GRID: 296
+  FLAT_G1_TILES: "64x64 / 128x96 / 128x128 full-K"
+  FLAT_G2_TILES: "64x64 / 64x96 / 128x96 / 64x192 / 64x160, split-K <= 24"
+  FLAT_DISPATCH: "W % 4 != 0, or C <= 96 and M > 8192 (and C <= 192, HW >= 128)"
+  RING_PATH: "unchanged r1 kernel for all other shapes"
+tests: [H19]
+findings:
+  - "audit, parent at 1,192,28,28 (globaltimer, CTA median/max from the first CTA start, us): P1 end 1.8/8.6 (the conv runs on only 48 CTAs), sync1 9.9, out-init +1.8, LN-stats round +2.0, MMA +1.4, GELU epilogue +2.4, sync2 20.4, GRN prologue +2.4, MMA +2.4, epilogue +1.6, end 28.2. About 12 dependent steps of 1.5-2.5 us; clock 1.86-1.92 GHz [probe_b200]"
+  - "audit, parent mask ablations (harness_time, us), 1,192: full 30.0 / F 4.9 / weight pass only 7.8 / conv only 13.2 / P1 13.3 / P1+P2 20.3. The conv alone is 8.3 us above F at 1,192 and 9-25 us at the other S rows [probe_b200]"
+  - "H19 refuted for the target size. Collapsing every phase to one load round did not move 1,192 (30.5 flat vs 30.4 ring, interleaved). Even a 12-32 KB per-CTA cp.async round right after a grid sync takes 2-4 us (about 4-8 B/clk/SM, the same pathology as lineage A's 8 GB/s-per-SM staging). Success criteria missed: 1,192 29.8 (<=22), 2,96 43.4 (<=30), 4,192 46.3 (<=34), 2,768 48.1 (<=40, ring path); projected 0.566 < 0.60 [run_tests, probe_b200]"
+  - "flat-kernel stamps at 1,192 relative to sync2: issuing the P3 cp.asyncs 2.75 us (1.98 with no A tile), sumsq read + reduction 2.0 us, scale + 64x64x128 MMA 2.0 us, red.add epilogue 1.3 us. Removing the sumsq read entirely saves only ~1 us, so a last-arriver s_b publisher (step 4) cannot remove a round: the per-CTA redundant reduce already sits in the same round as the A/B tiles [probe_b200]"
+  - "step 3 (in-CTA fp32 weight conversion) not built: the GEMM1 A tile (xh) is produced in P1 and must be loaded after sync1 whatever happens, so prefetching W1 before sync1 removes bytes but no round. The weight pass costs ~2-3 us concurrent with the conv at C<=192 [INFERRED from audit]"
+  - "dead end: a dwconv with lane = channel (32 channels x 4 columns per warp) makes every LDG.128 touch 32 cache lines. W+conv 26.9 vs 15.5 us at 2,96 and 39.1 vs 18.9 at 1,160,449,7 against the coalesced CTA unit (32 ch x 8 four-column positions, lanes along w, LN partials reduced in smem). The coalesced CTA unit is about 2x faster than the parent's 48-CTA patch conv at S [probe_b200]"
+  - "dead end: a fully unrolled register-direct GELU epilogue (48 erff per thread, 4-byte hidden stores) took 16-17 us per 128x96 tile at 2,96/4,192 (7.3 us without GELU; stores and atomics ~1 us each). An smem-staged, rolled loop of 8 columns x RS rows with 16-byte stores fixed it: flat 2,96 51.2 -> 43.5 us [probe_b200]"
+  - "interleaved A/B, flat vs ring in one .so, harness_time x3 (us): 1,192 30.5/30.4; 1,96 30.8/28.8; 1,160,449,7 51.2/55.5 (-7%); 2,96 43.2/42.7; 4,192 49.5/45.7 (+8%); 4,96 56.8/61.2 (-7%); 8,192 79.6/66.3 (+20%). Dispatch set accordingly [probe_b200]"
+  - "final run_tests (rented, 16/16 PASS, us): 1,192 29.8; 1,96 28.4; 1,160,449,7 51.8; 2,96 43.4; 4,192 46.3; 8,384 86.6; 4,96 56.5; 8,192 66.5; 16,384 113.6; 2,768 48.1; 8,768 86.3; 16,768 109.1; 8,320 174.4; 32,768 179.8; 32,128 594.3; 64,96 1790.9; projected portal 0.5657 +- 0.008 (parent 0.561) [run_tests]"
+  - "precision, flat path with randomized lnw/lnb (stricter than the harness), 2 seeds: max |err| 1.98-2.70e-3; 1 element beyond 2.4e-3 at 4,96 and at 8,192 (seed 1), 0 elsewhere. With the harness generators run_tests passes 16/16 x 10 rounds. Same scheme and tail as the parent (H22) [probe_b200]"
+  - "registers: flat kernel 128 regs, 0 spill; ring kernel 128 regs with a 72-byte stack (68 B spill stores, as in r1) [probe_b200 ptxas -v]"
+  - "lineage verdict: one cooperative mma.sync kernel lands at 28-46 us on the S rows. Post-barrier rounds of about 2-4 us x 3 phases plus about 5 us of F set a floor near 20 us before any SM work, so the 'S rows <= 20 us' thesis needs fewer barriers (H10 per-image dataflow) or faster post-sync L2 rounds, not flatter phases [INFERRED from audit]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "flat kernel: W%4!=0 or (C<=96 and M>8192), C<=192, HW>=128"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "r1 ring kernel: all other shapes"}
+runs_on:
+  H200: {runs: true, representative: false, note: "mma.sync/cp.async/cooperative launch exist on sm_90; clocks and HMMA rate differ"}
+  A100: {runs: true, representative: false, note: "2 x 105 KB smem exceeds 164 KB, so 1 CTA/SM; correctness only"}
+  L40S: {runs: false, representative: false, note: "100 KB smem per SM < 107 KB dynamic smem"}
+risks:
+  - "Gain is small (two rows, -7% each); portal noise of +-0.008 can hide it"
+  - "Flat path has a randomized-LN error tail touching atol (1 element in 2.4M at 4,96); harness inputs (lnw=1, lnb=0) pass"
+  - "Split-K red.add into out (pre-filled with x by the conv) is order-nondeterministic, within tolerance"
+  - "Both kernels set MaxDynamicSharedMemorySize once to the same value (no per-shape shrink; portal-order safe)"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -87,6 +87,12 @@ get_kernel, read_example). No other tools are available. When you are done, your
 candidate in the OUTPUT CONTRACT format (fenced blocks), with its design card including paths and findings."""
 
 
+RESUME_NOTE = """Your session was cut off by a usage limit; the tools are available again (with a fresh GPU budget for
+this resumed part, so spend it on finishing, not on starting over). Everything you did before is above. Continue the
+experiment from where you stopped, keep the remaining steps short, then reply with exactly one candidate in the OUTPUT
+CONTRACT format, with the card's findings covering what you measured before and after the interruption."""
+
+
 def run_claude(prompt, system_file, model, effort, mcp_args, sdir, name, timeout_s, resume=None, max_turns=None):
     """One headless `claude -p` run with our MCP tools only. Returns the parsed JSON result (or an error dict)."""
     cfg = sdir / f"{name}.mcp.json"
@@ -166,8 +172,13 @@ def claude_sessions(round_id, jobs, static, a, sdir):
             mcp_args += ["--lineage", str(t["lineage"])]
         model = t.get("model") or a.session_model
         brief = sdir / "briefing_fresh.txt" if t.get("fresh") else system_file
-        out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60,
-                         max_turns=a.max_turns)
+        prev = sdir / f"{name}.claude.json"
+        if getattr(a, "resume", False) and prev.exists() and json.loads(prev.read_text()).get("session_id"):
+            out = run_claude(RESUME_NOTE, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60,
+                             resume=json.loads(prev.read_text())["session_id"], max_turns=a.max_turns)
+        else:
+            out = run_claude(dyn, brief, model, a.effort, mcp_args, sdir, name, a.session_timeout * 60,
+                             max_turns=a.max_turns)
         text = out.get("result") or ""
         if not reply.candidates(text) and out.get("session_id"):          # one nudge for the contract
             more = run_claude("Reply now with exactly one candidate in the OUTPUT CONTRACT format.", None,
@@ -542,6 +553,16 @@ def propose_tasks(round_id, tasks, a):
     stamp = time.strftime("%Y%m%d-%H%M%S")
     jobs = []
     for i, t in enumerate(tasks):
+        if getattr(a, "resume", False):               # same session name and prompt as the interrupted run
+            old = sorted((d / "replies").glob(f"*_{slug(t, i)}.prompt.txt"))
+            if old:
+                name = old[-1].name[:-len(".prompt.txt")]
+                reply_md = d / "replies" / f"{name}.reply.md"
+                if reply_md.exists() and reply.candidates(reply_md.read_text()):
+                    print(f"{name}: already gave a candidate; not resumed")
+                    continue
+                jobs.append((i, t, old[-1].read_text(), name))
+                continue
         if t.get("fresh"):
             dyn = prompts.fresh_prompt(arc, round_id, extra=t.get("instructions", ""))
         else:
@@ -825,6 +846,9 @@ def main():
                        "default B200 with --tool-gpu B200, else A100,H200")
         q.add_argument("--portfolio", action="store_true", help="lead: read the round's ideas pool and premise audit "
                        "(round.py ideas) and manage 2-3 parallel lineages (loop/portfolio.py)")
+        q.add_argument("--resume", action="store_true", help="auto --use-plan --backend claude: continue this "
+                       "round's sessions that ended without a candidate (e.g. cut off by the plan's session limit) "
+                       "from their saved Claude session; tasks that already gave a candidate are skipped")
     q = sub.add_parser("ideas", parents=[llm_args], help="portfolio round: idea sessions + premise audit (no GPU)")
     q.add_argument("--round", required=True)
     q.add_argument("--idea-models", default="opus,sonnet,fable", help="one idea session per model (comma-separated)")

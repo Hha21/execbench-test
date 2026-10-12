@@ -53,3 +53,4 @@ r0-convnext-coop-fp32-anchor,0.386703,0.303802,1,0.414,65377,035_convnextv2_bloc
 r1-lib-cublaslt-fp16-v3,0.128741,0.622438,8,1.635,65570,035_convnextv2_block_with_grn,B200,,Private,WA,portal_html/65570_r1-lib-cublaslt-fp16-v3.txt
 r2-lib-cublaslt-fp16-tmaconv,0.098523,0.619829,15,1.627,65878,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65878_r2-lib-cublaslt-fp16-tmaconv.txt
 r3-merge-a3-b3-d3,0.092459,0.635503,16,1.734,65879,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65879_r3-merge-a3-b3-d3.txt
+r4-merge-m3-a4,0.085425,0.655340,16,1.876,65972,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65972_r4-merge-m3-a4.html

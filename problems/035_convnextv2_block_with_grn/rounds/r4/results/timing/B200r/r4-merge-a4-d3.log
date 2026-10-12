@@ -1,0 +1,68 @@
+1,160,449,7: RUNTIME_ERROR
+Timing failed: Expected kernel activity sequence not found at iteration 1: ['void lin_a::k1_bulk<7, 1>(lin_a::K1P)_0_0_0_10', 'nvjet_hsh_128x120_64x6_1x2_h_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, float const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, float const*, float const*, __half*, int, int, float)_0_0_0_10', 'nvjet_hss_80x64_64x16_2x2_2cta_h_bz_TNN_0_0_0_10', 'lin_a::k4_transpose_add(float const*, float const*, float*, int, int)_0_0_0_10'] not in ['void lin_a::k1_bulk<7, 1>(lin_a::K1P)_0_0_0_10', 'nvjet_hsh_128x120_64x6_1x2_h_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, float const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, float const*, float const*, __half*, int, int, float)_0_0_0_10', 'nvjet_hss_80x64_64x16_2x2_2cta_h_bz_TNN_0_0_0_10']
+
+---
+1P)_0_0_0_10', 
+'nvjet_hsh_128x80_64x8_4x1_v_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, float 
+const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, 
+float)_0_0_0_10', 'lin_a::k3b_scale(__half*, float const*, float const*, int, 
+int, int, int, float)_0_0_0_10', 'nvjet_hss_64x40_64x16_4x2_h_bz_TNT_0_0_0_10']
+
+Workload 20 (RUNTIME_ERROR):
+Timing failed: Expected kernel activity sequence not found at iteration 0: 
+['void lin_a::k1_bulk<7, 1>(lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_128x120_64x6_1x2_h_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, float 
+const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, 
+float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, float
+const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_80x64_64x16_2x2_2cta_h_bz_TNN_0_0_0_10', 
+'lin_a::k4_transpose_add(float const*, float const*, float*, int, 
+int)_0_0_0_10'] not in ['lin_a::k3a_w2(float const*, float const*, float const*,
+float const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_80x64_64x16_2x2_2cta_h_bz_TNN_0_0_0_10', 
+'lin_a::k4_transpose_add(float const*, float const*, float*, int, 
+int)_0_0_0_10']
+
+Workload 23 (RUNTIME_ERROR):
+Timing failed: Expected kernel activity sequence not found at iteration 24: 
+['void lin_a::k1_tma<2>(lin_a::TMap, lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_256x256_64x4_2x1_2cta_v_bz_TTT_0_0_0_10', 'lin_a::k2_gelu(__half*, 
+float const*, float const*, float2 const*, float*, int, int, int, int, int, int,
+int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, 
+float const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_128x128_64x9_2x1_2cta_v_bx_TNT_0_0_0_10'] not in 
+['nvjet_hsh_256x256_64x4_2x1_2cta_v_bz_TTT_0_0_0_10', 'lin_a::k2_gelu(__half*, 
+float const*, float const*, float2 const*, float*, int, int, int, int, int, int,
+int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, 
+float const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_128x128_64x9_2x1_2cta_v_bx_TNT_0_0_0_10']
+
+Workload 24 (RUNTIME_ERROR):
+Timing failed: Expected kernel activity sequence not found at iteration 2: 
+['void lin_a::k1_tma<2>(lin_a::TMap, lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_128x256_64x4_1x1_h_bz_TTT_0_0_0_10', 'lin_a::k2_gelu(__half*, float 
+const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, 
+float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, float
+const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_192x48_64x7_1x2_h_bx_TNT_0_0_0_10'] not in ['void 
+lin_a::k1_tma<2>(lin_a::TMap, lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_128x256_64x4_1x1_h_bz_TTT_0_0_0_10', 'lin_a::k2_gelu(__half*, float 
+const*, float const*, float2 const*, float*, int, int, int, int, int, int, int, 
+float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, float
+const*, float const*, __half*, int, int, float)_0_0_0_10']
+
+Workload 26 (RUNTIME_ERROR):
+Timing failed: Expected kernel activity sequence not found at iteration 2: 
+['void lin_a::k1_bulk<14, 2>(lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_192x96_64x7_2x1_2cta_v_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, 
+float const*, float const*, float2 const*, float*, int, int, int, int, int, int,
+int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, 
+float const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_64x80_64x16_2x1_2cta_v_bz_TNT_0_0_0_10', 
+'lin_a::k4_transpose_add(float const*, float const*, float*, int, 
+int)_0_0_0_10'] not in ['void lin_a::k1_bulk<14, 2>(lin_a::K1P)_0_0_0_10', 
+'nvjet_hsh_192x96_64x7_2x1_2cta_v_bz_TNT_0_0_0_10', 'lin_a::k2_gelu(__half*, 
+float const*, float const*, float2 const*, float*, int, int, int, int, int, int,
+int, float)_0_0_0_10', 'lin_a::k3a_w2(float const*, float const*, float const*, 
+float const*, float const*, __half*, int, int, float)_0_0_0_10', 
+'nvjet_hss_64x80_64x16_2x1_2cta_v_bz_TNT_0_0_0_10']

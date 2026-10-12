@@ -1,0 +1,92 @@
+id: r4-merge-m3-a4
+parents:
+- r3-merge-a3-b3-d3
+- r4-a-e1-bulkplane-wprep
+operation: repair
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: 'Operator packaging (no kernel changes): r3-merge-a3-b3-d3 plus lineage A r4 on the six rows where it won an interleaved
+  same-container A/B against the r3 merge (loop/ab_container.py): 1,160,449,7 -23%, 8,768 -21%, 16,768 -22%, 32,768 -20%,
+  16,384 -14%, 4,192 +-2%.'
+expected_effect:
+  S:
+    pct: -8
+    confidence: medium
+  M:
+    pct: -15
+    confidence: medium
+  L:
+    pct: -1
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 14000
+  threads_per_cta: 256
+  ctas_per_sm: 3
+  bytes_in_flight_per_sm: 40000
+  launches_per_call: 5
+knobs:
+  dispatch: 'D: 2,768 8,384; B: 1,192 1,96; A r4: 1,160 8/16/32,768 16,384 4,192; A r3: other 6'
+dispatch:
+- shapes: 2,768,7,7 8,384,14,14
+  kernel: lin_d ws_kernel
+- shapes: 1,192,28,28 1,96,56,56
+  kernel: lin_b convnext_k / convnext_flat
+- shapes: 1,160,449,7 8/16/32,768,7,7 16,384,14,14 4,192,28,28
+  kernel: lin_a4 bulk-plane K1 + cuBLASLt
+- shapes: other 6
+  kernel: lin_a K1 TMA conv + cuBLASLt / mma.sync
+tests: []
+findings:
+- 'Interleaved x2 in one Modal container vs r3-merge-a3-b3-d3 (portal 0.6355), portal-order check passed: projected portal
+  0.6524 (anchor portal times x same-container ratio).'
+- 'A4 alone vs the r3 merge in one container: its TMA-row gains in the session (1,192 27.4, 4,192 36.7, 8,192 51.8) were cross-run
+  drift; A4 equals A r3 there and loses to B/D/A3-custom at 1,96, 1,192, 2,96, 8,384. r4-merge-a4-d3 projected only 0.6458.'
+paths:
+- max_tokens: 3200
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 7
+  grid: oneshot
+  mem: tma
+  launches: 5
+  cluster: 1
+- max_tokens: null
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 8
+  grid: oneshot
+  mem: tma
+  launches: 5
+  cluster: 1
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+- 4,192 is +-2% between the two A/B runs (noise); the six A4 rows carry the gain
+measure_first:
+- B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

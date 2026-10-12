@@ -1,0 +1,73 @@
+id: r4-d-tc05-swapab
+parents: [r3-ws-coop-widec]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E3 (H28). Swap the wide-C cooperative kernel's mma.sync engine for tcgen05 kind::f16 in the swap-AB
+  orientation. A is a 128-row fp16 weight tile (K-major, TMA SW128). B is the fp16 activations [channel][token]
+  (MN-major, LBO 8192 / SBO 1024), with whole images per GEMM1 tile so the GRN sumsq stays thread-local. The ring
+  has 4 stages of 64 k, warp-uniform producer and MMA warps issue through elect.sync, and the TMEM accumulators are
+  double-buffered (512 columns).
+  GEMM1 epilogue: LN fold, exact-erf GELU, and fp16 h plus g = gw*gf*h written to L2 through a smem transpose.
+  GEMM2: two accumulators (W2h*h and W2h*g), out += D1 + inv_b*D2 (+ W2.gb on k-split 0) with coalesced scalar
+  red.add into out, which phase A prefills with x + b2.
+  Result: faster than the merge at 2/8/16,768; slower at 32,768 and on both 14x14 rows.
+  The GEMM mainloop is bound by L2->SM operand ingest (~64 B/clk/SM), not MMA issue.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: -10, confidence: medium}
+  L: {pct: -15, confidence: low}
+resources_sm100a:
+  regs_per_thread: 168
+  smem_per_cta_bytes: 227544
+  threads_per_cta: 384
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs: {ring_stages: 4, stage_k: 64, threads: 384, epilogue_warps: 8, tmem_cols: 512, rows: "2,768 NI1 KS12; 8,768 NI2 KS6; 16,768 NI3 KS3; 32,768 NI3 KS3; 8,384 NI1 KS3; 16,384 NI1 KS3"}
+dispatch:
+  - {shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14", kernel: "tc_kernel<768,49> / tc_kernel<384,196>", meta: {grid: "num SMs, cooperative"}}
+  - {shapes: "other 10 rows", kernel: convnext_fused (r0 anchor), meta: {}}
+tests: [H28]
+findings:
+  - "#35 tc_ws cannot be read from lineage D (get_kernel refuses), so the gate ran on a self-written tcgen05 probe GEMM: 1 CTA per 128xNT tile, 4-8 stage TMA SW128 ring, warp-uniform producer/MMA warps with elect.sync, kind::f16 fp32 accumulate [probe_b200]"
+  - "MN-major SW128 B descriptor VALIDATED: B [k][token] fp16 via a TMA box {64 tokens, 64 k}; descriptor LBO = 8192 (stride between 64-token atoms), SBO = 1024 (between 8-k-row groups), start address +2048 per k16 step. Max err vs torch 5e-6 at 128x208x768. Swapping LBO/SBO gives err 6.0 [probe_b200]"
+  - "instruction descriptor that works: (1<<4) D=f32 | (1<<16) B MN-major | (N>>3)<<17 | (M>>4)<<24; A K-major SW128 with SBO 1024, k16 step = start address +32 B [probe_b200]"
+  - "gate GEMM timings, operands warm in L2, mainloop only (rented ~1.9 GHz): per 64-k stage 683 clk at N=224 (ideal 448), 587 at N=112 (224), 524 at N=128 with K=3072 (256), 874-1003 at 48 CTAs. 3072x1568x768 = 14.9 us warm (168 CTAs = 1.14 waves, 4.3 us per CTA); 768x1568x3072 without split-K 20 us; 3072x392x768 8.9 us. Cold after the 2xL2 flush with fp32 scattered C stores: 67 / 49 / 25 us [probe_b200]"
+  - "gate verdict: the mainloop is bound by L2->SM operand ingest at ~55-72 B/clk/SM (stage bytes / stage clk), the same ~135 GB/s/SM as the parent's bulk ring. Stage depth 2-3 vs 8 changes nothing at N=112, so this is neither latency nor an ELECT waterfall. With M=128 swap-AB tiles each stage moves (128+N)*128 B for 2N clk of MMA, i.e. 1.5-2.6x the MMA ideal. Fixes: 2SM cta_group::2 (halves per-SM B ingest) or TMA multicast of B across hidden tiles [probe_b200]"
+  - "pitfall: cuTensorMapEncodeTiled from cuda.bindings needs cuuint64_t/cuuint32_t wrapped lists; a tensor map in global memory (copied from host) works as the TMA operand in probes [probe_b200]"
+  - "pitfall: target_hardware [B200, LOCAL] fails to build tcgen05 code: LOCAL adds the plain sm_100 target, where ptxas rejects tcgen05.* ('not supported on .target sm_100'). Use [B200] only for tcgen05 solutions [run_tests]"
+  - "built kernel: one cooperative launch, 148 CTAs x 384 threads, 168 regs, 0 spills, 227.5 KB smem. Phase A: bulk-plane conv, W1/W2 -> fp16 L2 scratch with LN-weight fold and row sums, out = x + b2. Sync 1. GEMM1 tcgen05 tiles (whole images per tile, HWS = 56/200 padded token stride so TMA starts are 16-B aligned). Sync 2. GEMM2 split-K with 2 TMEM accumulators (h and g = gw*gf*h, so the GRN scale is inv_b*D2 in the epilogue: no B transform). Coalesced scalar red into out [compile_b200]"
+  - "run_tests 16/16 PASS first build (rented, us, this vs merge r3-merge-a3-b3-d3 on the same GPU): 2,768 32.4 vs 34.1; 8,768 49.1 vs 62.7; 16,768 70.8 vs 77.9; 32,768 99.3 vs 95.9; 8,384 79.8 vs 53.8; 16,384 111.7 vs 89.3. Vs D v3 (r3 card): 2,768 34.1 / 8,768 63.9 / 16,768 93.6 / 32,768 169.6 / 8,384 53.5 / 16,384 93.7. The other 10 rows run the r0 anchor (unchanged), so the full-kernel prediction is 0.444 [run_tests]"
+  - "H28 verdict: success criteria NOT met (0 of 6 targets: 2,768 32.4 > 32; 8,768 49.1 > 45; 16,768 70.8 > 55; 32,768 99.3 > 75; 8,384 79.8 > 45; 16,384 111.7 > 60). Refutation clause mixed: vs D v3, 16,768 -24% (just under the 25% bar) but 32,768 -41%. Per-stage clk sits 1.5-2.6x above the MMA ideal, caused by operand ingest, not by an issue waterfall [run_tests, probe_b200]"
+  - "open: 32,768 (99 us) and the 14x14 rows (80/112 us) sit far above a bytes-and-ingest estimate of ~40-50 us. Not diagnosed this session (no globaltimer stamps). Suspects: the GEMM1 epilogue issue rate (GELU + 4-way image select + two transposed passes, ~35-40 instr/element on 8 warps, est. 5k clk per 176-wide tile); the doubled GEMM2 B ingest from g (48 KB stages); scalar red volume 7-14 MB; and 2 tiles/units per CTA at 32,768 / 16,384. Next: stamp phases, try a 2SM pair or B multicast, and the per-K-row B transform instead of g [INFERRED]"
+  - "precision: run_tests passes 16/16 x 10 rounds. The fp64 10-seeded-round per-row max-error / beyond-atol log was NOT done this session (still owed). Roundings: d16, fp16(lnw*W1), fp16(W2), h16 once, g16 = fp16(gw*gf*h16) on a term ~3% of the output (scaled by inv_b), LN fold rs*(acc - mu*u) + v in fp32 [run_tests]"
+  - "value if merged as a dispatch specialist on 2,768 / 8,768 / 16,768 only (merge paths elsewhere): -5% / -22% / -9% rented on those rows, roughly +0.01 of mean at the D portal ratio ~1.32 [INFERRED]"
+paths:
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "six wide-C rows only (2/8/16/32,768,7,7; 8/16,384,14,14): tc_kernel, cooperative, 1 CTA per SM, tcgen05 kind::f16 swap-AB"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "other 10 rows: r0 fp32 anchor"}
+runs_on:
+  H200: {runs: false, representative: false, note: "tcgen05/TMEM are sm_100a-only"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05"
+  - "cooperative launch at 227.5 KB smem and 384x168 regs requires every SM free (grid = SM count)"
+  - "10-seeded-round fp64 precision log still owed; split-K red.add makes summation order nondeterministic"
+  - "the 10 non-target rows run the slow r0 anchor; only useful merged into a dispatch with lineages A/B, on 2/8/16,768"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

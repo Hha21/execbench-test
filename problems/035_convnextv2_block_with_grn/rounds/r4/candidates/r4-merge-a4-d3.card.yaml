@@ -1,0 +1,85 @@
+id: r4-merge-a4-d3
+parents:
+- r4-a-e1-bulkplane-wprep
+- r3-ws-coop-widec
+operation: repair
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: 'Operator packaging (no kernel changes): A r4-a-e1-bulkplane-wprep on 15 rows (fastest on each in the r4 rented
+  runs), D r3-ws-coop-widec at 2,768,7,7 (34.1 vs A4 48.5 us rented; portal-proven 45.1 us in #65879). Each lineage kernel.cu
+  is its own namespaced translation unit.'
+expected_effect:
+  S:
+    pct: -8
+    confidence: medium
+  M:
+    pct: -15
+    confidence: medium
+  L:
+    pct: -1
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 14000
+  threads_per_cta: 256
+  ctas_per_sm: 3
+  bytes_in_flight_per_sm: 40000
+  launches_per_call: 5
+knobs:
+  dispatch: 'D: 2,768,7,7; A: other 15'
+dispatch:
+- shapes: 2,768,7,7
+  kernel: lin_d ws_kernel (cooperative, 128 CTAs)
+- shapes: other 15
+  kernel: lin_a K1 bulk-plane/TMA conv + cuBLASLt FP16 pipeline
+tests: []
+findings: []
+paths:
+- max_tokens: 3200
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 7
+  grid: oneshot
+  mem: tma
+  launches: 5
+  cluster: 1
+- max_tokens: null
+  lang: cuda
+  width: 128
+  threads: 256
+  rows: 8
+  grid: oneshot
+  mem: tma
+  launches: 5
+  cluster: 1
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+- A4 rows measured in one session with 5-12 us cross-run drift on unchanged rows; checked interleaved against r3-merge-a3-b3-d3
+  (portal 0.6355) in one container
+measure_first:
+- B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

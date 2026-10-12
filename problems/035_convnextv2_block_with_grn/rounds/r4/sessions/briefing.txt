@@ -1182,7 +1182,7 @@ cheap GPU against the current best kernel, and the projected B200 score. 4. Revi
   about 10 s.
 - get_kernel returns any archive kernel's source, design card and measurements; read_example shows annotated
   excerpts of the best public B200 norm kernels (see b200_sota.md).
-- Budget: 10 GPU calls (compile_b200 + run_tests) and about 15 turns. GPU calls queue on one shared GPU; a test
+- Budget: 6 GPU calls (compile_b200 + run_tests) and about 15 turns. GPU calls queue on one shared GPU; a test
   takes 1-4 minutes, a compile under 1. Pass complete files every time; nothing persists between calls.
 - Finish with a reply that makes no tool call and contains exactly one candidate in the OUTPUT CONTRACT format. Put
   what you measured into the design card (hypothesis, expected_effect), and list what you learned under findings,

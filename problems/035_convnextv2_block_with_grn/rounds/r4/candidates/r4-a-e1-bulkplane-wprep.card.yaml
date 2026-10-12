@@ -1,0 +1,68 @@
+id: r4-a-e1-bulkplane-wprep
+parents: [r2-lib-cublaslt-fp16-tmaconv]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows8
+  red: warp
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage A / E1 (H2, H18). For W=7, 14 and 449x7 rows K1 stages x with one 1-D cp.async.bulk per lane (channel)
+  of that channel's row range, rounded out to 16 B, into bank-skewed padded shared slots (lane/4 + 8*(addr&3) slot
+  order, SL/4 odd, so odd-HW rows read conflict-free; 14x14 keeps a 4-way conflict). One warp per (output row,
+  7-column segment) with the 49 taps in registers writes channels-last fp16 d and reduces the LN partials over the
+  32 channels with a 16-shuffle halving tree. Every K1 CTA also converts a share of W1' = W1*lnw (and W2 plus b2' hi/lo
+  when the hidden is large) with 16-byte loads and stores while the plane copies are in flight, and zeroes the GRN
+  workspace. The old role CTAs and the 8 GB/s/SM LDGSTS staging are gone on these rows. The rest of the pipeline
+  (cuBLASLt FP16 GEMMs, K2, K3, K4) is unchanged.
+expected_effect:
+  S: {pct: -10, confidence: medium}
+  M: {pct: -15, confidence: medium}
+  L: {pct: -20, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 14000
+  threads_per_cta: 256
+  ctas_per_sm: 3
+  bytes_in_flight_per_sm: 40000
+  launches_per_call: 5
+knobs: {RT: "fewest row tiles giving >=296 CTAs", nwmin: 8, SL: "rows*W+8 rounded to 4, SL/4 odd", nwmin_probe_value: 4}
+dispatch:
+  - {max_tokens: null, kernel: "k1_bulk<7,1> (W=7) | k1_bulk<14,2> (W=14) | k1_tma (W%4==0) + cublasLt + k2_gelu + k3a|k3b + cublasLt (+k4)", meta: {per-shape plan keyed on (B,C,H,W)}}
+tests: [H2, H18]
+findings:
+  - "K1-only, harness_time on the rented B200, old K1 vs new K1 with a 4-warp minimum, interleaved x3 (spread <=0.3 us): 2,768 18.1 -> 9.7 us; 8,768 23.2 -> 12.2; 32,768 33.4 -> 14.2; 16,384 28.9 -> 16.7; 1,160,449,7 17.9 -> 5.2. Gains are 8.4 / 11.0 / 19.2 / 12.2 / 12.7 us, so the success lines (>=8 at 8,768, >=12 at 32,768) are met [probe_b200]"
+  - "ablations of the 4-warp-minimum build, K1 only (conv-only / weights-only / both): 2,768 3.9 / 8.9 / 9.7; 8,768 4.3 / 11.0 / 12.2; 32,768 8.7 / 9.4 / 14.1; 16,384 13.2 / 5.9 / 16.7; 1,160 5.0 / 3.1 / 5.2. The bulk-plane conv is 4-9 us at C=768 (D reported 1.5-10). The weight pass alone is 8.9-11 us at C=768 (above the 8 us line) but overlaps the conv almost fully at 2,768 and 8,768, so the weight conversion, not the conv staging, now bounds K1 on the C=768 rows with B<=8 [probe_b200]"
+  - "run_tests 16/16 PASS, rented, 4-warp-minimum build, vs the merge's A-path rows in the same container (parent-equivalent): 8,768 50.0 vs 62.7; 1,160 42.1 vs 54.3; 16,768 61.1 vs 77.6; 16,384 76.5 vs 89.1; 32,768 75.6 vs 95.2. Rows owned by D/B paths in the merge: 2,768 56.2 vs 34.2 (D), 8,384 57.3 vs 53.6 (D). Projected portal 0.6432 [run_tests]"
+  - "run_tests 16/16 PASS, rented, shipped build (8-warp minimum), vs the same merge reference: 8,768 44.4 vs 62.7 (-29%); 1,160 34.9 vs 54.3 (-36%); 16,768 53.2 vs 77.6 (-31%); 16,384 71.5 vs 89.1 (-20%); 32,768 70.1 vs 95.2 (-26%); 2,768 48.5 vs 34.2 (D wins); 8,384 50.4 vs 53.6; TMA rows 1,192 27.4, 1,96 28.7, 2,96 33.6, 4,192 36.7, 4,96 44.0, 8,192 51.8, 8,320 89.4, 32,128 291.2, 64,96 1144.1. Projected portal 0.6703 +-0.008 [run_tests]"
+  - "CAUTION on the 0.6703: the two run_tests runs in this session differ by 5-12 us on rows whose code did not change (TMA rows: 1,192 34.6 -> 27.4, 4,192 42.3 -> 36.7, 8,192 58.9 -> 51.8). So the nwmin 4 -> 8 gain (about -5 us on the C=768 rows) is NOT separated from cross-run drift, and the 0.6703 includes that drift. Use the 4-warp comparison and the probe K1 deltas as the real gain; rank 8 vs 4 warps with an interleaved same-container test [run_tests]"
+  - "per-row gain vs the merge's A-path rows (same container): 5 rows by 12.6-24.5 us (8,768, 16,768, 32,768, 16,384, 1,160); the card success line (8-20 us on >=5 of 7 rows) is met on 5 of 7. 2,768 and 8,384 stay with D's paths in the merge. Suggested merge: this kernel for 8,768, 16,768, 32,768, 16,384, 1,160 and, if the interleaved comparison confirms it, for the TMA rows; D at 2,768 and 8,384; B on the small rows where it won [INFERRED]"
+  - "bank-skewed slots: plane copies must start 16-B aligned in shared memory, so channel slots can only sit at multiples of 4 floats; with identical shifts that is a 4-way conflict minimum, which the 14x14 rows keep. For odd HW the shift (global float index & 3) equals channel mod 4 (up to a constant), so slot = lane/4 + 8*shift with SL/4 odd places the 32 lanes on 32 distinct banks [INFERRED, SASS clean: 0 spills, 70-72 regs]"
+  - "per-lane 1-D bulk copies (32 small copies per CTA, 200-400 B each, outward-rounded to 16 B) were fast enough: bulk copy issue rate did not show up as a bound at any row [probe_b200]"
+  - "NOT DONE: Step 0 (parent and r0 anchor interleaved x3, and the r3-a-e1 custom path vs the library path at 8,768; the r3-a-e1 source was not loaded). Step 4's 10-seeded-round fp64 precision log: not run. Numerics are unchanged from the parent: d is one fp32 conv rounded once to fp16, the same W1' rounding, and K2/K3/GEMMs untouched. run_tests passes 16/16 x 10 rounds, but the owed max |err| and beyond-atol counts are still missing for these 7 rows. Step 5 (K2 vs plain copy, H29): not run. The nwmin 4/8/12 interleaved sweep: not run [session cut by a usage limit]"
+  - "dead end avoided: more warps per CTA cost registers, and at 70-72 regs a 10-14 warp CTA would fall to 1-2 CTAs/SM and a second wave at 2,768 (336 CTAs); 8 warps keeps 3 CTAs/SM = 444 slots >= 384 CTAs at the C=768 rows [INFERRED]"
+  - "W2 rows (hidden >16 MB: B>=8 at C=768, B=16 at C=384) are still one warp per row with 4 sequential 768-column rounds; it is the longest chain in the weight pass at 8,768 and 16,768. Splitting a W2 row over 4 warps with a CTA-level dot reduction is the next lever here (worth about 3-5 us at those rows) [INFERRED]"
+paths:
+  - {max_tokens: 3200, lang: cuda, width: 128, threads: 256, rows: 7, grid: oneshot, mem: tma, launches: 5, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 8, grid: oneshot, mem: tma, launches: 5, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: false, note: "bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "precision unchanged from the parent but the 10-round per-row beyond-atol log is still owed; parent max |err| was 2.37-2.39e-3 against atol 2.4e-3 on three rows"
+  - "the 4 -> 8 warp-minimum gain and the 0.6703 projection are mixed with 5-12 us of cross-run drift"
+  - "x base pointers are assumed 16-B aligned (the harness keeps 256-B alignment) for the 1-D bulk copies; the outward rounding stays inside the tensor because B*C*H*W is a multiple of 4"
+  - "g_forceold / g_nwmin / g_k1mask are bench-only setters with defaults 0 / 8 / 3; run() never calls them"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

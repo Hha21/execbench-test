@@ -1,15 +1,15 @@
 {
- "duration_api_ms": 1000672,
- "stop_reason": "stop_sequence",
+ "duration_api_ms": 1344754,
+ "stop_reason": "end_turn",
  "session_id": "414fe678-820f-4d10-b74b-e156f8dd958f",
- "total_cost_usd": 9.2402056,
+ "total_cost_usd": 7.7654347999999995,
  "usage": {
-  "input_tokens": 12,
-  "cache_creation_input_tokens": 212685,
-  "cache_read_input_tokens": 738074,
-  "output_tokens": 138548,
+  "input_tokens": 2,
+  "cache_creation_input_tokens": 263198,
+  "cache_read_input_tokens": 0,
+  "output_tokens": 51987,
   "output_tokens_details": {
-   "thinking_tokens": 36033
+   "thinking_tokens": 1084
   },
   "server_tool_use": {
    "web_search_requests": 0,
@@ -17,19 +17,19 @@
   },
   "service_tier": "standard",
   "cache_creation": {
-   "ephemeral_1h_input_tokens": 212685,
+   "ephemeral_1h_input_tokens": 263198,
    "ephemeral_5m_input_tokens": 0
   },
   "inference_geo": "global",
   "iterations": [
    {
     "input_tokens": 2,
-    "output_tokens": 49554,
-    "cache_read_input_tokens": 211460,
-    "cache_creation_input_tokens": 1225,
+    "output_tokens": 51987,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": 263198,
     "cache_creation": {
      "ephemeral_5m_input_tokens": 0,
-     "ephemeral_1h_input_tokens": 1225
+     "ephemeral_1h_input_tokens": 263198
     },
     "type": "message"
    }
@@ -39,22 +39,22 @@
  },
  "modelUsage": {
   "claude-opus-5-5": {
-   "inputTokens": 12,
-   "outputTokens": 138548,
+   "inputTokens": 14,
+   "outputTokens": 190535,
+   "thinkingTokens": 37117,
    "cacheReadInputTokens": 738074,
-   "cacheCreationInputTokens": 212685,
+   "cacheCreationInputTokens": 475883,
    "webSearchRequests": 0,
-   "costUSD": 4.6201028,
+   "costUSD": 7.7654347999999995,
    "contextWindow": 1000000,
    "maxOutputTokens": 128000,
-   "thinkingTokens": 36033,
    "canonicalModel": "claude-opus-5-5",
    "provider": "firstParty",
    "costBasis": "list"
   }
  },
  "permission_denials": [],
- "terminal_reason": "api_error",
+ "terminal_reason": "completed",
  "fast_mode_state": "off",
  "fast_mode_disabled_reason": "sdk_opt_in_required",
  "subagent_stats": {
@@ -82,15 +82,18 @@
   "by_type": {}
  },
  "safety_stops": 0,
- "is_error": true,
- "num_turns": 7,
+ "is_error": false,
+ "num_turns": 1,
  "subtype": "success",
- "api_error_status": 429,
- "api_error": "usage_limit_reached",
+ "api_error_status": null,
+ "ttft_ms": 21595,
  "type": "result",
- "duration_ms": 1156577,
- "uuid": "2e571d21-6533-41be-ac4e-12579196ed1d",
+ "duration_ms": 344184,
+ "uuid": "bc055171-8218-4c5e-8e1c-4fad3b8cb6e5",
+ "ttft_stream_ms": 3223,
+ "time_to_request_ms": 90,
+ "first_content_frame_ms": 3224,
  "queued_turn_count": 0,
  "result_index": 0,
- "seconds": 1160.2
+ "seconds": 348.0
 }

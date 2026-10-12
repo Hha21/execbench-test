@@ -1,0 +1,70 @@
+id: r4-coop-dataflow-s
+parents: [r2-coop-flat-s]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: cpasync
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage B, E2 (tests H27). Both grid barriers in the cooperative kernel were replaced by counter-released dataflow.
+  Conv units are spread over all CTAs and red.release token counts into per-m-tile counters. A GEMM1 tile converts
+  its own W1' tile from fp32 while it waits, then polls its m-tile counter with ld.acquire. When its hidden rows and
+  sumsq are stored, it red.releases per-image counters, and GEMM2 units poll those. Counters and sumsq live in a
+  module-level buffer that is zeroed once; the last consumer of each one restores it to zero. The expected gain was
+  removing two barrier releases and the conv tail. Measured result: REFUTED. The dataflow path is 7-71 us slower
+  than the parent on all seven rows it serves, although the flag primitive itself is cheap (0.64 us
+  release-to-observe). This candidate is the tested build. Setting df_wins() to false restores the parent dispatch
+  and is the only way to ship it.
+expected_effect:
+  S: {pct: +45, confidence: high}
+  M: {pct: +60, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 107296
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 151552
+  launches_per_call: 1
+knobs:
+  NT: 256
+  GRID: 296
+  DF_DISPATCH: "all C<=192, HW>=128 rows (as tested); recommended: none"
+  CTR_LAYOUT: "2048 m-tile + 256 image counters, 128-B stride, module buffer; sumsq 64K floats module buffer"
+tests: [H27, H10]
+findings:
+  - "E2 step 1 microbench (296 CTAs x 256 thr, 2xL2 flush, ~1.97 GHz, globaltimer, 10 reps): one red.release.gpu flag polled by 295 CTAs with ld.acquire is observed 640 ns median / 704 ns max after release (1263/1389 clk); ld.relaxed poll + fence.acq_rel 1056/1120 ns; 8 flags released serially by one thread (37 pollers each) 2032/3200 ns (acquire), 2400/3616 ns (relaxed), so serial releases from one thread cost ~0.2 us each [probe_b200]"
+  - "ping-pong st.release/ld.acquire between two CTAs: one-way 1430-1630 clk (~0.75-0.83 us), with no visible near/far-die difference across 8 SM pairs [probe_b200]"
+  - "barriers without pending stores: flat atomic-counter barrier releases 0.86-1.07 us median (max 1.09-1.28) after the last arrival; a two-level 8-group tree (atom.acq_rel group counter -> top counter -> 8 release flags) is worse at 3.9 us median / 5.4 us max. Kill gate (best flag release <= 1.2 us) passed [probe_b200]"
+  - "dataflow build (convnext_df): 128 regs, 0 spills, same 107 KB smem and 2 CTAs/SM as the parent; cooperative launch so every producer is resident; per-CTA static order conv -> GEMM1 (m-major, starting after the last conv CTA) -> GEMM2 (m-major), so it is deadlock-free [compile_b200]"
+  - "correctness: run_tests 16/16 PASS x 10 rounds including the portal-order re-runs, so the last-consumer reset of m-tile counters, image counters and the module-level sumsq held over every call, shape and order in that run [run_tests]"
+  - "H27 REFUTED (run_tests, rented, us, df vs parent r2-coop-flat-s cross-session / vs the merge in the same session): 1,192 42.8 vs 29.8 / 30.1; 1,96 37.5 vs 28.4 / 28.0; 1,160,449,7 84.3 vs 51.8 / 53.7; 2,96 50.5 vs 43.4 / 36.7; 4,192 79.4 vs 46.3 / 42.6; 4,96 71.7 vs 56.5 / 50.7; 8,192 137.7 vs 66.5 / 59.0. Success line (1,192 <= 24) and refutation clause (< 2 us gain at 1,192 and 2,96) both fire. Rows still on parent paths match the parent within noise (8,384 85.2 vs 86.6; 32,128 585.6 vs 594.3) [run_tests]"
+  - "suspected cause (NOT measured, no stamps taken after the interruption): the barrier was replaced by per-tile serial work. (a) Every GEMM1 tile and GEMM2 unit re-converts its fp32 weight slice (24-512 KB per CTA, mostly cold), with shared-memory float atomics where up to 24 lanes hit the same row sum. (b) Static round-robin lists make the first CTAs run conv, GEMM1 and GEMM2 back to back. (c) GEMM2 still waits for every GEMM1 tile of the image, so at B=1 nothing overlaps. Rows with many tiles per CTA lose most: 8,192 +71 us, 4,192 +33 us [INFERRED]"
+  - "lesson for H10/H27: cheap release-to-observe (0.64 us) does not translate into kernel time. The barrier version wins because each phase's per-CTA work is uniform and its weight conversion is spread over all warps once per call; a dataflow design must keep the one-pass weight conversion (or a weights-ready counter) and use dynamic tile claiming instead of static lists [INFERRED]"
+  - "not done (session interrupted): the step 3 globaltimer stamps old vs new, the 0xFF-filled torch.empty workspace probe, and the per-row 10-seeded-round fp64 precision log. The df path's numerics equal the flat path's (same fp16 roundings; c2 is split per K-slice in fp32), and run_tests passes 16/16 [run_tests]"
+  - "pitfall (tooling): run_tests and compile_b200 need the full file contents on every call; a placeholder file is rejected before it reaches the GPU [run_tests]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "dataflow kernel convnext_df: C<=192, HW>=128 (1,192; 1,96; 1,160,449,7; 2,96; 4,192; 4,96; 8,192)"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "parent flat/ring kernels: all other shapes"}
+runs_on:
+  H200: {runs: true, representative: false, note: "ld.acquire/red.release, mma.sync and cooperative launch exist on sm_90; flag latency differs"}
+  A100: {runs: true, representative: false, note: "2 x 105 KB smem does not fit; 1 CTA/SM, correctness only"}
+  L40S: {runs: false, representative: false, note: "100 KB smem per SM < 107 KB dynamic smem"}
+risks:
+  - "Dataflow path is 7-71 us slower than the parent on all 7 rows it serves; do not ship those rows (set df_wins() false)"
+  - "Module-level counter/sumsq buffer: a kernel aborted mid-call would leave counters dirty and deadlock later calls; correct for every call that completes, any shape, any order (run_tests portal-order pass)"
+  - "cudaMalloc + cudaMemsetAsync on the first dataflow call (in correctness round 0, outside the timed window)"
+  - "0xFF workspace probe and the 10-seeded-round precision log were not run"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

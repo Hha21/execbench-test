@@ -10,6 +10,8 @@ and shortlist the best for the B200 portal.
   python3 loop/round.py status    --round r3
   python3 loop/round.py collect   --round r3
   python3 loop/round.py shortlist --round r3                                    -> rounds/r3/portal/
+  .venv/bin/python loop/round.py merge --round r5    per-workload merge of r5's kernels into the best (auto --portfolio
+                                                     runs it after testing)
   python3 loop/round.py table
   .venv/bin/python loop/round.py ideas --round r1 --backend claude          portfolio round: idea sessions + critic
   .venv/bin/python loop/round.py lead  --round r1 --backend claude --portfolio   lead manages 2-3 lineages
@@ -645,9 +647,107 @@ def cmd_auto(a):
         a.gpus = a.gpus or ("B200" if a.tool_gpu == "B200" or a.backend == "claude" else "A100,H200")
         cmd_test(a)
         csf = [g for g in a.gpus.split(",") if g != "B200"]
+        if a.portfolio and not csf and not a.no_merge:
+            cmd_merge(a)
         print(f"next: python3 loop/round.py collect --round {a.round} (after the CSF3 jobs finish); then shortlist"
               if csf else f"next: python3 loop/round.py shortlist --problem {problem.current().level}/"
                          f"{problem.current().name} --round {a.round}")
+
+
+def cmd_merge(a):
+    """Per-workload merge: time the round's tested kernels and the best portal kernel side by side in one container
+    (loop/ab_container.py), route each workload to the kernel that beat the best by more than --margin there, build the
+    merged kernel (loop/merge.py), test it, and register it as <round>-merge with its projected portal score."""
+    import yaml
+    import ab_container
+    import b200_modal
+    import merge
+    arc = get_archive()
+    best = planner.best_kernel(arc)
+    if not best:
+        raise SystemExit("merge: no portal-measured kernel yet")
+    portal = ab_container.portal_times(best["b200"]["submission"])
+    cid, d = f"{a.round}-merge", rdir(a.round)
+    cands = [r for r in arc.values() if r.get("round") == a.round and r["id"] != cid and not r.get("b200")
+             and (r.get("timings") or {}).get("B200r") and (r.get("task") or {}).get("niche") != "merge"]
+    if not cands:
+        print(f"merge: no kernel of {a.round} passed any workload on the rented B200; nothing to merge")
+        return
+    sols = {r["id"]: json.loads((ROOT / r["solution"]).read_text()) for r in [best] + cands}
+    b200_modal.load_token()
+    print(f"merge: timing {best['id']} (portal #{best['b200']['submission']}) against "
+          f"{', '.join(r['id'] for r in cands)}, {a.merge_reps} reps in one container", flush=True)
+    with b200_modal.app.run():
+        samples, fails = ab_container.interleave(sols, a.merge_reps, tag=cid)
+        bad = {(f[0], f[2]) for f in fails}
+        an, med = samples[best["id"]], ab_container.med
+        pick, rows = {}, [f"| workload | {best['id']} (us, rented) | " + " | ".join(r["id"] for r in cands)
+                          + " | routed to |", "|---" * (len(cands) + 3) + "|"]
+        for k in sorted(portal, key=portal.get):
+            opts = [(med(samples[c][k]) / med(an[k]), c) for c in samples if c != best["id"] and an.get(k)
+                    and samples[c].get(k) and (c, k) not in bad and (c, "*") not in bad]
+            r, c = min(opts, default=(1.0, None))
+            if c and r < 1 - a.margin:
+                pick[k] = (c, r)
+            cells = [f"{100 * (med(samples[x][k]) / med(an[k]) - 1):+.1f}%" if samples[x].get(k) and an.get(k)
+                     and (x, k) not in bad else "fail" for x in samples if x != best["id"]]
+            rows.append(f"| {k} | {med(an[k]):.1f} | " if an.get(k) else f"| {k} | - | ")
+            rows[-1] += " | ".join(cells) + f" | {pick[k][0] if k in pick else best['id']} |"
+        for f in fails:
+            print("failed (not a timing flake):", f)
+        report = [f"# Per-workload merge for round {a.round}", "",
+                  f"Side-by-side rented-B200 times (median of {2 * a.merge_reps} passes each); a workload moves to a "
+                  f"round kernel only when it is more than {100 * a.margin:.0f}% faster there than the current best.",
+                  "", *rows, ""]
+        if not pick:
+            report.append(f"No round kernel beat {best['id']} by the margin on any workload: no merge.")
+            (d / "merge.md").write_text("\n".join(report) + "\n")
+            print("\n".join(report))
+            return
+        leaves, route = merge.flatten(sols[best["id"]], best["id"])
+        routes = {}
+        for k in portal:
+            if k in pick:
+                sub, rt = merge.flatten(sols[pick[k][0]], pick[k][0])
+                leaves.update(sub)
+                routes[k] = rt(k)
+            else:
+                routes[k] = route(k)
+        default = max(sorted(set(routes.values())), key=list(routes.values()).count)
+        used = sorted({c for c, _ in pick.values()})
+        desc = (f"Per-workload merge (loop/merge.py, kernels unchanged) of {best['id']} with {', '.join(used)} on "
+                f"{', '.join(sorted(pick))}, where they beat it side by side.")
+        sol = merge.build(leaves, routes, default, cid, description=desc)
+        (d / "candidates").mkdir(parents=True, exist_ok=True)
+        path = d / "candidates" / f"{cid}.json"
+        path.write_text(json.dumps(sol, indent=1))
+        res = b200_modal.handle.remote(dict(id=cid, kind="test", repeat=2, solution=sol,
+                                            problem=b200_modal.problem_ref()))
+    b200_modal.write_trace(d / "results" / "timing" / "B200r" / f"{cid}.jsonl", res)
+    order_warning(cid, res)
+    wl = res.get("workloads") or []
+    proj = {k: portal[k] * (pick[k][1] if k in pick else 1.0) for k in portal}
+    anc = planner.anchors()
+    s0, s1 = planner.score(portal, anc), planner.score(proj, anc)
+    card = dict(id=cid, parents=[best["id"]] + used, operation="repair", language=best.get("language", "cuda_cpp"),
+                niche={**(best.get("niche") or {}), "spec": "dispatch:size"},
+                hypothesis=f"Operator per-workload merge: {desc} Projected portal score {s1:.4f} (best {s0:.4f}).",
+                dispatch=[dict(kernel=lid, shapes=" ".join(k for k in portal if routes[k] == lid))
+                          for lid in sorted(set(routes.values()))])
+    card_text = yaml.safe_dump(card, sort_keys=False, width=120)
+    (d / "candidates" / f"{cid}.card.yaml").write_text(card_text)
+    arc = get_archive()
+    arc[cid] = dict(id=cid, round=a.round, parents=card["parents"], operation="repair", language=card["language"],
+                    niche=card["niche"], card=card_text, solution=str(path.relative_to(ROOT)), status="proposed",
+                    timings={}, task=dict(operation="repair", parents=card["parents"], band="all", niche="merge",
+                                          instructions="Operator per-workload merge (round.py merge)."))
+    archive.save(archive.refresh(arc))
+    passed = sum(w["status"] == "PASSED" for w in wl)
+    report += [f"Merged kernel `{path.relative_to(ROOT)}`: {passed}/{len(wl)} workloads passed its test "
+               f"(timing flakes count as failures here; see the trace).",
+               f"Projected portal score {s1:.4f} against the best's {s0:.4f} (#{best['b200']['submission']})."]
+    (d / "merge.md").write_text("\n".join(report) + "\n")
+    print("\n".join(report))
 
 
 def sync_remote():
@@ -846,6 +946,10 @@ def main():
                        "default B200 with --tool-gpu B200, else A100,H200")
         q.add_argument("--portfolio", action="store_true", help="lead: read the round's ideas pool and premise audit "
                        "(round.py ideas) and manage 2-3 parallel lineages (loop/portfolio.py)")
+        q.add_argument("--no-merge", action="store_true", help="auto --portfolio: skip the per-workload merge step")
+        q.add_argument("--merge-reps", type=int, default=2, help="merge: side-by-side reps per kernel")
+        q.add_argument("--margin", type=float, default=0.02, help="merge: a workload moves to a round kernel only "
+                       "when it is this much faster there than the best")
         q.add_argument("--resume", action="store_true", help="auto --use-plan --backend claude: continue this "
                        "round's sessions that ended without a candidate (e.g. cut off by the plan's session limit) "
                        "from their saved Claude session; tasks that already gave a candidate are skipped")
@@ -858,6 +962,12 @@ def main():
     q.add_argument("--from-reply", action="store_true", help="finish from the saved research reply (no agent run)")
     for q in (sub.choices["lead"],):
         q.add_argument("--from-reply", action="store_true", help="re-parse the saved lead reply (no agent run)")
+    q = sub.add_parser("merge", parents=[common], help="per-workload merge of a round's kernels into the best one "
+                       "(rented B200, one container)")
+    q.add_argument("--round", required=True)
+    q.add_argument("--merge-reps", type=int, default=2, help="side-by-side reps per kernel")
+    q.add_argument("--margin", type=float, default=0.02, help="a workload moves to a round kernel only when it is "
+                   "this much faster there than the best")
     for name in ("test", "status", "collect", "shortlist"):
         q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)
@@ -871,7 +981,7 @@ def main():
     if getattr(a, "round", None) and not re.fullmatch(r"[a-z0-9-]+", a.round):
         sys.exit("--round must be lowercase letters, digits and dashes")
     dict(propose=cmd_propose, plan=cmd_plan, auto=cmd_auto, lead=cmd_lead, ideas=cmd_ideas, research=cmd_research,
-         test=cmd_test, status=cmd_status, collect=cmd_collect, shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
+         merge=cmd_merge, test=cmd_test, status=cmd_status, collect=cmd_collect, shortlist=cmd_shortlist, table=cmd_table)[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -29,6 +29,32 @@ def portal_times(sid):
     return out
 
 
+def interleave(sols, reps, tag="ab"):
+    """Test each solution ({name: solution}) `reps` times, alternating, inside the caller's b200_modal.app.run().
+    Returns ({name: {workload key: [µs]}} from PASSED rows of first and later passes, [(name, rep, workload, status,
+    log tail)] for failures that are not timing flakes). Even reps go in order, odd reps in reverse."""
+    import b200_modal
+    samples, fails, names = {n: {} for n in sols}, [], list(sols)
+    for rep in range(reps):
+        for who in names if rep % 2 == 0 else names[::-1]:
+            res = b200_modal.handle.remote(dict(id=f"{tag}-{who}-{rep}", kind="test", repeat=2, solution=sols[who],
+                                                problem=b200_modal.problem_ref()))
+            if res.get("error"):
+                print(f"{who} rep {rep}: error {res['error'][-800:]}")
+                fails.append((who, rep, "*", "ERROR", res["error"][-200:]))
+            for r in (res.get("workloads") or []) + (res.get("later_passes") or []):
+                if r["status"] == "PASSED" and r["latency_us"]:
+                    samples[who].setdefault(r["workload"], []).append(r["latency_us"])
+                elif not any(f in r["log"] for f in FLAKE):
+                    fails.append((who, rep, r["workload"], r["status"], r["log"][-200:]))
+            print(f"{who} rep {rep}: {res.get('seconds')} s, {res.get('gpu')}", flush=True)
+    return samples, fails
+
+
+def med(xs):
+    return sorted(xs)[len(xs) // 2]
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--problem", required=True)
@@ -42,22 +68,8 @@ def main():
     import planner
     b200_modal.load_token()
     sols = {"anchor": json.loads(a.anchor.read_text()), "cand": json.loads(a.candidate.read_text())}
-    samples = {"anchor": {}, "cand": {}}
-    order_fail = []
     with b200_modal.app.run():
-        for rep in range(a.reps):
-            for who in ("anchor", "cand") if rep % 2 == 0 else ("cand", "anchor"):
-                res = b200_modal.handle.remote(dict(id=f"ab-{who}-{rep}", kind="test", repeat=2, solution=sols[who],
-                                                    problem=b200_modal.problem_ref()))
-                if res.get("error"):
-                    print(f"{who} rep {rep}: error {res['error'][-800:]}")
-                for i, r in enumerate((res.get("workloads") or []) + (res.get("later_passes") or [])):
-                    if r["status"] == "PASSED" and r["latency_us"]:
-                        samples[who].setdefault(r["workload"], []).append(r["latency_us"])
-                    elif not any(f in r["log"] for f in FLAKE):
-                        order_fail.append((who, rep, r["workload"], r["status"], r["log"][-200:]))
-                print(f"{who} rep {rep}: {res.get('seconds')} s, {res.get('gpu')}", flush=True)
-    med = lambda xs: sorted(xs)[len(xs) // 2]
+        samples, order_fail = interleave(sols, a.reps)
     portal = portal_times(a.anchor_sid)
     proj, rows = {}, []
     for k in sorted(portal, key=lambda k: portal[k]):

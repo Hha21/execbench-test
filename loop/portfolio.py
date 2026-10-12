@@ -101,6 +101,14 @@ Each round:
    - When a slot is free, seed a new lineage from the pool: among the families with good expected value, pick the one
      most different from the active lineages.
    - Give the leading lineage at most half of the experiments.
+   - At least one experiment each round is a NEW DESIGN: operation new_design, a kernel built from scratch (parents []
+     or the r0 baseline) around a pool family that no lineage has built yet, not a change to an existing lineage's
+     kernel. It starts a new lineage (take a free slot, or retire or pause one and say why). Prefer families aimed at
+     the workloads furthest from the leader.
+   - After the round the operator merges per workload automatically: for every workload the merged kernel runs whichever
+     kernel was fastest there (this round's kernels against the current best, timed side by side in one container). A
+     kernel therefore earns score by winning some workloads, not all of them; a specialist that wins only the workloads
+     furthest from the leader is worth building, and it may leave the other workloads to a simple fallback.
 5. Design the experiments. Each belongs to one lineage, builds on that lineage's best kernel (or starts the lineage,
    with parents [] or the r0 baseline), tests one hypothesis, and states what to build or measure, the success
    criterion and what would refute it. Each session has a rented B200 (probes take seconds, full tests 10-20 s;

@@ -1,4 +1,4 @@
-# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0); updated r2 2026-10-12.
+# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0); updated r3 2026-10-12.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 constraints:
 - 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
@@ -26,20 +26,31 @@ constraints:
 notes:
 - 'Report effects per workload (or at least C=768 rows vs others), not per MB band: the MB bands mix weight-bound (C=768 7x7),
   latency-bound and stream-bound rows. Card fix pending: the MB cell for 64,96,112,112 is 616.9 MB, not "118.0 G".'
-- 'Portal/rented ratio (audit r2, corrected): 1.27-1.28 on all 8 rows of #65570 (lineage A v3: 43.8/34.5, 50.0/39.1, 64.1/50.0,
-  68.1/53.6, 72.5/56.5, 83.7/65.5, 569/445, 2286/1790), S and L alike, and 1.30-1.32 for the fp32 anchor. There is no
-  DRAM-bound 1.05 regime here; project portal = rented x 1.28, and rented gains carry over in proportion. The leader''s
-  S-row times (30.7-47 us portal) are 24-37 us rented.'
-- 'Precision logging (audit r2): lineage B measured single-pass FP16 max error 1.9-2.8e-3 (rms 3.9-4.2e-4) against atol
-  2.4e-3 with randomized LN affine; lineage A never logged max error. Every run_tests from r2 on records per workload the
-  max |err| and the count of elements beyond atol over 10 rounds; a row with any beyond-atol element must switch the
-  cheap operand to a hi/lo fp16 split (2 MMAs, free at S/M where MMA work is <= 2 us). Passing through the 98% ratio
-  is not acceptable.'
+- 'Where the score is (r3, per-row S from the Tb/Ts table at rented x1.28, A r2 = 0.6135 vs leader 0.690): the six wide-C
+  small-image rows (8/16,384,14,14; 2/8/16/32,768,7,7; S 0.48-0.60) hold 0.056 of mean; the seven C<=192 S/M rows hold 0.023;
+  8,320 + 32,768 hold 0.008; we lead by 0.03-0.05 on 32,128 and 64,96. Leader-implied rented times: S rows 24-37 us;
+  2/8/16/32,768 27/34/46/67 us; 8/16,384 37/52 us.'
+- 'Portal/rented ratio (audit r3, rescoped): 1.27-1.28 on the 8 rows of #65570 (lineage A v3: 43.8/34.5, 50.0/39.1, 64.1/50.0,
+  68.1/53.6, 72.5/56.5, 83.7/65.5, 569/445, 2286/1790), 1.30-1.32 for the fp32 anchor. No W=7/14/449x7 row has a portal
+  measurement: their 19 MB weight stream is DRAM work and ~55% of small-row K1 is ns-bound latency, so use 1.15-1.28 as a
+  range there until r2-lib-cublaslt-fp16-tmaconv runs all 16 rows on the portal (operator action, r3). Normalise every
+  rented run by its in-session anchor.'
+- 'Precision logging (audit r2, tightened r3): the margin is about the MAX error over 1e7-1e8 elements x 10 rounds, not the rms.
+  Measured single-pass FP16 max |err| 2.37-2.39e-3 at 32,128 / 8,768 / 32,768 (A r2, 1-3 rounds) and 1.9-2.8e-3 (B, randomized
+  LN) against the smallest atol 2.4e-3; atol varies 2.4e-3..3.8e-3 per row (workload.jsonl). Every run_tests from r3 on records
+  per workload the max |err| and the count of elements beyond that row''s OWN atol + 1e-5|ref| over the harness''s 10 seeded
+  rounds (seed 200), against an fp64 reference; a row with any beyond-atol element switches the cheap operand to a hi/lo fp16
+  split (2 MMAs, free at S/M where MMA work is <= 2 us). Passing through the 98% ratio is not acceptable.'
 - 'Cross-session rented timings drift by ~6 us per call (v3fix 50.4/72.6/192.3 vs v3 44.4/66.4/182.8 from a host-only
-  change); rank lineages only from interleaved runs in one container, 3 rounds.'
+  change; the notebook''s v3fix run_tests entry is a verbatim copy of v3''s numbers and must not be cited as a v3fix measurement).
+  The A 0.611 > B 0.564 > C 0.418 ranking is cross-session (audit r3): every experiment times its parent and the r0 anchor
+  interleaved x3 in its own container, and the operator runs anchor + A r2 + B r2 interleaved once before dispatch decisions.'
 - 'Portal #65570 per-row S for lineage A v3 (8 rows that ran): 1,192 0.61; 1,96 0.63; 2,96 0.59; 4,192 0.60; 4,96 0.65;
-  8,192 0.63; 32,128 0.62; 64,96 0.65. predict_score at the 1.28 ratio: A 0.591, B 0.563; fused targets S 23 / M 46 /
-  L 105 us portal -> 0.76; 20 us + bytes/1 TB/s on every row -> 0.80.'
+  8,192 0.63; 32,128 0.62; 64,96 0.65. predict_score at the 1.28 ratio: A r2 0.6135, B r2 0.566; fused targets S 23 / M 46 /
+  L 105 us portal -> 0.76; 20 us + bytes/1 TB/s on every row -> 0.80; 30 us + bytes/1 TB/s -> 0.75.'
+- 'Audit r3 on tcgen05 (H23): with the score formula, the ideal GEMM savings (22/25/57/195 us portal at 8,320 / 32,768 / 32,128 /
+  64,96) are worth +0.047/+0.057/+0.034/+0.027 per row = +0.010 of mean at most, and about +0.005 against cuBLASLt, which
+  already runs those rows on tensor cores. tcgen05 is an engine swap for later, not a lineage thesis.'
 hypotheses:
 - id: H1
   statement: FP16 or TF32 tensor cores (fp32 accumulate) for both GEMMs meet the tolerance and make every workload
@@ -50,7 +61,7 @@ hypotheses:
   - 'probe: fp16/fp16 and tf32/tf32 (round-to-nearest) err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
   - 'arithmetic: 118 GFLOP / 1.82 PF/s = 65 us at the largest vs 2.1 ms fp32 SIMT peak; stream floor 99 us'
   - 'r1 A and B: FP16 GEMMs 16/16 pass in two independent kernels; cuBLASLt FP16 vs TF32 cold: 3.3/5.4 us at 784x192x768, 7.2/11.8 at 98x3072x768, 129/270 at the largest, so FP16 is 1.4-2.1x faster everywhere (audit r2 retracts "the 2x rate buys no score"; the leader''s 174 TF/s is a whole-call average, not a GEMM rate). TF32 only where the weight conversion cannot be overlapped (candidate: 2,768,7,7)'
-  - 'margin caveat: see the precision-logging note; B max error 1.9-2.8e-3 at rms 4e-4 means the tail touches the smallest atol on 77M-element rows (H22)'
+  - 'margin caveat (audit r3): the "5 sigma" is an rms statement; the max error over 1-3 rounds already sits at 2.37-2.39e-3 against atol 2.4e-3 on three rows. See the precision-logging note and H22'
 - id: H2
   statement: The depthwise 7x7 conv is a first-order cost at every size because the implementations are staging-bound,
     not FMA-bound (K1 954 us in A and P1 446 us in B at the largest against a 134 us FMA bound; 234 us at 32,128 against 29;
@@ -60,14 +71,15 @@ hypotheses:
   - 'probe r0: SIMT 4x4 register patches 516-549 us at the largest at 1965 MHz (bound 102 us), latency-bound at 2 CTAs/SM'
   - 'r1 A: removing global->smem staging cut K1 20.7 -> 6.5 us (1,96) and 148 -> 28 us (8,320); a 64-channel 7-row stage-only kernel took 9.5 us vs 5.9 for a contiguous float4 read vs 1.9 floor (~8 GB/s per SM); plain LDG+STS equals cp.async'
   - 'r1 B: cp.async-staged bands were slower than direct __ldg patches (41 vs 29 us at 1,192); 8-channel tiles cut P1 25 -> 9 us at 1,192 (tile count matters at S)'
-  - 'audit r2: unparked (was priced at the FMA bound). Measured conv is 25-53% of total time at the top two rows; TMA 3-D boxes with OOB zero fill tested in E1 (H18)'
+  - 'r2 A (H18 part): TMA 3-D box ring lifted ingest to 15-34 GB/s/SM; full K1 5.6 us at 1,192, 23 at 8,320, 81 at 32,128, 315 at the largest (3x the FMA bound: LDS about equal to FMA, per-stage __syncthreads, ~40% FMA busy). W=7/14/449x7 rows still on the 8 GB/s/SM staging (K1 18.6-33.5 us at C=768): bulk-plane copies (I26) tested in lineage D'
 - id: H3
   statement: Recomputing GEMM1 in phase 2 beats materialising the 4C-wide hidden tensor at the two largest sizes (2.5 GB and
     0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA); elsewhere a materialised fp16 hidden (<= 42 MB) is a tie.
-  status: open
+  status: parked
   evidence:
   - 'arithmetic in card section 6.2; anchor v2 materialises hidden in fp32'
   - 'r1 H16: the fp16 round trip costs 3.6 us over the two-launch floor at 20 MB and ~1.4x ideal (57 vs 38 us) at 134 MB, so materialising is cheap below 42 MB; at the largest row K2 alone took 447 us (616 MB write + read), so recompute still wins on paper there'
+  - 'parked r3: the top two rows already lead the leader by 0.03-0.05; revisit when the wide-C and S rows are near the fused floor'
 - id: H4
   statement: One cooperative launch with two grid.sync()s costs about the same as three launches on the rented card
     and the portal difference is within noise.
@@ -101,7 +113,7 @@ hypotheses:
   status: open
   evidence:
   - 'probe r0: noaff phase 3: 495 vs 678 us at 32,128,64,64, 1816 vs 2684 us at the largest'
-  - 'r1 B applies the GRN as an in-smem scale pass and A as a separate K3 launch (6-17 us per row, a 3-round chain: sumsq, sqrt-reduce, W2 rows); neither isolates the affine cost'
+  - 'r1 B applies the GRN as an in-smem scale pass and A as a separate K3 launch (6-17 us per row, a 3-round chain: sumsq, sqrt-reduce, W2 rows); neither isolates the affine cost. r3: E1 moves the s_b reduction into the GEMM2 prologue and the scale to fragment load; E3 keeps gf CTA-local'
 - id: H9
   statement: The reference's hidden baseline Tb is close to eager (157 us .. 11.5 ms), so even the fp32 anchor scores > 0.5 on
     the S/M band.
@@ -113,7 +125,7 @@ hypotheses:
     GEMM1 work at B >= 8 and removes two barrier waits.
   status: open
   evidence:
-  - 'none yet; a self-resetting counter workspace is allowed. Worth ~+0.015 at B >= 8 rows on top of any GEMM core (pool I6/I16); deferred behind the per-phase cycle cuts'
+  - 'none yet; a self-resetting counter workspace is allowed. Worth ~+0.015-0.03 at B >= 8 rows on top of any GEMM core (pool I9/I14/I16). r3: the fallback branch of E2 if H24 shows the post-sync round is barrier latency rather than issue rate'
 - id: H11
   statement: The fixed floor F (launch + barriers + ramps) is 4.6 us in a cooperative kernel and 9.9 us for three launches;
     what sets the S rows is the SM work and dependent rounds inside each phase (8-10 us per phase at 1,192,28,28 in B;
@@ -123,7 +135,7 @@ hypotheses:
   evidence:
   - 'r1 B stub: all three phases stubbed = 4.2-4.7 us on every shape; full 1,192 = 29.7 (P1 13.2 / P2 +7 / P3 +9.6)'
   - 'r1 A: cold dependent load 0.44 us per step, ~1 us per round once loaded; K1/K2/K3 are 2-3 round chains each'
-  - 'audit r2: the S rows scale by exactly the clock ratio (1.28), so part of the per-phase cost is cycles, not latency; the split is measured in E2 (clock64 vs globaltimer)'
+  - 'r2 B audit at 1,192 (globaltimer): ~12 dependent steps of 1.5-2.5 us between P1 end (1.8 us median, 8.6 max) and the end at 28.2 us; r2 A: small-row K1 is ~55% first-stage latency (ns) and ~40% cycles'
   - 'predict_score r2: 20 us + bytes/1 TB/s on every row -> 0.80; fused targets S 23 / M 46 / L 105 us portal -> 0.76'
 - id: H12
   statement: Legacy mma.sync.m16n8k16 FP16 (fp32 accumulate) on sm_100 delivers >= 0.3 PF/s at 1.5 GHz.
@@ -145,17 +157,19 @@ hypotheses:
 - id: H15
   statement: cuBLASLt FP16 GEMM1+GEMM2 cost <= 12 us at the S sizes and pick sane kernels at M=98..784 with K=3072, so the
     library is not what limits a launch pipeline; the pipeline's floor is its custom launches.
-  status: supported
+  status: open
   evidence:
-  - 'r1 A: GEMM1+GEMM2 5.1+6.8 us at 1,192, 6.0+9.6 at 2,768, 10.1+13.8 at 32,768; 8 heuristic algos per shape, top-3 within 0.3%'
+  - 'r1 A: GEMM1+GEMM2 5.1+6.8 us at 1,192, 6.0+9.6 at 2,768, 10.1+13.8 at 32,768; 8 heuristic algos per shape, top-3 within 0.3% (checked at 1,192 only)'
   - 'r1 A: NCHW strided-batched GEMM2 (m=HW) is 20-200 us for HW=49/196/odd; channels-last GEMM2 + 32x32 transpose-add (4-8 us) instead'
   - 'r1 A: the 5-launch pipeline lands at 34.5-58.9 us at S/M rows, not 25-35, because K1/K2/K3 cost 6-17 us each'
+  - 'audit r3 rescopes: supported at 1,192 (and C<=192); at C=768 the two GEMMs cost 15.6 us (2,768) to 24 us (32,768) against a 2.7 us weight stream plus 0.5-8 us of MMA, i.e. the library IS a first-order term on four rows (0.03-0.05 of mean). E1 sweeps all heuristic algos incl. split-K cold at 98/392/784/1568 x 3072 x 768; lineage D replaces the library there'
 - id: H16
   statement: Writing then reading a 10-134 MB fp16 hidden under the harness's dirty-L2 flush costs little (<= 4 us over the
     launch floor at 20-42 MB; ~1.4x ideal at 134 MB), so a materialised fp16 hidden is not a lever below 42 MB.
   status: supported
   evidence:
   - 'r1 A probe, two launches after the 2xL2 zero-fill: 0.01 MB 5.4 us, 20 MB 9.0, 42 MB 14.6, 134 MB 57.4 (ideal 5.7/12/38)'
+  - 'r2 C (E3): an on-chip hidden with one barrier was no faster than B''s materialised hidden at 1,192 / 2,96 (30.8 / 46.3 vs 30.9 / 42.2)'
 - id: H17
   statement: The anchor's phase 1 at C=768 is block-level weight transposes plus the 4-tokens-per-lane conv; warp-level
     transposes and zero-padded smem planes cut it to ~45 us.
@@ -169,39 +183,72 @@ hypotheses:
     (<= 250 us at the largest, <= 55 us at 32,128, <= 4 us at S rows).
   status: open
   evidence:
-  - 'r1 A: staging removal cut K1 3x; stage-only 9.5 us vs 1.9 us floor for a 64-channel 7-row band. TMA row strides must be 16 B multiples, so W=7 and W=14 rows cannot use a row-boxed map (plane bytes 196/784 B: 4-channel groups of 784 B and single 14x14 planes are legal 1-D bulk copies). Tested in E1'
+  - 'r1 A: staging removal cut K1 3x; stage-only 9.5 us vs 1.9 us floor for a 64-channel 7-row band. TMA row strides must be 16 B multiples, so W=7 and W=14 rows cannot use a row-boxed map (plane bytes 196/784 B: 4-channel groups of 784 B and single 14x14 planes are legal 1-D bulk copies)'
+  - 'r2 A (E1): ingest part SUPPORTED for W%4==0 rows: stage-only ring 15 GB/s/SM at 8,320, 20 at 32,128, 34 at the largest (2.67 TB/s on x), 11x the old staging; full K1 5.6 / 23 / 81 / 315 us at 1,192 / 8,320 / 32,128 / 64,96. The 1.5x-of-FMA-bound part is NOT met (3x at the largest: LDS and per-stage sync bound). Box inner start must be a multiple of 16 B (start at w=-4, box W+8). Bulk-plane copies for W=7/14 untested (D, E3)'
 - id: H19
   statement: In the cooperative mma.sync kernel, the S-row time above F is mostly dependent global rounds that can be
     overlapped across the grid syncs (phase-2 operands issued before sync 1, W2 K-slices and the x residual before sync 2,
     s_b published by a per-image last arriver) and the C<=384 weight pass can move into the consuming CTAs; together they
     cut 1,192,28,28 from 29.7 to <= 22 us rented and the other S rows by 8-12 us.
-  status: open
+  status: refuted
   evidence:
-  - 'r1 B per-phase: P1 13.2 / P2 +7 / P3 +9.6 us at 1,192 for 0.46 GFLOP (MMA ideal ~0.01 us per SM); weight pass 10 us of P1 at C=768. Audit r2 doubts the round-trip model because S rows scale 1.28x with the clock; E2 splits cycles from ns with clock64 + globaltimer'
+  - 'r1 B per-phase: P1 13.2 / P2 +7 / P3 +9.6 us at 1,192 for 0.46 GFLOP (MMA ideal ~0.01 us per SM); weight pass 10 us of P1 at C=768'
+  - 'r2 B (E2): collapsing every phase to one load round did not move 1,192 (30.5 flat vs 30.4 ring, interleaved); a 12-32 KB per-CTA cp.async round right after a grid sync still takes 2-4 us; removing the sumsq read saves ~1 us, so a last-arriver publisher removes no round. Flat vs ring per row: 1,160 -7%, 4,96 -7%, 4,192 +8%, 8,192 +20% (dispatch set). The mechanism behind the 2-4 us round is open (H24)'
 - id: H20
   statement: A one-barrier cooperative kernel that keeps each CTA's hidden tile (T tokens x BN hidden channels, fp16) in
     shared memory across the grid sync, ingests its W1/W2 slices from L2 through cp.async.bulk rings at >= 100 GB/s per SM,
     and reduces GEMM2 split-K partials with red.global.add into an output pre-filled with x + b2, runs the seven C <= 192
     rows in <= 15-20 us rented (S ~0.8 per row, ~+0.07 of mean).
-  status: open
+  status: refuted
   evidence:
-  - 'pool I15/I21 arithmetic: per-SM weight ingest 295-590 KB at C=192, conv redundancy 4C/BN, red.add volume M*C*4*(4C/BN) at 4.1-4.4 TB/s (~1 us); hidden per SM <= 65 KB. Unknown: bulk-ring ingest rate from L2 (C measured 37 GB/s per SM through registers). Probe and kernel in E3'
+  - 'r2 C (E3) probe: one-shot bulk ingest 120 GB/s/SM (590 KB in 5.0 us at 148 CTAs); in-ring fp16 conversion 2-2.5x slower; smem binds (BN=128 at 1,192; no plan for 8,192 / C>=320)'
+  - 'r2 C (E3) v2: 1,192 30.8 us, 2,96 46.3, 4,192 90.6, 4,96 88.0 (kill line 25 us at 1,192); conv redundancy 4C/BN (2-6x) and serial dependent rounds dominate; no edge over B''s materialised hidden. Lineage C retired r3; the bulk-ingest, convert-at-fragment-load, entry-bulk-vectors and red.add findings carry into D'
 - id: H21
   statement: The portal/rented ratio is 1.27-1.28 on every row for FP16 mma.sync/cuBLASLt kernels (clock-bound, S and L
     alike), so rented gains carry over in proportion and portal rows can be projected as rented x 1.28.
-  status: supported
+  status: open
   evidence:
   - 'portal #65570 (A v3) vs rented on the 8 rows that ran: 1.27-1.28 each (43.8/34.5 ... 2286/1790); fp32 anchor 1.30-1.32'
+  - 'audit r3: supported on those 8 rows (C<=192 large-HW and the top two); no W=7/14/449x7 row measured, and v3fix ran 6 us slower in another session (would read 1.12), so the ratio on the weight-bound rows is 1.15-1.28 until a 16-row portal result exists (operator: submit r2-lib-cublaslt-fp16-tmaconv in r3)'
 - id: H22
   statement: Single-pass FP16 operands leave a max-error tail that touches the smallest atol (2.4e-3) on the 77M-element rows;
     a hi/lo fp16 split of one operand (2 MMAs) restores fp32-class accuracy at no cost where MMA work is <= 2 us (all S/M rows),
     so per-row error logging decides where to spend it.
   status: open
   evidence:
-  - 'r1 B: err rms 3.9-4.2e-4, max 1.9-2.8e-3, <= 1e-7 fraction beyond 2.4e-3 with randomized LN affine; A never logged. r0 simulation: FP16 hi/lo split err 1e-6. Logged per row in E1/E2/E3'
+  - 'r1 B: err rms 3.9-4.2e-4, max 1.9-2.8e-3, <= 1e-7 fraction beyond 2.4e-3 with randomized LN affine; r0 simulation: FP16 hi/lo split err 1e-6'
+  - 'r2 A: fp64 reference, 1-3 rounds per row: 0 beyond 2.4e-3 + 1e-5|ref| on all 16 rows, max 2.39e-3 at 32,128, 2.37e-3 at 8,768 and 32,768. r2 B (flat, randomized LN, 2 seeds): 1 element beyond 2.4e-3 at 4,96 and 8,192. r2 C: not logged'
+  - 'r3: every experiment logs the harness''s 10 seeded rounds per row against the row''s own atol (see the precision note); rows with any beyond-atol element get the split before a portal slot'
 - id: H23
   statement: tcgen05 kind::f16 (2SM pairs, TMA-fed from fp16 L2 scratch) is worth +0.02-0.03 of mean over mma.sync at the four
     GEMM-heavy rows (8,320; 32,768; 32,128; 64,96) and is the lever for the L band once the S/M rows are near the fused floor.
   status: parked
   evidence:
-  - 'arithmetic: mma.sync ideal 29/33/76/260 us vs tcgen05 7/8/19/65 us at those rows; per-row S difference ~0.06-0.1 each. Deferred: no free slot in r2; seed a lineage from pool I8/I11/I26 when a slot opens or C fails its kill criterion'
+  - 'arithmetic: mma.sync ideal 29/33/76/260 us vs tcgen05 7/8/19/65 us at those rows'
+  - 'audit r3 corrects the value: with the score formula the ideal savings give +0.047/+0.057/+0.034/+0.027 per row = +0.010 of mean, ~+0.005 against cuBLASLt (already tensor cores). Not a lineage thesis; an engine swap inside A or D once a row is MMA-bound (32,768 at mma.sync: 33 us ideal)'
+- id: H24
+  statement: The 2-4 us cost of a 12-32 KB per-CTA load round right after a grid sync (and the ~8 GB/s/SM LDG/cp.async
+    staging in A's old K1) is an issue-rate artefact of 4-byte copies, integer div/mod and serialised waits, not post-barrier
+    L2 latency; one cp.async.bulk per operand (measured 120 GB/s/SM one-shot) brings the round to <= 1.2 us, which cuts
+    1,192 to <= 22 us rented and the other S rows by 8-12 us in the cooperative kernel.
+  status: open
+  evidence:
+  - 'for: probes show 0.44 us per cold dependent step and ~120 GB/s/SM one-shot bulk copies (predicting ~0.5 us for a 32 KB round); A''s k1_dw staged with 4-B cp.async plus div/mod'
+  - 'against: the S rows scale 1.28x with the clock (cycles, not ns), and the flat kernel''s rounds after membar.gl read lines just written by other SMs. Microbench in E2 (critic''s test): 296 CTAs, grid.sync, then 32 KB/CTA as 4-B cp.async / 16-B all-issued cp.async or LDG.128 / one cp.async.bulk, source just-written vs cold, globaltimer per CTA'
+- id: H25
+  statement: A weight-stationary cooperative kernel for the six wide-C small-image rows (each CTA owns a hidden slice BN and
+    whole-image token tiles T, ingests its fp32 W1/W2 slices once per call through TMA/bulk rings with conversion at fragment
+    load, keeps the per-(image,k) GRN statistics CTA-local, bulk-plane conv, GEMM2 through red.add or a materialised scaled
+    hidden per row) runs 2,768 in <= 35 us, 8,768 <= 45, 16,768 <= 55, 32,768 <= 75, 8,384 <= 45, 16,384 <= 60 rented
+    (about +0.035-0.05 of mean).
+  status: open
+  evidence:
+  - 'arithmetic (pool I22/I25): weights 19 MB read once = 2.7 us at 7 TB/s; per-CTA ingest 130 KB-1.6 MB at 120 GB/s/SM = 1-13 us; mma.sync f16 ideal 1/4/8/16 us at 2/8/16/32,768; red.add volume M*C*4*(4C/BN) at 4.2 TB/s (e.g. 14 MB = 3.5 us at 2,768 with BN=24). Risk: three post-sync rounds at 2-4 us each (H24) and L2-aggregate limits when slices are shared. Stub probe then kernel in E3'
+- id: H26
+  statement: Replacing cuBLASLt GEMM1 + K2 and K3 + cuBLASLt GEMM2 + K4 in lineage A with two custom mma.sync FP16 GEMMs whose
+    epilogues carry the LN fold, exact GELU, per-image sumsq and fp16 hidden store (GEMM1) and the s_b reduction, A-scale at
+    fragment load, residual and NCHW store (GEMM2) cuts the pipeline to 3 launches and the S/M rows by 10-14 us rented
+    (1,192 <= 26 us, 2,768 <= 48, 8,384 <= 60; about +0.04 of mean).
+  status: open
+  evidence:
+  - 'r1 A breakdown: K2 8-19 us, K3 6-17 us, K4 4-8 us per S/M row; cuBLASLt GEMM1 5.1 us at 1,192. Leader story: a 3-4 launch pipeline with fused epilogues lands at the leader''s implied 24-37 us rented on S rows. Pitfalls from B apply (per-shape templates, all fragment loads first, smem-staged rolled GELU epilogue). Built in E1'

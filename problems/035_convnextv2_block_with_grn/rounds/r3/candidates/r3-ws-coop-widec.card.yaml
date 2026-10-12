@@ -1,0 +1,73 @@
+id: r3-ws-coop-widec
+parents: [r0-convnext-coop-fp32-anchor]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E3 (H25). One cooperative launch for the six wide-C small-image rows. Each of 128 CTAs (512 threads,
+  1 CTA/SM) owns whole-image token tiles and one hidden slice (GEMM1), then one c-slice x k-split (GEMM2). The fp32
+  W1/W2 32-k chunks stream through a 4-stage TMA ring (128B swizzle) and are converted once per chunk into fp16 smem,
+  with lnw or the per-image GRN scale folded in. The conv reads bulk-loaded 32-plane groups. The GRN norms are
+  CTA-local (gf written directly, no atomics). The scaled hidden is materialised as fp16 in L2 and GEMM2 is split-K
+  (KS 2-8) with coalesced red.global.add.v4 into an output prefilled with x+b2 in phase A, so no extra sync is needed.
+  Result: wins 2,768 (34.1 vs A r2 64.3 rented) and 8,384 (53.5 vs 77.6), ties 8,768 and 16,384, loses 16,768 and
+  32,768, which are bound by mma.sync work plus about 0.26 us of fixed overhead per chunk.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: -60, confidence: medium}
+  L: {pct: -60, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 205000
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 120000
+  launches_per_call: 1
+knobs: {WS_S: 4, KC: 32, WS_WPRE: 2, threads: 512, ctas: 128, tiles: "2,768 NI2 BN24 CS48 KS8; 8,768 NI2 BN96 CS96 KS4; 16,768 NI4 BN96 CS96 KS4; 32,768 NI4 BN192(2 passes) CS96 KS2; 8,384 NI1 BN96 CS96 KS4; 16,384 NI1 BN192(2 passes) CS96 KS2"}
+dispatch:
+  - {shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14", kernel: ws_kernel, meta: {cfg: "0/1/2/2/3/3"}}
+  - {shapes: "other 10 rows", kernel: convnext_fused (r0 anchor), meta: {}}
+tests: [H25]
+findings:
+  - "step 1 stub (128 CTAs x 512 thr, 2 atomic grid syncs, entry plane bulk copies + x prefill, per-CTA real G1/G2 bytes through a 5x32 KB bulk ring), harness_time us mask0/+conv/+G1/+G2: 2,768 6.8/7.8/12.3/16.1; 8,768 6.7/7.9/13.3/18.2; 16,768 6.7/8.4/14.8/20.8; 32,768 6.8/9.2/19.9/29.2; 8,384 6.8/8.4/12.4/15.6; 16,384 6.7/9.9/15.3/19.8. 1.4 MB per CTA ingests at about 135 GB/s/SM. Kill gate (20/35 us) passed: about 17 / 32 us with coalesced red [probe_b200]"
+  - "pitfall: scattered scalar red.add (stride-33 addresses, one sector per lane) cost 8 us for 2.4 MB and 30 us for 9.6 MB. Coalesced contiguous red.global.add.v4.f32 from 128 CTAs: 2.4/4.8/9.6 MB in 2.4/2.8/3.7-4.2 us including launch (scalar coalesced 3.3/4.5/6.8). Stage GEMM2 partials in smem as [img][c][hw] (16-B aligned since c0 % 4 == 0) and use the v4 red [probe_b200]"
+  - "decision, step 2: GEMM2 = materialised fp16 hidden in L2 (written before sync 2) + split-K over a (c-slice x k-split) CTA grid with KS 2-8, red.add volume M*C*4*KS = 2.4-9.6 MB (1-2.5 us). The red.add-of-on-chip-hidden path (KS = 4C/BN = 32-128) would be 38 MB at 2,768. No extra grid sync either way [INFERRED from probe numbers]"
+  - "smem: fully resident fp32 W1+W2 slices fit only where M <= ~400 at C=768 (BN=24 -> 74 KB each). 16/32,768 need ntile >= 4 and weight streaming, which makes the design weight-streaming per slice rather than weight-stationary. Final smem 114-205 KB per CTA [INFERRED from planner]"
+  - "v1 (fp32 W fragments converted by every warp at fragment load; rolled GELU epilogue) run_tests 16/16, us: 2,768 49.8; 8,768 99.1; 16,768 123.6; 32,768 217.8; 8,384 74.3; 16,384 130.2 [run_tests]"
+  - "v1 stamps at 32,768 (CTA medians, us): A done 13.3, sync1 14.8, G1 pass0 mainloop 57.1, G1 done 132.6, sync2 135.2, C prologue 140.5, G2 mainloop 211.7, end 218.4. No-MMA ablation 97.7 us vs 222 full [probe_b200]"
+  - "v2 (W chunk converted once per chunk into fp16 smem, B fragments via ldmatrix) gained only 5-15%. Ablation at 32,768: full 232 / no compute 101 / no compute + no W TMA 98 / no compute + no A bulk 96 / no compute + no loads 92 us. So neither the bytes (W strided 128-B TMA rows are fine) nor the MMA set the time; the kernel's skeleton does [probe_b200]"
+  - "root cause (per-chunk globaltimer stamps): latency-bound smem loops at 16 warps/SM with no ILP. (a) LN-stats prologue after sync1: 24 __ldcg per token issued one after another under '#pragma unroll 8' with a runtime count, 5 us at 2,768 and 7-9 us at 32,768. (b) Rolled warp-per-row GELU epilogue: 16.6 us per G1 pass at 32,768 (2.3 at 2,768), the same pathology as lineage B's 16 us epilogue. (c) W conversion loop with a runtime trip count: 1.05 us/chunk in G2 at 32,768 (4 per-image copies). (d) Bare chunk skeleton (wait + 2 __syncthreads + refill): 0.26 us/chunk = 25 us over 96 chunks at 32,768 [probe_b200]"
+  - "v3 fix: compile-time trip counts with all loads issued before use (LN stats, gf for the GRN scale, W conversion in batches of 3), and 2 rows x HWp/32 tokens of GELU per lane in flight. run_tests 16/16, rented us: 2,768 34.1; 8,768 63.9; 16,768 93.6; 32,768 169.6; 8,384 53.5; 16,384 93.7; other 10 rows = r0 anchor within 3% [run_tests]"
+  - "per-chunk compute (v2 stamps at 32,768): mma.sync about 0.64 us per 32-k chunk at 384 HMMA/SM against a 0.40 us ideal. G1+G2 = 96 chunks, so 32,768 floors near 60-70 us with this engine before conv (10 us), syncs and epilogues. 32,768 cannot reach the 75 us target on mma.sync with 128 CTAs plus per-chunk __syncthreads [probe_b200]"
+  - "conv phase A (bulk 32-plane groups, thread per 7-output row segment): 1.5 us at 2,768, 6 us at 8,768, 10 us at 32,768 (6 units/CTA), 8-9 us at 8/16,384 [probe_b200]"
+  - "precision (fp64 reference, harness-like generators, 1 seed per row, probe): max |err| 1.52-1.84e-3, below the smallest atol 2.4e-3. Single roundings only: d16, fp16(lnw*W1), h16, fp16(s_img*W2), with LN folded as rs*(acc - mu*s1) + c1 and the gb term exact in fp32. Per-row beyond-atol counts over the 10 seeded harness rounds were NOT logged; run_tests passes 16/16 [probe_b200, run_tests]"
+  - "verdict H25: refuted as stated. 2,768 met (34.1 <= 35); 8,768 63.9 > 45; 16,768 93.6 > 55; 32,768 169.6 > 75; 8,384 53.5 > 45; 16,384 93.7 > 60. The refutation clause fires at 8,768 (not 10 us faster than A r2 63.1, cross-session). The binding term is not weight ingest or post-sync rounds (stub 17-32 us); it is per-chunk SM time: mma.sync plus a sync-heavy 32-k ring at 16 warps/SM [run_tests, probe_b200]"
+  - "value: as a dispatch specialist on 2,768 and 8,384 only (A elsewhere) worth roughly +0.013 of mean (closes about 80% and 60% of those rows' gaps to the leader-implied 27/37 us), short of the +0.03 success line [INFERRED from ledger notes]"
+  - "next levers if D continues: KC=64 chunks or a double-buffered fp16 B to halve the per-chunk __syncthreads (about 0.13 us x 48-96 chunks); tcgen05 for 16/32,768 (MMA-bound); stats from an earlier round to drop the 2 us LN prologue at 2,768 [INFERRED]"
+paths:
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "six wide-C rows only (2/8/16/32,768,7,7; 8/16,384,14,14): ws_kernel, cooperative 128 CTAs"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "other 10 rows: r0 fp32 anchor"}
+runs_on:
+  H200: {runs: false, representative: false, note: "sm_100a-specific build; mbarrier/TMA/mma.sync would port to sm_90 but untested"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "cooperative launch needs 128 co-resident CTAs at up to 205 KB smem and 512x128 regs (1 CTA/SM); fine on 148 SMs"
+  - "precision margin logged with 1 seed per row only (max 1.84e-3 vs atol >= 2.4e-3); beyond-atol counts over the 10 harness rounds still owed"
+  - "the 10 non-target rows run the slow r0 anchor; a portal slot only makes sense merged into a dispatch with lineage A"
+  - "split-K red.add makes output summation order nondeterministic (within tolerance)"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

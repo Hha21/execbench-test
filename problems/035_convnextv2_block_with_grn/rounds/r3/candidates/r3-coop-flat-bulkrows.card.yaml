@@ -1,0 +1,73 @@
+id: r3-coop-flat-bulkrows
+parents: [r2-coop-flat-s]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage B, E2 (H24). The hypothesis was that the 2-4 us post-grid-sync load round comes from issue rate (4-B/16-B
+  cp.async with div/mod), so replacing it with cp.async.bulk copies on one mbarrier would cut 1,192 to <= 22 us. The
+  microbench partly supports the mechanism: a 32 KB just-written round takes 1591 clk as one bulk copy against 2607 clk
+  for 16-B cp.async+div and 4504 clk for 4-B cp.async. But the round in the kernel is dominated by the grid barrier
+  (1.6-1.9 us) and by cold-DRAM latency (2.6-3.5 us for every method). Per-row bulk copies of the post-sync A/B tiles
+  moved the S rows by <= 0.6 us (inside the ~1.5 us run-to-run noise) and lost 1.9 us at 1,192 against the ring kernel.
+  H24 is refuted at kernel level. Shipped: the parent's dispatch, plus GEMM2 bulk-row copies on the two flat-path rows.
+expected_effect:
+  S: {pct: -1, confidence: medium}
+  M: {pct: 0, confidence: high}
+  L: {pct: 0, confidence: high}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 107296
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 151552
+  launches_per_call: 1
+knobs:
+  NT: 256
+  GRID: 296
+  FLAT_DISPATCH: "W % 4 != 0, or C <= 96 and M > 8192 (C <= 192, HW >= 128): flat path with FL_BULK2"
+  RING_PATH: "unchanged r1 ring kernel for all other shapes (incl. 1,192,28,28)"
+  RES_OFF: "flat-path smem plans capped at SMEM_BYTES - 4096 (mbarrier slot)"
+tests: [H24]
+findings:
+  - "E2 step 1 microbench, cooperative-style stub (296 CTAs x 256 thr, 2/SM, ~1.9 GHz, 2xL2 flush before each launch), per-CTA load round after the grid barrier, median/max clk and B/clk/SM. JUST-WRITTEN (written by other CTAs before the barrier): 6 KB cp4+div 1876/2358 (6.6), cp16+div 1322/1747 (9.3), ldg128-all-issued 1046/1444 (11.7), one bulk 990/1433 (12.4); 12 KB 2344/2898 (10.5), 1585/2003 (15.5), 1211/1583 (20.3), 1087/1465 (22.6); 32 KB 4504/5221 (14.6), 2607/3066 (25.1), 1806/2251 (36.3), 1591/1916 (41.2) [probe_b200]"
+  - "E2 step 1 microbench, COLD DRAM source: 6 KB cp4+div 3046/3888 (4.0), cp16+div 2606/3465 (4.7), ldg128 2250/3094 (5.5), bulk 2371/3304 (5.2); 12 KB 4055/5069, 3568/4536, 3134/4022, 3268/4172; 32 KB 6766/8057 (9.7), 6336/7260 (10.3), 5642/6392 (11.6), 5136/6492 (12.8). Cold rounds cost 1.2-3.5 us whatever the load method [probe_b200]"
+  - "grid barrier cost alone (296 CTAs): cg-style flip barrier (atom.add.release + ld.acquire poll) waits 3007 clk median with no stores before it, 3399 with 6 KB of stores pending and 3644 with 32 KB pending; release after the last arrival is 1.5-2.0 us (globaltimer, 256 ns grain). red.release + monotone-target poll is the same (2886-3578 clk). A count+reset+generation barrier is worse: 4760-5674 clk (2.3-2.8 us) [probe_b200]"
+  - "H24 verdict: the branch condition held (32 KB just-written bulk round 0.83 us median, under the 1.2 us bar), so the bulk rebuild was built. The kernel-level claim is REFUTED: the 2-4 us post-sync steps in the r2 audit are barrier release (1.6-1.9 us) plus cold-DRAM or dependent rounds. Copy issue rate is worth only ~0.5 us per 32 KB round (cp16+div 1.36 us vs bulk 0.83 us) [probe_b200, run_tests]"
+  - "run_tests with a same-build control (parent dispatch, no bulk), rented, us: 1,192 ring 29.5 vs flat+bulk1+bulk2 31.4 (+1.9, so 1,192 stays on ring); 1,160,449,7 54.0 vs 53.4 / 53.6 (bulk2); 4,96,56,56 58.4 vs 57.8 / 58.7 (bulk2). Unchanged-code rows moved up to 1.5 us between runs (2,768: 46.7 vs 48.2), so the bulk2 gain is within noise. Success criteria (1,192 <= 22, 2,96 <= 32) missed: 29.7 / 42.0 [run_tests]"
+  - "final run_tests (rented, 16/16 PASS, us): 1,192 29.7; 1,96 29.1; 1,160,449,7 53.6; 2,96 42.0; 4,192 46.1; 8,384 85.7; 4,96 58.7; 8,192 66.1; 16,384 113.9; 2,768 48.1; 8,768 86.7; 16,768 108.5; 8,320 174.9; 32,768 180.1; 32,128 592.9; 64,96 1783.0; projected portal 0.5625 +- 0.008 (same-session control 0.5643) [run_tests]"
+  - "ablation in a ctypes probe harness (flat path only, interleaved x2, us; old flat = cp.async): bulk rows in GEMM1 -1.5 at 1,192 but +0.6..+3.4 at 2,96 / 1,160 / 4,96 / 8,192 (CTAs with 2 tiles of 224-256 rows; one warp issuing 7-8 small bulk copies per lane is slower than 256 threads of cp.async); GEMM2 bulk rows -2.0 at 1,192, -1.4 at 1,160, -1.8 at 4,96, +1.7 at 8,192 [probe_b200]"
+  - "dead end: conv-first P1 ordering (x loads issued before the dw-weight cp.async wait, weight conversion moved to CTAs with one conv unit fewer, after their conv) is +1..+2 us on 6 of 7 S rows (-0.8 at 1,96) [probe_b200]"
+  - "dead end: prefetching grn_weight into smem at kernel entry (to take its cold __ldg out of the GEMM2 prologue) changes nothing (+-0.4 us): that cold load was not on the critical path [probe_b200]"
+  - "PITFALL (harness): a ctypes + torch.empty-in-fn probe harness timed the flat path 4-5 us slower than run_tests (1,192 flat 34.8 vs 29.5-30.5), and its relative gains did not carry over (bulk -3 us in the probe, +1.9 us vs ring in run_tests). Decide dispatch from run_tests with a same-build control, not from probe harness_time on a ctypes wrapper [probe_b200, run_tests]"
+  - "PITFALL (tooling): probe_b200 does not keep /tmp between calls (a file written in one probe was gone two calls later); every probe build must carry its full source [probe_b200]"
+  - "correctness: bulk copies move the same bytes as cp.async; max |err| vs an fp32 torch reference was identical old vs new (one seed): 1,192 1.73e-3, 2,96 1.92e-3, 1,96 2.21e-3, 4,192 1.96e-3, 1,160 1.91e-3, 4,96 2.29e-3, 8,192 2.06e-3. The per-row fp64 log over the harness's 10 seeded rounds was NOT run this session; the error tail is the parent's (H22) [probe_b200]"
+  - "proxy ordering used: fence.proxy.async.global by all threads before each grid.sync whose consumers bulk-read generic-written global data, by the issuing lane before each expect_tx, and fence.proxy.async.shared::cta + __syncthreads before refilling smem previously written by generic stores; 16/16 x 10 rounds pass [run_tests]"
+  - "lineage B verdict: with F ~4.6 us, two grid barriers at 1.6-1.9 us of release each, and cold rounds of 2.6-3.5 us, the cooperative kernel's S-row floor sits near 20 us before any SM work. The parent's S rows (29-58 us) cannot reach <= 20 us by changing load instructions. Only a barrier-free per-image dataflow (H10, not run here) could; otherwise retire the S-row thesis in r4 [INFERRED from microbench + run_tests]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "flat kernel with GEMM2 bulk-row copies: W%4!=0 or (C<=96 and M>8192), C<=192, HW>=128 (1,160,449,7 and 4,96,56,56)"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1, shapes: "r1 ring kernel: all other shapes (unchanged)"}
+runs_on:
+  H200: {runs: true, representative: false, note: "cp.async.bulk/mbarrier/cooperative launch exist on sm_90; clocks, HMMA rate and barrier latency differ"}
+  A100: {runs: false, representative: false, note: "cp.async.bulk and mbarrier expect_tx need sm_90+"}
+  L40S: {runs: false, representative: false, note: "no bulk copies; 100 KB smem < 107 KB dynamic smem"}
+risks:
+  - "Gain is within noise (<= 0.6 us on two rows); the portal score should match the parent within +-0.008"
+  - "Bulk reads of data written through the generic proxy rely on fence.proxy.async.global around the grid syncs; passes 16/16 x 10 rounds, but a missing fence would show up only as rare stale reads"
+  - "Split-K red.add into out (pre-filled with x by the conv) is order-nondeterministic, within tolerance (same as parent)"
+  - "Both kernels set MaxDynamicSharedMemorySize once to the same value (portal-order safe)"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

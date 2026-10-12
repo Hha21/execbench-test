@@ -1,0 +1,67 @@
+id: r3-a-e1-mma-fused-3launch
+parents: [r2-lib-cublaslt-fp16-tmaconv]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows8
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage A / E1 (H26). Per-shape dispatch between the parent's 5-6 launch cuBLASLt pipeline and a 3-launch path
+  (K1 TMA conv + weight prep; GEMM1f = mma.sync FP16 with LN fold, exact erf GELU, per-image sumsq and fp16 hidden
+  in a smem-staged rolled epilogue; GEMM2f = swapped mma.sync FP16 whose prologue reduces the GRN scale from the
+  sumsq copies, scales each landed hidden chunk in fp32, adds b2' and the residual and stores NCHW directly).
+  Measured: H26 refuted. The 4-warp mma.sync tiles reach only ~160 TF/s with their cp.async ring, so the custom
+  path wins only on tiny-GEMM rows (1,96 -11%, 2,96 -5%, 2,768 -6.5% rented, cross-session vs the parent run);
+  all other rows keep the library path. 1,192 is ~5% slower custom than library and should be flipped to use=0.
+expected_effect:
+  S: {pct: -4, confidence: low}
+  M: {pct: 0, confidence: medium}
+  L: {pct: 0, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 49000
+  threads_per_cta: 128
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 60000
+  launches_per_call: 3
+knobs: {G1_tiles: "64x64 (S rows), 32x64 (2,768)", G2_tiles: "32x32 / 32x64 / 64x32 split-K 4 (2,768)", STG: 4, BK: 32, NC_copies: "min(4, HW/BM1)"}
+dispatch:
+  - {max_tokens: null, kernel: "custom 3-launch (K1 + g1_kernel + g2_kernel)", meta: {rows: "1,192,28,28; 1,96,56,56; 2,96,56,56; 2,768,7,7"}}
+  - {max_tokens: null, kernel: "library (K1 + cublasLt + k2 + k3a/k3b + cublasLt [+k4])", meta: {rows: "the other 12"}}
+tests: [H26, H15, H22]
+findings:
+  - "H26 REFUTED (run_tests, rented, 16/16): custom 3-launch 1,192 36.3 us (target <= 26; library ~34.3 in-container), 2,768 60.1 (target <= 48), 1,96 31.0, 2,96 37.6; all-custom first build had 8,384 97.5 (target <= 60) and 8,192 76.2 (target <= 50); refutation clause fires: 3-launch total at 1,192 >= 30 us and GEMM1f alone ~12-14 us cold (K1+GEMM1f 21.6 us) [run_tests, probe_b200]"
+  - "root cause: legacy mma.sync tile 64x128, 4 warps (2x2), 4-stage cp.async ring, BK=32 reaches 160 TF/s at 320 CTAs / K=1280 (42 us); with loads and syncs removed 250-269 TF/s; SASS clean (32 HMMA, 0 WARPSYNC, 0 BSSY). cuBLASLt (tcgen05) does the same GEMMs ~4x faster, so custom loses on every M-heavy row [probe_b200 NVRTC microbench + sass]"
+  - "per-launch (fixed build, harness_time, single reads; many CUPTI 'sequence not found' flakes): 4,192 K1 9.5 / GEMM1f 17.2 / GEMM2f 22.7 us (library total 42.6); 8,384 K1 31.2 / GEMM1f 22.3; 8,768 K1 23.7 / GEMM1f 23.9; 8,320 K1 22.1 / GEMM1f 62.3 / GEMM2f 108.7 (library total 94.5) [probe_b200]"
+  - "dead end (first build): per-CTA GRN reduce in GEMM2's prologue with __ldg in a runtime loop (unroll 4 + inner copy loop) and 4-deep LN-stats loads in GEMM1 made C=768 rows ~2x slower (32,768 220 vs 97 us, 16,768 132 vs 78, 8,768 100 vs 63). Fix: cp.async the raw sumsq copies + gw into smem in the first pipeline group, batch stats loads 12 wide [run_tests, probe_b200]"
+  - "pitfall: GEMM2f with 64x128 tiles at 8,320 needs 108 KB smem (pipeline 61 KB + per-image GRN scale vectors), so 2 CTAs/SM and 320 CTAs = 1.08 waves; tile count vs smem residency matters as much as MMA rate [INFERRED from planner]"
+  - "precision (fp64 torch reference, harness-like generators, seed 7, 1 round per row, custom path forced on 9 rows): max |err| 1.86e-3 .. 2.35e-3, 0 elements beyond 2.4e-3; the hidden is rounded to fp16 twice (GELU output, then fp32 x s_b) and W2 once, like the parent's k3b branch. The 10-seeded-round per-row log was NOT done [probe_b200]"
+  - "registers/spills (compile_b200): g1_kernel 56-165 regs, g2_kernel 32-166 regs, 0 local bytes; the shipped S-row instances are g1<2,4,T> 72, g1<1,4,F> 56, g2<1,2> 32, g2<1,4> 56, g2<2,2> 48 [compile_b200]"
+  - "final run_tests (rented, 16/16 PASS, us): 1,192 36.3; 1,96 31.0; 1,160,449,7 54.4; 2,96 37.6; 4,192 42.6; 8,384 78.4; 4,96 50.5; 8,192 59.2; 16,384 89.7; 2,768 60.1; 8,768 62.4; 16,768 77.5; 8,320 94.5; 32,768 96.2; 32,128 297.5; 64,96 1151.2; library rows equal the parent within 1%; projected portal 0.6154 +- 0.008 (parent 0.6135) [run_tests]"
+  - "not done: step 0 interleaved x3 controls (harness_time CUPTI matching failed on most calls in probes, incl. the library path's cuBLAS 2-CTA kernel), step 0b cuBLASLt algo/split-K sweep, step 4 (L2 prefetch, evict_last hidden) [probe_b200]"
+  - "next: the fusion idea is not dead, the engine is. A tcgen05 (or cuBLASLt EPILOGUE_GELU_AUX) GEMM1 carrying the same LN-fold/GELU/sumsq epilogue, and a GEMM2 with the cp.async-staged GRN prologue, would remove K2/K3/K4 without the 4x MMA penalty; for S rows the remaining cost is per-CTA dependent rounds (~3 rounds per launch) [INFERRED]"
+paths:
+  - {max_tokens: 6272, lang: cuda, width: 128, threads: 128, rows: 64, grid: oneshot, mem: cpasync, launches: 3, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 224, rows: 8, grid: oneshot, mem: tma, launches: 5, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: false, note: "TMA, cp.async and mma.sync run on sm_90; cuBLASLt picks different kernels; not timed"}
+  A100: {runs: false, representative: false, note: "TMA tensor map in K1 needs sm_90+"}
+  L40S: {runs: false, representative: false}
+risks:
+  - "1,192 runs the custom path although it measured ~5% slower than the library in-container (36.3 vs ~34.3-34.8); flip its table entry to use=0 next round"
+  - "precision logged on 1 seed per row only; max |err| 2.35e-3 at 8,384 (library row) is close to atol 2.4e-3"
+  - "split-K rows (2,768) prefill out = x in K1 role CTAs and red.add into out; correct for every call but adds atomics"
+  - "launch count differs per shape (3 vs 5-6) but is fixed per shape, so CUPTI matching is stable"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

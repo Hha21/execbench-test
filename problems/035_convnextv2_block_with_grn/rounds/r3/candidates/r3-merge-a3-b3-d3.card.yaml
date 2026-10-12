@@ -1,0 +1,94 @@
+id: r3-merge-a3-b3-d3
+parents:
+- r3-a-e1-mma-fused-3launch
+- r3-coop-flat-bulkrows
+- r3-ws-coop-widec
+operation: repair
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows8
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: 'Operator packaging (no kernel changes): per-shape dispatch over the fastest lineage per row on the r3 rented
+  runs. D r3-ws-coop-widec at 2,768,7,7 (34.1 vs A 60.1 us) and 8,384,14,14 (53.5 vs 78.4); B r3-coop-flat-bulkrows at 1,192,28,28
+  (29.7 vs 36.3) and 1,96,56,56 (29.1 vs 31.0); A r3-a-e1 elsewhere. Each lineage kernel.cu is its own translation unit wrapped
+  in a namespace (lin_a/lin_b/lin_d); D3''s unused fp32-anchor export renamed to lin_d_anchor_launch so it does not collide
+  with B''s convnext_launch.'
+expected_effect:
+  S:
+    pct: -8
+    confidence: medium
+  M:
+    pct: -10
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 72
+  smem_per_cta_bytes: 49000
+  threads_per_cta: 128
+  ctas_per_sm: 4
+  bytes_in_flight_per_sm: 60000
+  launches_per_call: 3
+knobs:
+  dispatch: 'D: 2,768,7,7 8,384,14,14; B: 1,192,28,28 1,96,56,56; A: other 12'
+dispatch:
+- shapes: 2,768,7,7 8,384,14,14
+  kernel: lin_d ws_kernel (cooperative, 128 CTAs)
+- shapes: 1,192,28,28 1,96,56,56
+  kernel: lin_b convnext_k / convnext_flat (cooperative)
+- shapes: other 12
+  kernel: lin_a K1 TMA conv + cuBLASLt / mma.sync 3-launch
+tests: []
+findings:
+- 'Rented per-row best-of across r2/r3 lineages: geomean 71.9 us (A3 alone 78.0); this merge 72.5-73 us expected. Uniform
+  x1.28 projection: A3 0.617, merge 0.635 [INFERRED from r3 rented runs]'
+paths:
+- max_tokens: 6272
+  lang: cuda
+  width: 128
+  threads: 128
+  rows: 64
+  grid: oneshot
+  mem: cpasync
+  launches: 3
+  cluster: 1
+- max_tokens: null
+  lang: cuda
+  width: 128
+  threads: 224
+  rows: 8
+  grid: oneshot
+  mem: tma
+  launches: 5
+  cluster: 1
+runs_on:
+  H200:
+    runs: true
+    representative: false
+    note: TMA, cp.async and mma.sync run on sm_90; cuBLASLt picks different kernels; not timed
+  A100:
+    runs: false
+    representative: false
+    note: TMA tensor map in K1 needs sm_90+
+  L40S:
+    runs: false
+    representative: false
+risks:
+- Rows were measured in three different sessions; cross-session drift ~1.5 us per row
+- 'Three cooperative/library pipelines in one process: host state (smem attributes, cuBLASLt plans) is per function and per
+  lineage; checked with the portal-order test'
+measure_first:
+- B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

@@ -1,0 +1,949 @@
+=== TASK ===
+Round: r1   Operation: new_design
+Problem: L2/035_convnextv2_block_with_grn   Target niche: lin:C:E3:H13   Target band: all
+Return 1 candidate(s). Each must follow OUTPUT CONTRACT exactly. Give every candidate a new unique id starting with 'r1-'.
+Experiment E3 (tests H13): Cluster-per-image kernel for the 7x7 and 14x14 rows (hidden slices in smem, DSMEM reductions, no grid barrier), with cluster-occupancy, DSMEM and TFLOAT32-rounding probes; other shapes dispatched to the anchor path. Step 0 probes (<= 20 min, record each as a finding): (a) cudaOccupancyMaxActiveClusters for cluster sizes 8 and 16 (cudaFuncAttributeNonPortableClusterSizeAllowed) with 200 KB dynamic smem and 256 threads per CTA: how many clusters run concurrently and the launch-to-first-instruction latency under harness timing; (b) DSMEM microbench in clocks: 16 CTAs all-gather a 75 KB fp16 tile (each writes its 1/16 into every CTA via st.shared::cluster) and reduce-scatter 16 x [768 x 49] fp32 partials (each CTA reads 15 slices via ld.shared::cluster); (c) H14: TMA-load fp32 values with chosen low mantissa bits through a TFLOAT32 tensor map and check bit-exactly whether the result is round-to-nearest or truncation. If (a) gives fewer than 6 concurrent 16-CTA clusters, use 8-CTA clusters (two clusters per image pair is not allowed; use 8 slices of 4C/8). Step 1 kernel, for 2/8/16/32,768,7,7 and 8/16,384,14,14 (dispatch every other shape to the anchor's cooperative kernel copied from the r0 baseline): one cluster per image (two 7x7 images per cluster when B >= 8), CTA j owns C/G channels for the dwconv (zero-padded smem planes) and hidden slice j of 4C/G. LN: per-token partial sums exchanged through DSMEM (one cluster barrier), each CTA normalises its channels and writes the fp16 a tile [tokens][C] into every CTA's smem via st.shared::cluster (second barrier). GEMM1 swap-AB: A = W1 slice [4C/G x C] (fp32 from global/L2 converted to fp16 in smem, or TF32 if (c) confirms rounding), B = a^T, N = tokens; use whichever engine you can get correct in the session (mma.sync FP16 is acceptable; tcgen05 is not required for the thesis). GELU (exact erf) in registers; gf_k = sqrt(sum over tokens of h^2) is thread-local per hidden channel; one DSMEM reduce of the per-CTA partial sums of gf gives mean_k gf (third barrier); s_k = 1 + gw_k*gf_k/(mean+eps), h' = s_k*h + gb_k in registers, written fp16 to the CTA's own smem. GEMM2 partial: W2[:, slice] [C x 4C/G] x h'^T -> [C x tokens] fp32; reduce across the cluster by DSMEM reduce-scatter (CTA j finalises output channels j*C/G .. (j+1)*C/G: + b2 + x, store NCHW with lanes along hw). Weights: each CTA reads only its two slices (1.2 MB at C=768) and ideally once per cluster via TMA multicast or plain L2 reads; measure which. Time each phase in clocks for one cluster at 32,768,7,7 and compare with the 12 us kill criterion from the probe. run_tests on all 16 workloads x 10 rounds; report per-workload rented times. Success: 16/16 pass; rented <= 30 us at 2,768,7,7 and 8,768,7,7, <= 45 us at 16,768,7,7 and 32,768,7,7, <= 40 us at 8/16,384,14,14 (anchor: 124-1217 us); projected portal score >= 0.50 with the other 10 rows still on the anchor path; probe numbers (concurrent clusters, DSMEM gather/reduce clocks, TFLOAT32 rounding) recorded. Refuted if: fewer than 4 concurrent 8-CTA clusters, or weight-slice ingest plus one GEMM1 per CTA > 12 us at 32,768,7,7 under harness timing, or DSMEM all-gather of the 75 KB a tile > 3 us; any of these means the cluster path cannot beat ~30 us per row and the lineage is retired after incubation with the probe numbers as its conclusions. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s).
+
+LINEAGE C: Cluster-per-image in-SM fusion: an 8-16 CTA cluster owns one image (two at 7x7), each CTA holds a hidden slice in smem, LN/GRN statistics and GEMM2 partials reduce through DSMEM; no grid barrier, no global intermediates; 14 of 16 workloads fit, the top two are dispatched to the r0 anchor path for now.
+You develop this lineage. get_kernel reads only this lineage's kernels and the r0 baseline; other lineages share their conclusions, not their code. Stay with the thesis: if you find it cannot win, say so with numbers in the design card's findings rather than switching to another lineage's design.
+This lineage so far:
+- Seed: targets the six 7x7/14x14 rows first (anchor S 0.10-0.23, Tb 76-181 us); if they land at 15-30 us the kernel alone is worth ~+0.2 of mean score.
+- Kill criterion from the probe: fewer than 6 concurrent 16-CTA clusters at 1 CTA/SM, or weight-slice ingest plus one swap-AB GEMM per CTA above 12 us under harness timing -> fall back to 8-CTA clusters or retire.
+- Cluster use here is a GEMM split (hidden slices = split-N of GEMM1 / split-K of GEMM2 reduced via DSMEM); flagged to the operator against the clusters constraint before any portal slot.
+- Owns the TFLOAT32 TMA rounding probe (H14).
+Other lineages (conclusions only):
+- A [active, started r1, best none]: Phase-separated pipeline of plain launches (custom dwconv+LN, library then custom tensor-core GEMMs, fp16 materialised hidden) that wins by per-phase efficiency and accepts about 2 us per launch; the control lineage expected to match the leader within one round.
+    - Seed: cuBLASLt FP16/TF32 GEMMs need no tcgen05 code; 5 launches put the fixed floor near 10-12 us plus GEMM ramps, so S rows land at ~25-35 us (S ~0.7), L rows at tensor rates (~0.9).
+    - Ceiling argument: 3 launches at ~2 us each plus ramps gives F ~8 us, i.e. ~0.82-0.85 mean if every phase is near its floor.
+    - Owns the premise tests for the materialised hidden under the dirty-L2 flush (H16) and cuBLASLt small-M heuristics (H15).
+- B [active, started r1, best none]: One cooperative launch with every phase fused, FP16 tensor cores through legacy mma.sync (registers and smem, no TMEM/TMA), grid syncs between phases; the fixed-cost specialist aiming at F <= 10 us on the S/M rows.
+    - Seed: mutates the r0 anchor (same phases, split-K, dwconv geometry); only the GEMM core, the weight transposes (emit fp16) and the W<=14 dwconv path change.
+    - Ceiling argument: launch 1.8 + two 148-296-CTA barriers ~3 us + three short phases -> 8-12 us at S (S ~0.87); L bound by the unknown HMMA rate on sm_100 (H12).
+    - Owns the premise tests on cooperative vs three launches (H4), split-K at small M (H5) and the fixed floor F (H11).
+
+=== ARCHIVE (best per kernel; times are geomean µs per size band S/M/L; S = B·S ≤ 600, M ≤ 2100, L above) ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-convnext-coop-fp32-anchor | ldg128/persistent/all | cuda_cpp | 97.5/204.7/1010.5 | -/-/- | -/-/- | -/-/- | 127.2/270.0/1317.4 | 0.303802 | 128/1024/None | passed |
+B200 results so far:
+- r0-convnext-coop-fp32-anchor: B200 score 0.304, geomean 386.7 µs, B200 S/M/L 127.2/270.0/1317.4 µs
+
+=== HYPOTHESIS LEDGER ===
+# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0); updated r1 2026-10-12.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window. No programmatic dependent launch at all, even between our own kernels: the lint rejects griddepcontrol
+  and the PDL launch attributes, so an idea that relies on PDL must be built without it.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids
+  lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot.'
+- 'Precision: FP16 and TF32 operands with fp32 accumulation pass every workload with ~5 sigma margin (simulated with the
+  harness generators); BF16 fails. Any reduced-precision candidate must be re-simulated or run_tests 16/16 before a slot; the
+  erf GELU must stay exact (no tanh approximation).'
+- 'Weights are converted/transposed inside the call (no cross-call cache of fp16 weights or descriptors; pointers shift every call).'
+- 'Workspaces come from torch.empty inside run() (no kernel launched); a cooperative launch counts as one kernel. Grid barriers
+  via cg::grid_group or a self-resetting counter only.'
+notes:
+- 'Report effects per workload (or at least C=768 rows vs others), not per MB band: the MB bands mix weight-bound (C=768 7x7),
+  latency-bound and stream-bound rows. Card fix pending: the MB cell for 64,96,112,112 is 616.9 MB, not "118.0 G".'
+- 'Portal/rented ratio of the fp32 SIMT anchor: 1.30-1.32 in every band (clock-bound). Expect ~1.05 for DRAM-bound parts.'
+hypotheses:
+- id: H1
+  statement: FP16 or TF32 tensor cores (fp32 accumulate) for both GEMMs meet the tolerance and make every workload
+    memory/latency/fixed-cost-bound (GEMMs <= 19 us except 65 us at the largest with FP16; TF32 at twice that is still
+    under 10 us except at the top three sizes).
+  status: open
+  evidence:
+  - 'probe: fp16/fp16 and tf32/tf32 (round-to-nearest) err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
+  - 'arithmetic: 118 GFLOP / 1.82 PF/s = 65 us at the largest vs 2.1 ms fp32 SIMT peak; stream floor 99 us'
+  - 'audit r1: the highest rate the leader implies is 174 TF/s (19% of TF32 peak), so the FP16 2x rate buys no score; TF32 avoids the 19 MB weight conversion at C=768 (11.5 us rented, ~15 us portal, against Tb 76 us at 2,768,7,7)'
+- id: H2
+  statement: The depthwise 7x7 conv becomes the binding compute term only once t < ~500 us at 64,96,112,112 (FMA bound
+    134 us per pass at 1500 MHz, 29 us at 32,128,64,64); until then a second pass costs <= 0.003 of mean score, so recompute
+    designs are not penalised and the dwconv is chosen for simplicity.
+  status: parked
+  evidence:
+  - 'probe: SIMT 4x4 register patches measured 516-549 us at the largest at 1965 MHz (bound there is 102 us, so 5x off), latency-bound at 2 CTAs/SM'
+  - 'probe: zero-padded smem planes do 7x7/14x14 images in 13-36 us; warp-level weight transposes 11.5 us vs 42 us block-level'
+  - 'audit r1 arithmetic with portal Tb 4126 / Tsol 70: t=400 -> S 0.925, t=534 -> 0.897, i.e. 0.0017 of mean score per extra pass'
+- id: H3
+  statement: Recomputing GEMM1 in phase 2 beats materialising the 4C-wide hidden tensor at the two largest sizes (2.5 GB and
+    0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA); elsewhere a materialised fp16 hidden (<= 42 MB) costs a dirty-line
+    write-back per allocated line under the harness flush, so it is not a free tie.
+  status: open
+  evidence:
+  - 'arithmetic in card section 6.2; anchor v2 materialises hidden in fp32 (its P2/P3 phases are compute-bound at 17-25 TF/s so the traffic is hidden today)'
+  - 'audit r1: #38 lost ~4 us at M/L to dirty write-backs; the cost here is untested (see H16, scheduled in E1)'
+- id: H4
+  statement: One cooperative launch with two grid.sync()s costs about the same as three launches on the rented card
+    (1.5 us per 296-CTA barrier vs 2.0 us per extra launch) and the portal difference is within noise.
+  status: open
+  evidence:
+  - 'probe: empty kernel 1.8 us, 2 launches 3.8, 3 launches 5.8; 296 CTAs with 1/3 atomic barriers 3.6/6.7 us; 1184 CTAs 18 us'
+  - 'r0: cooperative anchor 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison; a 454 us gap cannot be two barriers, so it is register budget/occupancy under launch_bounds(256,2) or grid size). Downgraded by the r1 audit; interleaved repeats at S sizes scheduled in E2'
+- id: H5
+  statement: For small-M / large-K shapes (2,768,7,7; 8,768,7,7; 1,192,28,28) split-K (cross-CTA atomics into an x+b2-initialised
+    output, DSMEM reduce, or warp-level K groups) is required to use the SMs; without it GEMM2 runs on < 50 CTAs.
+  status: open
+  evidence:
+  - 'r0 v1 -> v2: 2,768,7,7 2091 -> 124 us, 1,192,28,28 546 -> 89 us, but the dwconv tiling, layout and split-K changed together; split-K share not isolated (audit r1). Ablation split3=1 vs auto scheduled in E2'
+- id: H6
+  statement: The fp32 SIMT GEMM core runs at 46-50 TF/s on the rented card at 1965 MHz, i.e. 35-38 TF/s at the 1500 MHz
+    portal lock (the anchor is clock-bound, portal/rented 1.30-1.32 in every band); the anchor loses to 17-25 TF/s through
+    the GELU/store/warp-sum epilogue on short-K tiles and the per-element GRN affine. The fp32 SIMT ceiling mean (0.665)
+    is below the leader (0.690), so SIMT GEMMs cannot reach the top.
+  status: supported
+  evidence:
+  - 'probe: bare 128x128x32 core 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads, layout variants within 5%'
+  - 'probe ablations: no-epilogue P2 34-35 TF/s vs 20-23; no-affine P3 33-35 vs 22-25; launch_bounds(256,1) slower everywhere'
+  - 'portal #65377 vs rented: 127.2/97.5, 270.0/204.7, 1317.4/1010.5 = 1.30-1.32'
+- id: H7
+  statement: Wave quantisation and tile-shape padding cost 20-30% at mid sizes (416 tiles = 1.4 waves at 32,768,7,7; N=96/160
+    padded to 128), so per-size tile tables or stream-K matter as much as the core rate.
+  status: parked
+  evidence:
+  - 'r0 cost model (waves x tile work / efficiency) picked 128x96 tiles for C=768 and 32,768,7,7 still took 1217 us vs 478 us reference; nothing isolates quantisation (audit r1). Revisit once a tensor-core kernel exists'
+- id: H8
+  statement: Applying the GRN scale per image to W2 (or converting A to fp16 with the scale folded in) removes the per-element
+    affine cost that made phase 3 35% slower than its bare GEMM.
+  status: open
+  evidence:
+  - 'probe: noaff variant of phase 3: 495 vs 678 us at 32,128,64,64, 1816 vs 2684 us at the largest'
+- id: H9
+  statement: The reference's hidden baseline Tb is close to eager (157 us .. 11.5 ms), so even the fp32 anchor scores > 0.5 on
+    the S/M band and the first FP16 tensor-core design moves most of the score.
+  status: refuted
+  evidence:
+  - 'portal #65377: Tb/rented-eager = 0.34-0.59 per workload (0.43 at 1,192,28,28; 0.34 at 2,768,7,7; 0.36 at the largest); the anchor scores 0.10-0.51 and only 1,96,56,56 is above 0.5. Reaching S=0.5 needs t <= 68-222 us on 14 rows'
+- id: H10
+  statement: A per-image dataflow (image counters instead of grid barriers) hides the GRN dependency behind other images'
+    GEMM1 work at B >= 8 and removes two barrier waits at S.
+  status: open
+  evidence:
+  - 'none yet; needs a self-resetting counter workspace (allowed under the constraints)'
+- id: H11
+  statement: The fixed floor F (launch + barriers/launch gaps + phase ramps and tails) sets the score on 13 of 16 workloads
+    (Tb 68-222 us vs <= 10 us of tensor-core work); F <= 10 us gives S ~0.85-0.9 per row, F ~30 us gives ~0.6-0.7 (the
+    leader's profile).
+  status: open
+  evidence:
+  - 'leader gap table: implied leader times 30.6-67 us on the S/M rows need only 16-132 TF/s'
+  - 'predict_score: every size at 12 us + bytes/2 TB/s -> 0.88; 30 us + bytes/1 TB/s -> 0.75; 10 us + bytes/4 TB/s -> 0.92; a 10% cut in one band is worth 0.007-0.008'
+- id: H12
+  statement: Legacy mma.sync.m16n8k16 FP16 (fp32 accumulate) on sm_100 delivers >= 0.3 PF/s at 1.5 GHz, enough to make every
+    workload except the top two fixed-cost-bound without TMEM/TMA code.
+  status: open
+  evidence:
+  - 'none yet; microbench in E2 (clock64 + globaltimer, 148 CTAs, independent accumulator chains)'
+- id: H13
+  statement: A thread-block cluster per image (8-16 CTAs, each owning a hidden slice in smem; LN/GRN statistics and GEMM2
+    partials reduced through DSMEM) runs the 7x7/14x14 workloads in <= 30 us with no grid barrier and no global intermediates;
+    the bound is weight-slice ingest (~1.2 MB per SM at C=768 from L2).
+  status: open
+  evidence:
+  - 'arithmetic (pool I2/I20/I27): per-image hidden fp16 <= 2.6 MB fits 16 x 160 KB for 14/16 workloads; 16-CTA clusters need a GPC (~18 SMs) so ~8 concurrent clusters. Probe and first kernel in E3'
+- id: H14
+  statement: TFLOAT32 TMA tensor maps round to nearest (not truncate), so kind::tf32 GEMMs can read fp32 weights and
+    activations straight from the inputs with no conversion pass (saves 19 MB read + 9.5 MB write and a barrier at C=768).
+  status: open
+  evidence:
+  - 'tricks.md: truncation gives ~2.5x the error (~1.1e-3 rms vs atol 2.4e-3, likely failing the 98% ratio); bit-exact probe in E3'
+- id: H15
+  statement: cuBLASLt FP16 (and TF32-fast from fp32) GEMM1+GEMM2 cost <= 10 us at the S sizes and pick sane kernels at
+    M=98..784 with K=3072, so a 5-launch library pipeline lands at 25-35 us on the S rows (S ~0.7, roughly the leader).
+  status: open
+  evidence:
+  - 'r0: cuBLAS fp32 sgemm both GEMMs 36-52 us at S (8-28 TF/s) is the only library number so far. Timed per shape in E1'
+- id: H16
+  statement: Writing then reading a 10-134 MB fp16 hidden under the harness's dirty-L2 flush costs a write-back per allocated
+    line (~3-6 us at 8,320,32,32 and the C=768 rows), even when it fits L2.
+  status: open
+  evidence:
+  - '#38/#85 lesson (dirty lines evicted inside our window); untested here. Probe in E1: write+read 20/42/134 MB scratch after the 2xL2 zero-fill vs no scratch'
+- id: H17
+  statement: The anchor's phase 1 at C=768 (333 us at 32,768,7,7) is block-level weight transposes (42 us) plus the
+    4-tokens-per-lane conv (306 us); the measured replacements (warp-level transposes 11.5 us, zero-padded smem planes 35.5 us)
+    cut it to ~45 us with no other change.
+  status: supported
+  evidence:
+  - 'r0 probes: block-level transposes 42 us vs warp-level 11.5; 4 tokens/lane 306 us vs 1 token/lane 59 us; smem planes 35.5 us at 32,768,7,7, correct to 1e-5. Not in the submitted kernel; applied in E2'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-convnext-coop-fp32-anchor] precision: with the harness generators (weights /sqrt(fan_in), LN weight ones) fp16/fp16 and tf32/tf32 GEMMs give err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol over 6 workloads x 2 seeds; bf16 fails 28-50% [probe_b200]
+- [r0-convnext-coop-fp32-anchor] fp32 SIMT peak: FFMA 67.7 TF/s and packed fma.f32x2 74.0 TF/s at 1965 MHz = 128 FMA/clk/SM either way; 56.8 TF/s at the 1500 MHz lock [probe_b200]
+- [r0-convnext-coop-fp32-anchor] launch floor: empty kernel 1.8 us, +2.0 us per extra launch; 296-CTA atomic grid barrier ~1.5 us, 1184 CTAs ~5 us per barrier [probe_b200]
+- [r0-convnext-coop-fp32-anchor] reference profile: 17-18 kernels per call; cuDNN depthwise conv 492 us, two simt sgemm 400+346 us, six GRN elementwise kernels ~190 us each at 32,128,64,64 [probe_b200]
+- [r0-convnext-coop-fp32-anchor] cuBLAS fp32 sgemm both GEMMs (warm): 36-52 us at S sizes (8-28 TF/s), 2758 us at the largest (41-45 TF/s) [probe_b200]
+- [r0-convnext-coop-fp32-anchor] v1 (all-channel dwconv tiles, [M][C] layout, transposed smem stores): 16/16 pass but 546 us at 1,192,28,28 and 2091 us at 2,768,7,7 because phase 1 ran on 1-28 CTAs [run_tests]
+- [r0-convnext-coop-fp32-anchor] v2 (this kernel): 16/16 pass, 65-140 us at S, 124-353 us at M, 265-5596 us at L; still slower than the reference at 8,384,14,14, 16,384,14,14, 8,768..32,768,7,7 and 8,320,32,32 [run_tests]
+- [r0-convnext-coop-fp32-anchor] v2 phase breakdown (separate launches): 32,768,7,7 P1 333 / P2 425 / P3 359 us; 64,96,112,112 544 / 2973 / 2709 us; GEMM phases 17-25 TF/s [probe_b200]
+- [r0-convnext-coop-fp32-anchor] bare 128x128x32 SIMT core on the same shapes: 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads; lane layouts within 5% [probe_b200]
+- [r0-convnext-coop-fp32-anchor] ablations: removing the GELU/store/warp-sum epilogue lifts P2 to 32-35 TF/s; removing the per-element GRN affine lifts P3 to 33-35 TF/s; prologue ~5%; launch_bounds(256,1) (238-255 regs) is slower everywhere [probe_b200]
+- [r0-convnext-coop-fp32-anchor] phase 1: block-level weight transposes 42 us at C=768 vs 11.5 us warp-level; per-token conv 4 tokens/lane 306 us vs 1 token/lane 59 us at 32,768,7,7; zero-padded smem planes 35.5/12.7/32.4 us at 32,768,7,7 / 2,768,7,7 / 16,384,14,14 (correct to 1e-5); prefetching 4x4 patch conv 516 vs 549 us at the largest (FMA bound 134 us at 1500 MHz) [probe_b200]
+- [r0-convnext-coop-fp32-anchor] dead end: cooperative single kernel measured 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison) [run_tests, probe_b200]
+
+=== PARENTS ===
+--- parent r0-convnext-coop-fp32-anchor ---
+design card:
+id: r0-convnext-coop-fp32-anchor
+parents: []
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: ldg128
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: all
+hypothesis: >-
+  Research anchor: one cooperative fp32 SIMT launch (296 persistent CTAs, two grid.sync()s) with three phases: channel-chunked
+  depthwise 7x7 patch tiles writing K-major activations plus LayerNorm partial sums; 128x128/128x96/64x64/32x32 SIMT GEMM1
+  with exact-erf GELU and per-image GRN sums; GEMM2 with the GRN affine applied to A, cross-CTA split-K atomics at small
+  sizes and the residual added into NCHW. Correct on all 16 workloads; it exists to obtain Tb and Tsol.
+expected_effect:
+  S: {pct: -45, confidence: medium}
+  M: {pct: -20, confidence: medium}
+  L: {pct: -10, confidence: low}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 70208
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 65536
+  launches_per_call: 1
+knobs: {BM: 128, BN: 128, BK: 32, GEMM_CFGS: 4, SPLITK_MAX: 16, P1_PATCH: 4x4, NT: 256, GRID: 296}
+tests: [H4, H5, H6]
+findings:
+  - "precision: with the harness generators (weights /sqrt(fan_in), LN weight ones) fp16/fp16 and tf32/tf32 GEMMs give err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol over 6 workloads x 2 seeds; bf16 fails 28-50% [probe_b200]"
+  - "fp32 SIMT peak: FFMA 67.7 TF/s and packed fma.f32x2 74.0 TF/s at 1965 MHz = 128 FMA/clk/SM either way; 56.8 TF/s at the 1500 MHz lock [probe_b200]"
+  - "launch floor: empty kernel 1.8 us, +2.0 us per extra launch; 296-CTA atomic grid barrier ~1.5 us, 1184 CTAs ~5 us per barrier [probe_b200]"
+  - "reference profile: 17-18 kernels per call; cuDNN depthwise conv 492 us, two simt sgemm 400+346 us, six GRN elementwise kernels ~190 us each at 32,128,64,64 [probe_b200]"
+  - "cuBLAS fp32 sgemm both GEMMs (warm): 36-52 us at S sizes (8-28 TF/s), 2758 us at the largest (41-45 TF/s) [probe_b200]"
+  - "v1 (all-channel dwconv tiles, [M][C] layout, transposed smem stores): 16/16 pass but 546 us at 1,192,28,28 and 2091 us at 2,768,7,7 because phase 1 ran on 1-28 CTAs [run_tests]"
+  - "v2 (this kernel): 16/16 pass, 65-140 us at S, 124-353 us at M, 265-5596 us at L; still slower than the reference at 8,384,14,14, 16,384,14,14, 8,768..32,768,7,7 and 8,320,32,32 [run_tests]"
+  - "v2 phase breakdown (separate launches): 32,768,7,7 P1 333 / P2 425 / P3 359 us; 64,96,112,112 544 / 2973 / 2709 us; GEMM phases 17-25 TF/s [probe_b200]"
+  - "bare 128x128x32 SIMT core on the same shapes: 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads; lane layouts within 5% [probe_b200]"
+  - "ablations: removing the GELU/store/warp-sum epilogue lifts P2 to 32-35 TF/s; removing the per-element GRN affine lifts P3 to 33-35 TF/s; prologue ~5%; launch_bounds(256,1) (238-255 regs) is slower everywhere [probe_b200]"
+  - "phase 1: block-level weight transposes 42 us at C=768 vs 11.5 us warp-level; per-token conv 4 tokens/lane 306 us vs 1 token/lane 59 us at 32,768,7,7; zero-padded smem planes 35.5/12.7/32.4 us at 32,768,7,7 / 2,768,7,7 / 16,384,14,14 (correct to 1e-5); prefetching 4x4 patch conv 516 vs 549 us at the largest (FMA bound 134 us at 1500 MHz) [probe_b200]"
+  - "dead end: cooperative single kernel measured 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison) [run_tests, probe_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: true, note: "cooperative launch and cg grid sync work on sm_90; fp32 SIMT rate differs"}
+  A100: {runs: true, representative: false, note: "needs cudaLaunchCooperativeKernel and 70 KB dynamic smem (ok on sm_80); ranking signal only"}
+  L40S: {runs: true, representative: false, note: "100 KB smem per SM allows only 1 CTA/SM; correctness smoke test"}
+risks:
+  - "fp32 SIMT GEMMs are 10-30x off the FP16 tensor-core design that the tolerance permits; L-band times are 2-12x the stream floor"
+  - "cooperative launch fails if the device cannot co-schedule sms x 2 CTAs at 70 KB smem each; grid is sized from the occupancy API at first call"
+  - "split-K phase 3 relies on fp32 atomics into an x+b2-initialised output (non-deterministic summation order, within tolerance)"
+  - "workspace up to 1.6 GB (hidden fp32 [4C][Mp]) allocated with torch.empty each call via the caching allocator"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true
+
+measurements (geomean µs per band S/M/L): B200r 97.5/204.7/1010.5
+B200 portal: score 0.303802, geomean 386.70300000000003 µs
+| workload | latency µs | baseline µs | score |
+|---|---|---|---|
+| batch_size=1, dim=192, height=28, width=28 | 117.4 | 67.6 | 0.365 |
+| batch_size=1, dim=96, height=56, width=56 | 82.3 | 86.2 | 0.511 |
+| batch_size=1, dim=160, height=449, width=7 | 145.6 | 91.9 | 0.386 |
+| batch_size=2, dim=96, height=56, width=56 | 128.8 | 92.1 | 0.416 |
+| batch_size=4, dim=192, height=28, width=28 | 183.8 | 100.2 | 0.351 |
+| batch_size=8, dim=384, height=14, width=14 | 358.8 | 102.1 | 0.218 |
+| batch_size=4, dim=96, height=56, width=56 | 186.2 | 133.1 | 0.416 |
+| batch_size=8, dim=192, height=28, width=28 | 289.3 | 141.8 | 0.327 |
+| batch_size=16, dim=384, height=14, width=14 | 469.4 | 143.9 | 0.231 |
+| batch_size=2, dim=768, height=7, width=7 | 158.3 | 76.3 | 0.323 |
+| batch_size=8, dim=768, height=7, width=7 | 345.5 | 95.3 | 0.213 |
+| batch_size=16, dim=768, height=7, width=7 | 762.9 | 124.7 | 0.137 |
+| batch_size=8, dim=320, height=32, width=32 | 826.8 | 221.9 | 0.207 |
+| batch_size=32, dim=768, height=7, width=7 | 1538.3 | 181.1 | 0.101 |
+| batch_size=32, dim=128, height=64, width=64 | 2157.1 | 920.6 | 0.296 |
+| batch_size=64, dim=96, height=112, width=112 | 7229.7 | 4125.9 | 0.362 |
+sm_100a static features: [{"kernel": "_Z14convnext_fused6Params", "num_warps": null, "regs": 128, "smem": 1024, "local": 0, "resident_per_sm": null, "ops": {"STG": 75, "LDG": 137, "LDG.CONSTANT": 727, "LDG.CONSTANT.128": 154, "STG.128": 4, "LDG.CONSTANT.64": 496}}]
+source:
+--- file kernel.cu ---
+// ConvNeXtV2 block with GRN: one cooperative launch, three phases, fp32 SIMT maths.
+//  P1: depthwise 7x7 conv (+bias) -> xn [C][Mp] (K-major), per-(token, 32-channel chunk) LN partial sums;
+//      zero GRN sums; transpose weights to [K][N]
+//  P2: hidden[4C][Mp] = gelu(LN(xn) @ W1^T + b1); sumsq[b][k] += hidden^2 (per image)
+//  P3: out = x + (hidden * (1 + gw*nf) + gb) @ W2^T + b2, written NCHW (split-K with atomics at small sizes)
+#include <cuda_runtime.h>
+#include <cooperative_groups.h>
+namespace cg = cooperative_groups;
+
+#define NT 256
+#define MAXIMG 5
+#define GEMM_SMEM_FLOATS (128 * 132)
+#define SMEM_BYTES (GEMM_SMEM_FLOATS * 4 + MAXIMG * 128 * 4 + 64)
+#define P1_SLOTS 512
+
+struct Params {
+  const float* x; const float* dww; const float* dwb; const float* lnw; const float* lnb;
+  const float* w1; const float* b1; const float* gw; const float* gb; const float* w2; const float* b2;
+  float* out;
+  float* xn; float* part; float* hidden; float* sumsq; float* w1t; float* w2t;
+  int B, C, H, W, HW, M, Mp, C4, nch;
+  float eps, ln_eps;
+  int p1_mode, p1_twr, p1_tiles, p1_lpr, p1_rg, p1_hb, p1_wb;
+  int cfg2, cfg3, split3;
+};
+
+__device__ __forceinline__ float gelu_f(float v) { return 0.5f * v * (1.f + erff(v * 0.70710678118654752f)); }
+
+__device__ __forceinline__ float warp_sum(float v) {
+#pragma unroll
+  for (int o = 16; o > 0; o >>= 1) v += __shfl_xor_sync(0xffffffffu, v, o);
+  return v;
+}
+
+// ---------------------------------------------------------------- phase 1
+__device__ void transpose_mat(const float* __restrict__ src, int R, int Cc, float* __restrict__ dst, float* tile) {
+  const int rt = (R + 31) / 32, ct = (Cc + 31) / 32;
+  const int tid = threadIdx.x, j = tid & 31, i0 = tid >> 5;
+  for (int t = blockIdx.x; t < rt * ct; t += gridDim.x) {
+    const int tr = t / ct, tc = t % ct;
+#pragma unroll
+    for (int s = 0; s < 4; s++) {
+      const int i = i0 + 8 * s, r = tr * 32 + i, c = tc * 32 + j;
+      tile[i * 33 + j] = (r < R && c < Cc) ? src[(size_t)r * Cc + c] : 0.f;
+    }
+    __syncthreads();
+#pragma unroll
+    for (int s = 0; s < 4; s++) {
+      const int i = i0 + 8 * s, c = tc * 32 + i, r = tr * 32 + j;
+      if (r < R && c < Cc) dst[(size_t)c * R + r] = tile[j * 33 + i];
+    }
+    __syncthreads();
+  }
+}
+
+// 4 rows x TW cols output patch of one channel; wt = 49 weights (registers)
+template <int TW>
+__device__ __forceinline__ void conv_patch(const float* __restrict__ xc, const float* wt, int H, int W, int h0, int w0,
+                                           float (&acc)[4][TW]) {
+#pragma unroll
+  for (int r = 0; r < 4; r++)
+#pragma unroll
+    for (int cc = 0; cc < TW; cc++) acc[r][cc] = 0.f;
+#pragma unroll
+  for (int i = 0; i < 10; i++) {
+    const int hh = h0 - 3 + i;
+    const bool rowok = (hh >= 0) && (hh < H);
+    float v[TW + 6];
+    if (TW == 4) {
+      const float* rp = xc + hh * W;
+      float4 L = make_float4(0.f, 0.f, 0.f, 0.f), Cq = L, R = L;
+      if (rowok) {
+        if (w0 >= 4) L = __ldg(reinterpret_cast<const float4*>(rp + w0 - 4));
+        Cq = __ldg(reinterpret_cast<const float4*>(rp + w0));
+        if (w0 + 4 < W) R = __ldg(reinterpret_cast<const float4*>(rp + w0 + 4));
+      }
+      v[0] = L.y; v[1] = L.z; v[2] = L.w; v[3] = Cq.x; v[4] = Cq.y; v[5] = Cq.z; v[6] = Cq.w;
+      v[7] = R.x; v[8] = R.y; v[9] = R.z;
+    } else {
+#pragma unroll
+      for (int jj = 0; jj < TW + 6; jj++) {
+        const int ww = w0 - 3 + jj;
+        v[jj] = (rowok && ww >= 0 && ww < W) ? __ldg(xc + hh * W + ww) : 0.f;
+      }
+    }
+#pragma unroll
+    for (int r = 0; r < 4; r++) {
+      const int ki = i - r;
+      if (ki >= 0 && ki < 7) {
+#pragma unroll
+        for (int cc = 0; cc < TW; cc++)
+#pragma unroll
+          for (int j = 0; j < 7; j++) acc[r][cc] = fmaf(v[cc + j], wt[ki * 7 + j], acc[r][cc]);
+      }
+    }
+  }
+}
+
+// MODE 1: patch tiles (TWR = TW in {4,1}); MODE 0: flattened token tiles (TWR = tokens per lane in {1,2,4})
+template <int MODE, int TWR>
+__device__ void phase1_conv(const Params& p, float* smem) {
+  const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+  const int C = p.C, H = p.H, W = p.W, HW = p.HW, M = p.M, Mp = p.Mp, nch = p.nch;
+  float* st_s = smem;                     // [8][P1_SLOTS][2]
+  float* wsm = smem + 8 * P1_SLOTS * 2;   // [32][49]
+  const int lpr = p.p1_lpr, rg = p.p1_rg, hb = p.p1_hb, wb = p.p1_wb;
+  const int rows_per_tile = 4 * rg;
+  const int rpt = lpr * TWR;  // slots per row (mode 1)
+
+  for (int tile = blockIdx.x; tile < p.p1_tiles; tile += gridDim.x) {
+    int b = 0, cch = 0, hbi = 0, wbi = 0, tok0 = 0;
+    if (MODE == 1) {
+      const int per = nch * hb * wb;
+      b = tile / per; int rem = tile - b * per;
+      cch = rem / (hb * wb); rem -= cch * (hb * wb);
+      hbi = rem / wb; wbi = rem - hbi * wb;
+    } else {
+      cch = tile % nch; tok0 = (tile / nch) * (32 * TWR);
+    }
+    for (int i = tid; i < 8 * P1_SLOTS * 2; i += NT) st_s[i] = 0.f;
+    for (int i = tid; i < 32 * 49; i += NT) wsm[i] = __ldg(p.dww + (size_t)cch * 32 * 49 + i);
+    __syncthreads();
+
+    int rgi = 0, cgi = 0, h0 = 0, w0 = 0; bool lane_ok = true;
+    if (MODE == 1) {
+      rgi = lane / lpr; cgi = lane - rgi * lpr;
+      lane_ok = rgi < rg;
+      h0 = hbi * rows_per_tile + rgi * 4;
+      w0 = (wbi * 32 + cgi) * TWR;
+      lane_ok = lane_ok && (w0 < W);
+    }
+    int tk[MODE == 0 ? TWR : 1], tb[MODE == 0 ? TWR : 1], th[MODE == 0 ? TWR : 1], tw_[MODE == 0 ? TWR : 1];
+    bool tv[MODE == 0 ? TWR : 1];
+    if (MODE == 0) {
+#pragma unroll
+      for (int r = 0; r < TWR; r++) {
+        const int t = tok0 + r * 32 + lane;
+        tv[r] = t < M;
+        const int tt = tv[r] ? t : 0;
+        const int bb = tt / HW; const int rem = tt - bb * HW; const int hh = rem / W;
+        tk[r] = t; tb[r] = bb; th[r] = hh; tw_[r] = rem - hh * W;
+      }
+    }
+
+#pragma unroll 1
+    for (int cl = 0; cl < 4; cl++) {
+      const int clc = warp * 4 + cl;
+      const int c = cch * 32 + clc;
+      float wt[49];
+#pragma unroll
+      for (int i = 0; i < 49; i++) wt[i] = wsm[clc * 49 + i];
+      const float bias = __ldg(p.dwb + c);
+      float* xrow = p.xn + (size_t)c * Mp;
+      float* sts = st_s + warp * P1_SLOTS * 2;
+      if (MODE == 1) {
+        if (lane_ok) {
+          float acc[4][TWR];
+          conv_patch<TWR>(p.x + ((size_t)b * C + c) * HW, wt, H, W, h0, w0, acc);
+#pragma unroll
+          for (int r = 0; r < 4; r++) {
+            const int h = h0 + r;
+            if (h < H) {
+              const int t = b * HW + h * W + w0;
+              const int slot = (rgi * 4 + r) * rpt + cgi * TWR;
+              if (TWR == 4) {
+                float4 o = make_float4(acc[r][0] + bias, acc[r][1] + bias, acc[r][2] + bias, acc[r][3] + bias);
+                *reinterpret_cast<float4*>(xrow + t) = o;
+                sts[(slot + 0) * 2] += o.x; sts[(slot + 0) * 2 + 1] += o.x * o.x;
+                sts[(slot + 1) * 2] += o.y; sts[(slot + 1) * 2 + 1] += o.y * o.y;
+                sts[(slot + 2) * 2] += o.z; sts[(slot + 2) * 2 + 1] += o.z * o.z;
+                sts[(slot + 3) * 2] += o.w; sts[(slot + 3) * 2 + 1] += o.w * o.w;
+              } else {
+#pragma unroll
+                for (int cc = 0; cc < TWR; cc++) {
+                  const float o = acc[r][cc] + bias;
+                  xrow[t + cc] = o;
+                  sts[(slot + cc) * 2] += o; sts[(slot + cc) * 2 + 1] += o * o;
+                }
+              }
+            }
+          }
+        }
+      } else {
+        float acc[TWR];
+#pragma unroll
+        for (int r = 0; r < TWR; r++) acc[r] = 0.f;
+#pragma unroll
+        for (int i = 0; i < 7; i++)
+#pragma unroll
+          for (int j = 0; j < 7; j++) {
+            const float wv = wt[i * 7 + j];
+#pragma unroll
+            for (int r = 0; r < TWR; r++) {
+              const int hh = th[r] - 3 + i, ww = tw_[r] - 3 + j;
+              if (tv[r] && hh >= 0 && hh < H && ww >= 0 && ww < W)
+                acc[r] = fmaf(__ldg(p.x + ((size_t)tb[r] * C + c) * HW + hh * W + ww), wv, acc[r]);
+            }
+          }
+#pragma unroll
+        for (int r = 0; r < TWR; r++) {
+          if (tv[r]) {
+            const float o = acc[r] + bias;
+            xrow[tk[r]] = o;
+            const int slot = r * 32 + lane;
+            sts[slot * 2] += o; sts[slot * 2 + 1] += o * o;
+          }
+        }
+      }
+    }
+    __syncthreads();
+    const int nslots = (MODE == 1) ? rows_per_tile * rpt : 32 * TWR;
+    for (int slot = tid; slot < nslots; slot += NT) {
+      int t; bool valid;
+      if (MODE == 1) {
+        const int row = slot / rpt, col = slot - row * rpt;
+        const int h = hbi * rows_per_tile + row, w = wbi * 32 * TWR + col;
+        valid = (h < H) && (w < W);
+        t = b * HW + h * W + w;
+      } else {
+        t = tok0 + slot; valid = t < M;
+      }
+      if (valid) {
+        float S1 = 0.f, S2 = 0.f;
+#pragma unroll
+        for (int ws = 0; ws < 8; ws++) { S1 += st_s[(ws * P1_SLOTS + slot) * 2]; S2 += st_s[(ws * P1_SLOTS + slot) * 2 + 1]; }
+        float* pp = p.part + ((size_t)cch * Mp + t) * 2;
+        pp[0] = S1; pp[1] = S2;
+      }
+    }
+    __syncthreads();
+  }
+}
+
+__device__ void phase1(const Params& p, float* smem) {
+  const int tid = threadIdx.x;
+  for (int i = blockIdx.x * NT + tid; i < p.B * p.C4; i += gridDim.x * NT) p.sumsq[i] = 0.f;
+  transpose_mat(p.w1, p.C4, p.C, p.w1t, smem);
+  transpose_mat(p.w2, p.C, p.C4, p.w2t, smem);
+  if (p.p1_mode == 1) {
+    if (p.p1_twr == 4) phase1_conv<1, 4>(p, smem); else phase1_conv<1, 1>(p, smem);
+  } else {
+    if (p.p1_twr == 4) phase1_conv<0, 4>(p, smem);
+    else if (p.p1_twr == 2) phase1_conv<0, 2>(p, smem);
+    else phase1_conv<0, 1>(p, smem);
+  }
+}
+
+// ---------------------------------------------------------------- GEMM phases
+// A = act [K][Mp] (K-major), B = Wt [K][N]. 8 warps = WM x WN spatial warps x KS K-groups. Lane grid 8 x 4.
+template <int BM, int BN, int WM, int WN, int KS, int BKc, int PHASE>
+__device__ void gemm_phase(const Params& p, float* smem, float* sq_s, float* inv_s, float* red_s, int split) {
+  constexpr int WS = WM * WN;
+  constexpr int GT = WS * 32;
+  constexpr int TM = BM / (WM * 8), TN = BN / (WN * 4);
+  constexpr int AM4 = BM / 4, BN4 = BN / 4;
+  constexpr int AQ = (BKc * AM4) / GT, BQ = (BKc * BN4) / GT;
+  constexpr int STAGE = BKc * (BM + BN);
+  constexpr int CS_LD = BM + 4;
+  constexpr int NSTEP = NT / BM, NPT = BN / NSTEP;
+  static_assert(WS * KS == 8, "8 warps");
+  static_assert((BKc * AM4) % GT == 0 && (BKc * BN4) % GT == 0, "quad mapping");
+  static_assert(GT % AM4 == 0, "token quad constant per thread");
+  static_assert(KS * 2 * STAGE <= GEMM_SMEM_FLOATS && KS * BN * CS_LD <= GEMM_SMEM_FLOATS, "smem");
+  static_assert(TM == 8 || TM == 4, "TM");
+  static_assert(TN == 8 || TN == 6, "TN");
+
+  const int tid = threadIdx.x, warp = tid >> 5, lane = tid & 31;
+  const int kg = warp / WS, ws = warp - kg * WS, wm = ws / WN, wn = ws - wm * WN;
+  const int lm = lane >> 2, ln = lane & 3;
+  const int gt = ws * 32 + lane;
+  const int M = p.M, Mp = p.Mp, HW = p.HW;
+  const int N = (PHASE == 2) ? p.C4 : p.C;
+  const int K = (PHASE == 2) ? p.C : p.C4;
+  const float* __restrict__ Ag = (PHASE == 2) ? p.xn : p.hidden;
+  const float* __restrict__ Bg = (PHASE == 2) ? p.w1t : p.w2t;
+  const int mt = (M + BM - 1) / BM, nt = (N + BN - 1) / BN;
+  const int ntiles = mt * nt * split, nk = K / BKc;
+  float* As = smem + kg * 2 * STAGE;
+  float* Bs = As + 2 * BKc * BM;
+  const int row_m = wm * (BM / WM) + lm * TM;
+  const int col_n = wn * (BN / WN) + ln * TN;
+  const int a_m4 = (gt % AM4) * 4;
+  const int a_kq = gt / AM4;
+  constexpr int KSTEP_A = GT / AM4;
+
+  for (int tile = blockIdx.x; tile < ntiles; tile += gridDim.x) {
+    int rem = tile;
+    const int ni = rem % nt; rem /= nt;
+    const int mi = rem % mt; const int s = rem / mt;
+    const int m0 = mi * BM, n0 = ni * BN;
+    const int c0 = (int)(((long)nk * s) / split), c1 = (int)(((long)nk * (s + 1)) / split);
+    const int b_first = m0 / HW;
+    const int nimg = min(MAXIMG, (min(m0 + BM, M) - 1) / HW - b_first + 1);
+
+    // per-thread token quad constants
+    float tc0[4], tc1[4]; int timg[4]; bool tval[4];
+#pragma unroll
+    for (int e = 0; e < 4; e++) {
+      const int t = m0 + a_m4 + e;
+      tval[e] = t < M;
+      const int tt = tval[e] ? t : 0;
+      if (PHASE == 2) {
+        float S1 = 0.f, S2 = 0.f;
+        for (int ch = 0; ch < p.nch; ch++) {
+          const float2 pp = __ldg(reinterpret_cast<const float2*>(p.part + ((size_t)ch * Mp + tt) * 2));
+          S1 += pp.x; S2 += pp.y;
+        }
+        const float mean = S1 / (float)p.C;
+        float var = S2 / (float)p.C - mean * mean; var = fmaxf(var, 0.f);
+        tc0[e] = mean; tc1[e] = rsqrtf(var + p.ln_eps); timg[e] = 0;
+      } else {
+        timg[e] = tt / HW - b_first; tc0[e] = 0.f; tc1[e] = 0.f;
+      }
+    }
+    if (PHASE == 3) {
+      for (int img = 0; img < nimg; img++) {
+        const float* sq = p.sumsq + (size_t)(b_first + img) * K;
+        float sacc = 0.f;
+        for (int k = tid; k < K; k += NT) sacc += sqrtf(sq[k]);
+        sacc = warp_sum(sacc);
+        if (lane == 0) red_s[warp] = sacc;
+        __syncthreads();
+        if (tid == 0) {
+          float tot = 0.f;
+#pragma unroll
+          for (int w2 = 0; w2 < 8; w2++) tot += red_s[w2];
+          inv_s[img] = 1.f / (tot / (float)K + p.eps);
+        }
+        __syncthreads();
+      }
+#pragma unroll
+      for (int e = 0; e < 4; e++) tc1[e] = inv_s[timg[e] < MAXIMG ? timg[e] : 0];
+    }
+
+    float acc[TM][TN];
+#pragma unroll
+    for (int i = 0; i < TM; i++)
+#pragma unroll
+      for (int j = 0; j < TN; j++) acc[i][j] = 0.f;
+
+    float4 ra[AQ], rb[BQ];
+    auto load_chunk = [&](int kc) {
+      const int k0 = kc * BKc;
+#pragma unroll
+      for (int q = 0; q < AQ; q++) {
+        const int ka = k0 + q * KSTEP_A + a_kq;
+        float4 v = __ldg(reinterpret_cast<const float4*>(Ag + (size_t)ka * Mp + m0 + a_m4));
+        float vv[4] = {v.x, v.y, v.z, v.w};
+        if (PHASE == 2) {
+          const float lw = __ldg(p.lnw + ka), lb = __ldg(p.lnb + ka);
+#pragma unroll
+          for (int e = 0; e < 4; e++) vv[e] = tval[e] ? fmaf((vv[e] - tc0[e]) * tc1[e], lw, lb) : 0.f;
+        } else {
+          const float gwk = __ldg(p.gw + ka), gbk = __ldg(p.gb + ka);
+#pragma unroll
+          for (int e = 0; e < 4; e++) {
+            const float sq = __ldg(p.sumsq + (size_t)(b_first + timg[e]) * K + ka);
+            vv[e] = tval[e] ? fmaf(vv[e], fmaf(gwk * tc1[e], sqrtf(sq), 1.f), gbk) : 0.f;
+          }
+        }
+        ra[q] = make_float4(vv[0], vv[1], vv[2], vv[3]);
+      }
+#pragma unroll
+      for (int q = 0; q < BQ; q++) {
+        const int id = q * GT + gt, kb = id / BN4, n4 = (id - kb * BN4) * 4;
+        const int col = n0 + n4;
+        rb[q] = (col < N) ? __ldg(reinterpret_cast<const float4*>(Bg + (size_t)(k0 + kb) * N + col))
+                          : make_float4(0.f, 0.f, 0.f, 0.f);
+      }
+    };
+    auto store_regs = [&](int buf) {
+#pragma unroll
+      for (int q = 0; q < AQ; q++)
+        *reinterpret_cast<float4*>(As + (buf * BKc + q * KSTEP_A + a_kq) * BM + a_m4) = ra[q];
+#pragma unroll
+      for (int q = 0; q < BQ; q++) {
+        const int id = q * GT + gt, kb = id / BN4, n4 = (id - kb * BN4) * 4;
+        *reinterpret_cast<float4*>(Bs + (buf * BKc + kb) * BN + n4) = rb[q];
+      }
+    };
+    auto gsync = [&]() {
+      if (KS == 1) __syncthreads();
+      else if (GT == 32) __syncwarp();
+      else asm volatile("bar.sync %0, %1;" ::"r"(kg + 1), "r"(GT));
+    };
+
+    int kc = c0 + kg;
+    if (kc < c1) { load_chunk(kc); store_regs(0); }
+    gsync();
+    for (int it = 0; kc < c1; it++, kc += KS) {
+      const int buf = it & 1;
+      const bool more = (kc + KS) < c1;
+      if (more) load_chunk(kc + KS);
+      const float* Ab = As + buf * BKc * BM + row_m;
+      const float* Bb = Bs + buf * BKc * BN + col_n;
+#pragma unroll 4
+      for (int k = 0; k < BKc; k++) {
+        float a[TM], b[TN];
+        {
+          const float4 a0 = *reinterpret_cast<const float4*>(Ab + k * BM);
+          a[0] = a0.x; a[1] = a0.y; a[2] = a0.z; a[3] = a0.w;
+          if (TM == 8) {
+            const float4 a1 = *reinterpret_cast<const float4*>(Ab + k * BM + 4);
+            a[4] = a1.x; a[5] = a1.y; a[6] = a1.z; a[7] = a1.w;
+          }
+        }
+        if (TN == 8) {
+          const float4 b0 = *reinterpret_cast<const float4*>(Bb + k * BN);
+          const float4 b1 = *reinterpret_cast<const float4*>(Bb + k * BN + 4);
+          b[0] = b0.x; b[1] = b0.y; b[2] = b0.z; b[3] = b0.w; b[4] = b1.x; b[5] = b1.y; b[6] = b1.z; b[7] = b1.w;
+        } else {
+          const float2 b0 = *reinterpret_cast<const float2*>(Bb + k * BN);
+          const float2 b1 = *reinterpret_cast<const float2*>(Bb + k * BN + 2);
+          const float2 b2 = *reinterpret_cast<const float2*>(Bb + k * BN + 4);
+          b[0] = b0.x; b[1] = b0.y; b[2] = b1.x; b[3] = b1.y; b[4] = b2.x; b[5] = b2.y;
+        }
+#pragma unroll
+        for (int i = 0; i < TM; i++)
+#pragma unroll
+          for (int j = 0; j < TN; j++) acc[i][j] = fmaf(a[i], b[j], acc[i][j]);
+      }
+      if (more) store_regs(buf ^ 1);
+      gsync();
+    }
+
+    // ---- epilogue: partial tiles -> smem [KS][BN][CS_LD], then one token per thread
+    __syncthreads();
+    float* Cs = smem;
+#pragma unroll
+    for (int j = 0; j < TN; j++) {
+      float* dst = Cs + (kg * BN + col_n + j) * CS_LD + row_m;
+      *reinterpret_cast<float4*>(dst) = make_float4(acc[0][j], acc[1][j], acc[2][j], acc[3][j]);
+      if (TM == 8) *reinterpret_cast<float4*>(dst + 4) = make_float4(acc[4][j], acc[5][j], acc[6][j], acc[7][j]);
+    }
+    __syncthreads();
+    const int m_l = tid % BM, n_l0 = tid / BM;
+    const int t = m0 + m_l;
+    const bool tv = t < M;
+    const int img = tv ? t / HW : b_first;
+    const int hw = t - img * HW;
+    if (PHASE == 2) {
+      const int img0 = __shfl_sync(0xffffffffu, img, 0);
+      const bool uniform = __all_sync(0xffffffffu, (img == img0) && tv);
+      const int il0 = img0 - b_first;
+#pragma unroll 4
+      for (int i = 0; i < NPT; i++) {
+        const int n_l = n_l0 + NSTEP * i, col = n0 + n_l;
+        float v = 0.f;
+#pragma unroll
+        for (int g = 0; g < KS; g++) v += Cs[(g * BN + n_l) * CS_LD + m_l];
+        const float gl = gelu_f(v + __ldg(p.b1 + col));
+        if (tv) p.hidden[(size_t)col * Mp + t] = gl;
+        float g2 = tv ? gl * gl : 0.f;
+        if (uniform) {
+          g2 = warp_sum(g2);
+          if (lane == 0) {
+            if (il0 < MAXIMG) atomicAdd(&sq_s[il0 * BN + n_l], g2);
+            else atomicAdd(p.sumsq + (size_t)img0 * N + col, g2);
+          }
+        } else if (tv) {
+          const int il = img - b_first;
+          if (il < MAXIMG) atomicAdd(&sq_s[il * BN + n_l], g2);
+          else atomicAdd(p.sumsq + (size_t)img * N + col, g2);
+        }
+      }
+      __syncthreads();
+      for (int idx = tid; idx < nimg * BN; idx += NT) {
+        const int im = idx / BN, n = idx - im * BN;
+        const float v = sq_s[idx]; sq_s[idx] = 0.f;
+        atomicAdd(p.sumsq + (size_t)(b_first + im) * N + n0 + n, v);
+      }
+      __syncthreads();
+    } else {
+#pragma unroll 4
+      for (int i = 0; i < NPT; i++) {
+        const int n_l = n_l0 + NSTEP * i, col = n0 + n_l;
+        if (col < N && tv) {
+          float v = 0.f;
+#pragma unroll
+          for (int g = 0; g < KS; g++) v += Cs[(g * BN + n_l) * CS_LD + m_l];
+          const size_t idx = ((size_t)img * N + col) * HW + hw;
+          if (split == 1) p.out[idx] = v + __ldg(p.b2 + col) + __ldg(p.x + idx);
+          else atomicAdd(p.out + idx, v);
+        }
+      }
+      __syncthreads();
+    }
+  }
+}
+
+template <int PHASE>
+__device__ __forceinline__ void run_gemm(const Params& p, int cfg, int split, float* smem, float* sq_s, float* inv_s, float* red_s) {
+  switch (cfg) {
+    case 0: gemm_phase<128, 128, 2, 4, 1, 32, PHASE>(p, smem, sq_s, inv_s, red_s, split); break;
+    case 1: gemm_phase<128, 96, 2, 4, 1, 32, PHASE>(p, smem, sq_s, inv_s, red_s, split); break;
+    case 2: gemm_phase<64, 64, 2, 2, 2, 32, PHASE>(p, smem, sq_s, inv_s, red_s, split); break;
+    default: gemm_phase<32, 32, 1, 1, 8, 16, PHASE>(p, smem, sq_s, inv_s, red_s, split); break;
+  }
+}
+
+__global__ void __launch_bounds__(NT, 2) convnext_fused(Params p) {
+  extern __shared__ float4 smem4[];
+  float* smem = reinterpret_cast<float*>(smem4);
+  float* sq_s = smem + GEMM_SMEM_FLOATS;
+  float* inv_s = sq_s + MAXIMG * 128;
+  float* red_s = inv_s + 8;
+  for (int i = threadIdx.x; i < MAXIMG * 128; i += NT) sq_s[i] = 0.f;
+  __syncthreads();
+  cg::grid_group grid = cg::this_grid();
+
+  phase1(p, smem);
+  grid.sync();
+  if (p.split3 > 1) {  // initialise the output with residual + bias for the split-K atomics
+    const long total = (long)p.M * p.C;
+    for (long i = (long)blockIdx.x * NT + threadIdx.x; i < total; i += (long)gridDim.x * NT) {
+      const int c = (int)((i / p.HW) % p.C);
+      p.out[i] = p.x[i] + p.b2[c];
+    }
+  }
+  run_gemm<2>(p, p.cfg2, 1, smem, sq_s, inv_s, red_s);
+  grid.sync();
+  run_gemm<3>(p, p.cfg3, p.split3, smem, sq_s, inv_s, red_s);
+}
+
+// ---------------------------------------------------------------- host
+struct Pick { int cfg; int split; };
+static Pick pick_cfg(long M, long N, long K, int grid, bool allow_split) {
+  struct CfgD { int id, BM, BN, BK; double eff; };
+  const CfgD cfgs[4] = {{0, 128, 128, 32, 0.80}, {1, 128, 96, 32, 0.78}, {2, 64, 64, 32, 0.60}, {3, 32, 32, 16, 0.40}};
+  double best = 1e300; Pick r{0, 1};
+  for (int ci = 0; ci < 4; ci++) {
+    const CfgD& c = cfgs[ci];
+    if (c.id == 1 && (N % 96) != 0) continue;
+    const long tiles = ((M + c.BM - 1) / c.BM) * ((N + c.BN - 1) / c.BN);
+    const long nk = K / c.BK;
+    for (int S = 1; S <= (allow_split ? 16 : 1); S *= 2) {
+      if (S > 1 && nk / S < 2) break;
+      const long total = tiles * S;
+      const long waves = (total + grid - 1) / grid;
+      double cost = (double)c.BM * c.BN * ((double)K / S) / c.eff * (double)waves;
+      if (S > 1) cost *= 1.08 + 0.03 * S;
+      if (cost < best) { best = cost; r.cfg = c.id; r.split = S; }
+    }
+  }
+  return r;
+}
+
+extern "C" const char* convnext_launch(Params p, void* stream_v) {
+  static int grid_size = 0;
+  cudaError_t e;
+  if (grid_size == 0) {
+    e = cudaFuncSetAttribute(convnext_fused, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_BYTES);
+    if (e != cudaSuccess) return cudaGetErrorString(e);
+    int dev = 0; cudaGetDevice(&dev);
+    int sms = 0; cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, dev);
+    int bps = 0;
+    e = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&bps, convnext_fused, NT, SMEM_BYTES);
+    if (e != cudaSuccess) return cudaGetErrorString(e);
+    if (bps < 1) bps = 1;
+    grid_size = sms * bps;
+  }
+  const Pick k2 = pick_cfg(p.M, p.C4, p.C, grid_size, false);
+  const Pick k3 = pick_cfg(p.M, p.C, p.C4, grid_size, true);
+  p.cfg2 = k2.cfg; p.cfg3 = k3.cfg; p.split3 = k3.split;
+  // phase-1 geometry
+  {
+    const int tw = (p.W % 4 == 0) ? 4 : 1;
+    const int cgt = p.W / tw;
+    int lpr, rg, wb;
+    if (cgt >= 32) { lpr = 32; rg = 1; wb = (cgt + 31) / 32; }
+    else { lpr = cgt; rg = 32 / cgt; wb = 1; }
+    if (rg > 8) rg = 8;
+    const int rows = 4 * rg;
+    if (rows <= p.H) {
+      p.p1_mode = 1; p.p1_twr = tw; p.p1_lpr = lpr; p.p1_rg = rg; p.p1_wb = wb;
+      p.p1_hb = (p.H + rows - 1) / rows;
+      p.p1_tiles = p.B * p.nch * p.p1_hb * p.p1_wb;
+    } else {
+      p.p1_mode = 0; p.p1_lpr = 0; p.p1_rg = 0; p.p1_wb = 0; p.p1_hb = 0;
+      int r0 = 4;
+      while (r0 > 1 && ((p.M + 32 * r0 - 1) / (32 * r0)) * p.nch < grid_size) r0 >>= 1;
+      p.p1_twr = r0;
+      p.p1_tiles = ((p.M + 32 * r0 - 1) / (32 * r0)) * p.nch;
+    }
+  }
+  void* args[] = {&p};
+  e = cudaLaunchCooperativeKernel((const void*)convnext_fused, dim3(grid_size), dim3(NT), args, (size_t)SMEM_BYTES,
+                                  (cudaStream_t)stream_v);
+  if (e != cudaSuccess) return cudaGetErrorString(e);
+  return nullptr;
+}
+
+
+--- file binding.cpp ---
+#include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <stdexcept>
+#include <string>
+
+struct Params {
+  const float* x; const float* dww; const float* dwb; const float* lnw; const float* lnb;
+  const float* w1; const float* b1; const float* gw; const float* gb; const float* w2; const float* b2;
+  float* out;
+  float* xn; float* part; float* hidden; float* sumsq; float* w1t; float* w2t;
+  int B, C, H, W, HW, M, Mp, C4, nch;
+  float eps, ln_eps;
+  int p1_mode, p1_twr, p1_tiles, p1_lpr, p1_rg, p1_hb, p1_wb;
+  int cfg2, cfg3, split3;
+};
+extern "C" const char* convnext_launch(Params p, void* stream);
+
+static inline size_t align256(size_t v) { return (v + 255) & ~(size_t)255; }
+
+void run(torch::Tensor x, torch::Tensor dwconv_weight, torch::Tensor dwconv_bias, torch::Tensor layernorm_weight,
+         torch::Tensor layernorm_bias, torch::Tensor pwconv1_weight, torch::Tensor pwconv1_bias, torch::Tensor grn_weight,
+         torch::Tensor grn_bias, torch::Tensor pwconv2_weight, torch::Tensor pwconv2_bias, double eps, double layer_norm_eps,
+         torch::Tensor output) {
+  TORCH_CHECK(x.is_cuda() && x.dtype() == torch::kFloat32 && x.is_contiguous(), "x must be contiguous fp32 cuda");
+  TORCH_CHECK(output.is_contiguous() && output.dtype() == torch::kFloat32, "output must be contiguous fp32");
+  TORCH_CHECK(x.dim() == 4, "x must be NCHW");
+  const c10::cuda::OptionalCUDAGuard guard(x.device());
+  const int B = (int)x.size(0), C = (int)x.size(1), H = (int)x.size(2), W = (int)x.size(3);
+  TORCH_CHECK(C % 32 == 0, "dim must be a multiple of 32");
+  TORCH_CHECK(H * W >= 32, "H*W must be >= 32");
+  const int HW = H * W, M = B * HW, C4 = 4 * C, nch = C / 32;
+  const int Mp = ((M + 127) / 128) * 128;
+  TORCH_CHECK(pwconv1_weight.is_contiguous() && pwconv2_weight.is_contiguous() && dwconv_weight.is_contiguous(), "weights must be contiguous");
+  TORCH_CHECK(layernorm_weight.is_contiguous() && layernorm_bias.is_contiguous() && grn_weight.is_contiguous() && grn_bias.is_contiguous(), "params contiguous");
+  TORCH_CHECK(dwconv_bias.is_contiguous() && pwconv1_bias.is_contiguous() && pwconv2_bias.is_contiguous(), "biases contiguous");
+
+  // workspace (no state kept across calls)
+  const size_t off_xn = 0;
+  const size_t off_part = align256(off_xn + (size_t)C * Mp * 4);
+  const size_t off_hidden = align256(off_part + (size_t)nch * Mp * 2 * 4);
+  const size_t off_sumsq = align256(off_hidden + (size_t)C4 * Mp * 4);
+  const size_t off_w1t = align256(off_sumsq + (size_t)B * C4 * 4);
+  const size_t off_w2t = align256(off_w1t + (size_t)C * C4 * 4);
+  const size_t total = align256(off_w2t + (size_t)C4 * C * 4);
+  torch::Tensor ws = torch::empty({(long)total}, x.options().dtype(torch::kUInt8));
+  char* wp = (char*)ws.data_ptr();
+
+  Params p;
+  p.x = x.data_ptr<float>(); p.dww = dwconv_weight.data_ptr<float>(); p.dwb = dwconv_bias.data_ptr<float>();
+  p.lnw = layernorm_weight.data_ptr<float>(); p.lnb = layernorm_bias.data_ptr<float>();
+  p.w1 = pwconv1_weight.data_ptr<float>(); p.b1 = pwconv1_bias.data_ptr<float>();
+  p.gw = grn_weight.data_ptr<float>(); p.gb = grn_bias.data_ptr<float>();
+  p.w2 = pwconv2_weight.data_ptr<float>(); p.b2 = pwconv2_bias.data_ptr<float>();
+  p.out = output.data_ptr<float>();
+  p.xn = (float*)(wp + off_xn); p.part = (float*)(wp + off_part); p.hidden = (float*)(wp + off_hidden);
+  p.sumsq = (float*)(wp + off_sumsq); p.w1t = (float*)(wp + off_w1t); p.w2t = (float*)(wp + off_w2t);
+  p.B = B; p.C = C; p.H = H; p.W = W; p.HW = HW; p.M = M; p.Mp = Mp; p.C4 = C4; p.nch = nch;
+  p.eps = (float)eps; p.ln_eps = (float)layer_norm_eps;
+  p.p1_mode = 0; p.p1_twr = 1; p.p1_tiles = 0; p.p1_lpr = 0; p.p1_rg = 0; p.p1_hb = 0; p.p1_wb = 0;
+  p.cfg2 = 0; p.cfg3 = 0; p.split3 = 1;
+
+  cudaStream_t stream = at::cuda::getCurrentCUDAStream(x.device().index()).stream();
+  const char* err = convnext_launch(p, (void*)stream);
+  if (err != nullptr) throw std::runtime_error(std::string("convnext_launch failed: ") + err);
+}
+
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) { m.def("run", &run, "ConvNeXtV2 block with GRN (fused, fp32)"); }
+
+
+
+=== FEEDBACK FROM LAST ATTEMPT ===
+none

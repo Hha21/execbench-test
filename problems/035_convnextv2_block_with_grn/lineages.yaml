@@ -1,0 +1,41 @@
+lineages:
+- id: A
+  thesis: Phase-separated pipeline of plain launches (custom dwconv+LN, library then custom tensor-core GEMMs, fp16 materialised
+    hidden) that wins by per-phase efficiency and accepts about 2 us per launch; the control lineage expected to match the
+    leader within one round.
+  status: active
+  started: r1
+  best: null
+  conclusions:
+  - 'Seed: cuBLASLt FP16/TF32 GEMMs need no tcgen05 code; 5 launches put the fixed floor near 10-12 us plus GEMM ramps, so
+    S rows land at ~25-35 us (S ~0.7), L rows at tensor rates (~0.9).'
+  - 'Ceiling argument: 3 launches at ~2 us each plus ramps gives F ~8 us, i.e. ~0.82-0.85 mean if every phase is near its
+    floor.'
+  - Owns the premise tests for the materialised hidden under the dirty-L2 flush (H16) and cuBLASLt small-M heuristics (H15).
+- id: B
+  thesis: One cooperative launch with every phase fused, FP16 tensor cores through legacy mma.sync (registers and smem, no
+    TMEM/TMA), grid syncs between phases; the fixed-cost specialist aiming at F <= 10 us on the S/M rows.
+  status: active
+  started: r1
+  best: null
+  conclusions:
+  - 'Seed: mutates the r0 anchor (same phases, split-K, dwconv geometry); only the GEMM core, the weight transposes (emit
+    fp16) and the W<=14 dwconv path change.'
+  - 'Ceiling argument: launch 1.8 + two 148-296-CTA barriers ~3 us + three short phases -> 8-12 us at S (S ~0.87); L bound
+    by the unknown HMMA rate on sm_100 (H12).'
+  - Owns the premise tests on cooperative vs three launches (H4), split-K at small M (H5) and the fixed floor F (H11).
+- id: C
+  thesis: 'Cluster-per-image in-SM fusion: an 8-16 CTA cluster owns one image (two at 7x7), each CTA holds a hidden slice
+    in smem, LN/GRN statistics and GEMM2 partials reduce through DSMEM; no grid barrier, no global intermediates; 14 of 16
+    workloads fit, the top two are dispatched to the r0 anchor path for now.'
+  status: active
+  started: r1
+  best: null
+  conclusions:
+  - 'Seed: targets the six 7x7/14x14 rows first (anchor S 0.10-0.23, Tb 76-181 us); if they land at 15-30 us the kernel alone
+    is worth ~+0.2 of mean score.'
+  - 'Kill criterion from the probe: fewer than 6 concurrent 16-CTA clusters at 1 CTA/SM, or weight-slice ingest plus one swap-AB
+    GEMM per CTA above 12 us under harness timing -> fall back to 8-CTA clusters or retire.'
+  - Cluster use here is a GEMM split (hidden slices = split-N of GEMM1 / split-K of GEMM2 reduced via DSMEM); flagged to the
+    operator against the clusters constraint before any portal slot.
+  - Owns the TFLOAT32 TMA rounding probe (H14).

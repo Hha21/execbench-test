@@ -1,0 +1,75 @@
+id: r1-convnext-coop-hmma-ring
+parents: [r0-convnext-coop-fp32-anchor]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: cpasync
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: all
+hypothesis: >-
+  Lineage B, E2 (H12). Legacy mma.sync.m16n8k16 FP16 with fp32 accumulate runs at 2048 FLOP/clk/SM, which is
+  0.455 PF/s at 1.5 GHz, so the GEMMs stop being the bottleneck except at the top two sizes. The kernel stays one
+  cooperative launch: phase 1 does the weight pass (fp16, native [N][K] layout; LN and gb folded into row sums) and
+  the dwconv, writing raw fp16 d and LN partials; GEMM1 uses a 4-stage cp.async ring with the LN algebra in the
+  epilogue, then GELU and fp16 hidden plus GRN sums; GEMM2 uses a 4-stage ring with the GRN scale as an smem pass,
+  then the residual. Rented B200: 16/16 pass, -59/-65/-74 % vs the anchor in S/M/L; projected portal score 0.561.
+expected_effect:
+  S: {pct: -59, confidence: medium}
+  M: {pct: -65, confidence: medium}
+  L: {pct: -74, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 106272
+  threads_per_cta: 256
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 151552
+  launches_per_call: 1
+knobs:
+  NT: 256
+  GRID: 296
+  GEMM_CFGS: "128x128/128x96/64x64(KS2)/32x32(KS8,BK16)"
+  STAGES: 4
+  BK: 32
+  TABK: 1024
+  P1_CPW: "4, or 1 for patch tiles when 32-ch tiles < grid"
+tests: [H12, H11, H4, H5, H17]
+findings:
+  - "H12 supported: mma.sync m16n8k16 f16->f32 = 2048 FLOP/clk/SM with 1 CTA/SM (4-16 warps, 8 or 16 independent chains) = 0.455 PF/s at 1.5 GHz, 1/4 of tcgen05 kind::f16; wall 520-546 TF/s at boost. Per-CTA clock64 with 2 CTAs/SM gives bogus 2700-4090 (CTAs not co-resident) [probe_b200]"
+  - "H11 fixed floor F: this kernel with all three phases stubbed (296 CTAs, 104 KB smem, 2 grid.sync) = 4.2-4.7 us on every shape; three plain launches stubbed = 9.7-10.1 us [probe_b200 harness_time]"
+  - "H4: full kernel, coop vs three plain launches, 3 interleaved repeats: 1,192,28,28 29.7 vs 36.3 us; 2,768,7,7 46.7 vs 50.2; 64,96,112,112 1793 vs 1749 (coop 2.5% slower at the largest). Regs: 128 for all four kernel variants (PH0 has 64 B spill) [probe_b200]"
+  - "H5: split-K auto vs forced 1: 1,192,28,28 29.9 vs 30.6 us (no effect); 2,768,7,7 46.5 vs 64.6; 8,768,7,7 86.1 vs 120.6 (split worth 28-29% at C=768) [probe_b200]"
+  - "run_tests (rented B200, us): 1,192 30.9; 1,96 28.3; 1,160,449,7 55.2; 2,96 42.2; 4,192 47.2; 8,384 85.8; 4,96 62.5; 8,192 66.1; 16,384 113.0; 2,768 47.9; 8,768 87.1; 16,768 107.9; 8,320 175.3; 32,768 179.5; 32,128 587.2; 64,96 1786.6; projected portal 0.561 +- 0.008 [run_tests]"
+  - "per-phase (cumulative masks, includes F ~4.6): 1,192,28,28 P1 13.2 / +P2 20.1 / all 29.7; 1,160,449,7 17.1/30.6/56.4; 2,768,7,7 19.7/33.2/47.1; 32,768,7,7 48.2/106.0/180.6; 32,128,64,64 107/309/586; 64,96,112,112 446/1290/1793 [probe_b200]"
+  - "precision: err rms 3.9-4.2e-4, max 1.9-2.8e-3, <=1e-7 fraction beyond atol 2.4e-3 with randomized lnw/lnb (stricter than harness); raw fp16 d with LN folded into the GEMM1 epilogue (r*(acc - mu*s1) + c1) is as accurate as an fp16 LN'd operand [probe_b200]"
+  - "phase-1 parallelism: 8-channel tiles (1 channel per warp) when 32-channel tiles < grid cut P1 at 1,192,28,28 from ~25 us to ~9 us; the 4x4 register-patch conv is latency-bound (10 serial row loads per channel), so tile count matters more than FMA rate at S [probe_b200]"
+  - "dead end: applying 8-ch tiles to the 7x7 smem-plane path made the GEMM1 prologue sum 96 partials per token serially (P1+P2 at 8,768,7,7 61 -> 93 us); planes keep 32-ch tiles and the prologue now splits partials over NT/BM threads per token [probe_b200]"
+  - "dead end: cp.async-staged smem bands for the dwconv (per-warp double buffer, 16B interior + 4B halo cp.async, float4 LDS) were slower than direct __ldg 4x4 patches: P1 41 vs 29 us at 1,192,28,28 and 515 vs 385 us at 64,96,112,112 (cause not isolated) [probe_b200]"
+  - "GEMM main loop: register-prefetched 1-deep A -> 4-stage pure cp.async rings (LN algebra in epilogue, GRN as in-smem scale pass) cut P2 at 8,384,14,14 from ~31 to ~21 us but barely moved the largest (950 -> 888 us), where each tile is a serial prologue/3-chunk/GELU-epilogue chain [probe_b200]"
+  - "GEMM2 epilogue: issuing all residual x loads of a tile before use (NPT registers) cut P3 at 64,96,112,112 from 896 to 504 us [probe_b200]"
+  - "weight pass at C=768 (fp16 conversion + row sums, 19 MB) costs ~10 us of P1 (P1 with only the weight pass = 14.8-15.5 us vs F 4.6) [probe_b200]"
+  - "success criteria: S rows <= 45 us missed at 1,160,449,7 (55) and 4,192,28,28 (47); 2,768,7,7 47.9 <= 60 met; 32,768,7,7 179.5 > 150 missed; largest 1787 <= 2500 met; F 4.6 <= 15 and HMMA 0.455 >= 0.15 PF/s, so neither refutation clause fires [run_tests, probe_b200]"
+  - "remaining gaps: largest P2 ~840 us vs ~150 us roofline (short-K per-tile chain + erf GELU epilogue), P1 ~440 us vs ~105 us FMA bound; 1,160,449,7 P3 ~26 us (N=160 padded to 2x128 tiles); C=768 rows P3 60-75 us [probe_b200]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: cpasync, wstat: false, launches: 1, prefetch: false, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: false, note: "mma.sync/cp.async/ldmatrix/cooperative launch all exist on sm_90; 104 KB smem x2 fits; HMMA rate and clocks differ"}
+  A100: {runs: true, representative: false, note: "sm_80 has mma.sync m16n8k16 and cp.async; 2 x 105 KB smem exceeds 164 KB so 1 CTA/SM (grid 108); correctness only"}
+  L40S: {runs: true, representative: false, note: "100 KB smem per SM < 104 KB dynamic smem: launch would fail; not runnable as is"}
+risks:
+  - "cooperative launch needs 2 CTAs/SM at 104 KB dynamic smem and 128 regs; the grid comes from the occupancy API at first call"
+  - "split-K phase 3 uses fp32 atomics into an x+c2-initialised output (order-nondeterministic, within tolerance)"
+  - "hidden fp16 is rounded twice (GELU output, then after the GRN scale): err rms 4e-4 vs atol 2.4e-3, about 6 sigma"
+  - "workspace up to ~0.9 GB at the largest size (xh fp16, LN partials, hidden fp16) via torch.empty each call"
+  - "portal/rented ratio unknown for the mixed HMMA/SIMT/DRAM profile (anchor was 1.30-1.32 clock-bound)"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

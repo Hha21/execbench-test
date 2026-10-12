@@ -123,7 +123,7 @@ lineages:
       - one short line
 ```
 ```yaml ledger
-(the complete updated ledger, same schema)
+(the complete updated ledger, same schema; copy the constraints verbatim)
 ```
 ```json tasks
 [{{"id": "E1", "lineage": "A", "hypothesis": "H8", "title": "...", "operation": "new_design",

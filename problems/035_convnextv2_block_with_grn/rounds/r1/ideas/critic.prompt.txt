@@ -1,0 +1,159 @@
+=== TASK ===
+Round r1: audit the premises this project relies on.
+
+=== PROBLEM ===
+L2/035_convnextv2_block_with_grn: 16 workloads, variable axes ['batch_size', 'dim', 'height', 'width']; bands by size: S <= 6.0 MB < M <= 19.7 MB < L
+       1,192,28,28       2.43 MB  band S
+        1,96,56,56       2.73 MB  band S
+       1,160,449,7       4.88 MB  band S
+        2,96,56,56       5.14 MB  band S
+       4,192,28,28       6.05 MB  band S
+       8,384,14,14       9.64 MB  band M
+        4,96,56,56       9.95 MB  band M
+       8,192,28,28      10.86 MB  band M
+      16,384,14,14      14.45 MB  band M
+         2,768,7,7      19.68 MB  band M
+         8,768,7,7      21.48 MB  band L
+        16,768,7,7      23.89 MB  band L
+       8,320,32,32      24.33 MB  band L
+        32,768,7,7      28.71 MB  band L
+      32,128,64,64     134.78 MB  band L
+     64,96,112,112     616.88 MB  band L
+note: Precision (operator policy, 2026-10-11): any compute precision is fine if every workload meets its tolerance (atol 2.4e-3 to 3.8e-3, rtol 1e-5, 98% of elements); run_tests and the portal decide. Inputs and outputs stay fp32, and the paper permits downcasting when input and output dtypes match and the tolerance is met. Check the error arithmetic (or simulate against an fp64 reference) before relying on a reduced precision.
+
+=== HYPOTHESIS LEDGER (problems/035_convnextv2_block_with_grn/ledger.yaml) ===
+# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0).
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
+  not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
+  timed window.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids
+  lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
+  buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a
+  portal slot.'
+- 'Precision: FP16 and TF32 operands with fp32 accumulation pass every workload with ~5 sigma margin (simulated with the
+  harness generators); BF16 fails. Any reduced-precision candidate must be re-simulated or run_tests 16/16 before a slot; the
+  erf GELU must stay exact (no tanh approximation).'
+- 'Weights are converted/transposed inside the call (no cross-call cache of fp16 weights or descriptors; pointers shift every call).'
+- 'Workspaces come from torch.empty inside run() (no kernel launched); a cooperative launch counts as one kernel. Grid barriers
+  via cg::grid_group or a self-resetting counter only.'
+hypotheses:
+- id: H1
+  statement: FP16 tensor cores (kind::f16, fp32 accumulate) for both GEMMs meet the tolerance and turn every workload into a
+    memory/latency-bound problem (GEMMs <= 19 us except 65 us at the largest).
+  status: open
+  evidence:
+  - 'probe: fp16/fp16 err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% of elements beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
+  - 'arithmetic: 118 GFLOP / 1.82 PF/s = 65 us at the largest vs 2.1 ms fp32 SIMT peak; stream floor 99 us'
+- id: H2
+  statement: The depthwise 7x7 conv is the binding compute term once GEMMs are on tensor cores (FMA-bound 134 us per pass at
+    64,96,112,112, 29 us at 32,128,64,64); a design must do it once and near the FMA bound.
+  status: open
+  evidence:
+  - 'probe: SIMT 4x4 register patches measured 516-549 us at the largest (4x the FMA bound), latency-bound at 2 CTAs/SM'
+  - 'probe: zero-padded smem planes do 7x7/14x14 images in 13-36 us; warp-level weight transposes 11.5 us vs 42 us block-level'
+- id: H3
+  statement: Recomputing GEMM1 in phase 2 beats materialising the 4C-wide hidden tensor at the two largest sizes (2.5 GB and
+    0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA), and ties elsewhere where it fits L2.
+  status: open
+  evidence:
+  - 'arithmetic in card section 6.2; anchor v2 materialises hidden in fp32 (its P2/P3 phases are compute-bound at 17-25 TF/s so the traffic is hidden today)'
+- id: H4
+  statement: One cooperative launch with two grid.sync()s costs about the same as three launches on the rented card
+    (1.5 us per 296-CTA barrier vs 2.0 us per extra launch) and the portal difference is within noise.
+  status: open
+  evidence:
+  - 'probe: empty kernel 1.8 us, 2 launches 3.8, 3 launches 5.8; 296 CTAs with 1/3 atomic barriers 3.6/6.7 us; 1184 CTAs 18 us'
+  - 'r0: the cooperative anchor ran 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison)'
+- id: H5
+  statement: For small-M / large-K shapes (2,768,7,7; 8,768,7,7; 1,192,28,28) split-K (cross-CTA atomics into an x+b2-initialised
+    output, or warp-level K groups) is required to use the SMs; without it GEMM2 runs on < 50 CTAs.
+  status: supported
+  evidence:
+  - 'r0 v1 -> v2: 2,768,7,7 2091 -> 124 us, 1,192,28,28 546 -> 89 us with channel-chunked dwconv tiles and split-K configs (cost-model picked S=8..16)'
+- id: H6
+  statement: The fp32 SIMT GEMM core can run at ~50 TF/s (65% of peak) on B200; the anchor loses to 17-25 TF/s through the
+    GELU/store/warp-sum epilogue on short-K tiles and the per-element GRN affine (4 sumsq loads + sqrt per element).
+  status: supported
+  evidence:
+  - 'probe: bare 128x128x32 core 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads, layout variants within 5%'
+  - 'probe ablations: no-epilogue P2 34-35 TF/s vs 20-23; no-affine P3 33-35 vs 22-25; launch_bounds(256,1) slower everywhere'
+- id: H7
+  statement: Wave quantisation and tile-shape padding cost 20-30% at mid sizes (416 tiles = 1.4 waves at 32,768,7,7; N=96/160
+    padded to 128), so per-size tile tables or stream-K matter as much as the core rate.
+  status: open
+  evidence:
+  - 'r0 cost model (waves x tile work / efficiency) picked 128x96 tiles for C=768 and 32,768,7,7 still took 1217 us vs 478 us reference'
+- id: H8
+  statement: Applying the GRN scale per image to W2 (or converting A to fp16 with the scale folded in) removes the per-element
+    affine cost that made phase 3 35% slower than its bare GEMM.
+  status: open
+  evidence:
+  - 'probe: noaff variant of phase 3: 495 vs 678 us at 32,128,64,64, 1816 vs 2684 us at the largest'
+- id: H9
+  statement: The reference's hidden baseline Tb is close to eager (157 us .. 11.5 ms), so even the fp32 anchor scores > 0.5 on
+    the S/M band and the first FP16 tensor-core design moves most of the score.
+  status: open
+  evidence:
+  - 'profiler: 17-18 kernels per call, 40% elementwise/permute traffic, cuDNN depthwise conv 492 us at 32,128,64,64; unknown whether NVIDIA''s baseline uses torch.compile'
+- id: H10
+  statement: A per-image dataflow (image counters instead of grid barriers) hides the GRN dependency behind other images'
+    GEMM1 work at B >= 8 and removes two barrier waits at S.
+  status: open
+  evidence:
+  - 'none yet; needs a self-resetting counter workspace (allowed under the constraints)'
+
+
+=== LAB NOTEBOOK ===
+Findings recorded by design sessions, newest round first:
+Round r0:
+- [r0-convnext-coop-fp32-anchor] precision: with the harness generators (weights /sqrt(fan_in), LN weight ones) fp16/fp16 and tf32/tf32 GEMMs give err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol over 6 workloads x 2 seeds; bf16 fails 28-50% [probe_b200]
+- [r0-convnext-coop-fp32-anchor] fp32 SIMT peak: FFMA 67.7 TF/s and packed fma.f32x2 74.0 TF/s at 1965 MHz = 128 FMA/clk/SM either way; 56.8 TF/s at the 1500 MHz lock [probe_b200]
+- [r0-convnext-coop-fp32-anchor] launch floor: empty kernel 1.8 us, +2.0 us per extra launch; 296-CTA atomic grid barrier ~1.5 us, 1184 CTAs ~5 us per barrier [probe_b200]
+- [r0-convnext-coop-fp32-anchor] reference profile: 17-18 kernels per call; cuDNN depthwise conv 492 us, two simt sgemm 400+346 us, six GRN elementwise kernels ~190 us each at 32,128,64,64 [probe_b200]
+- [r0-convnext-coop-fp32-anchor] cuBLAS fp32 sgemm both GEMMs (warm): 36-52 us at S sizes (8-28 TF/s), 2758 us at the largest (41-45 TF/s) [probe_b200]
+- [r0-convnext-coop-fp32-anchor] v1 (all-channel dwconv tiles, [M][C] layout, transposed smem stores): 16/16 pass but 546 us at 1,192,28,28 and 2091 us at 2,768,7,7 because phase 1 ran on 1-28 CTAs [run_tests]
+- [r0-convnext-coop-fp32-anchor] v2 (this kernel): 16/16 pass, 65-140 us at S, 124-353 us at M, 265-5596 us at L; still slower than the reference at 8,384,14,14, 16,384,14,14, 8,768..32,768,7,7 and 8,320,32,32 [run_tests]
+- [r0-convnext-coop-fp32-anchor] v2 phase breakdown (separate launches): 32,768,7,7 P1 333 / P2 425 / P3 359 us; 64,96,112,112 544 / 2973 / 2709 us; GEMM phases 17-25 TF/s [probe_b200]
+- [r0-convnext-coop-fp32-anchor] bare 128x128x32 SIMT core on the same shapes: 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads; lane layouts within 5% [probe_b200]
+- [r0-convnext-coop-fp32-anchor] ablations: removing the GELU/store/warp-sum epilogue lifts P2 to 32-35 TF/s; removing the per-element GRN affine lifts P3 to 33-35 TF/s; prologue ~5%; launch_bounds(256,1) (238-255 regs) is slower everywhere [probe_b200]
+- [r0-convnext-coop-fp32-anchor] phase 1: block-level weight transposes 42 us at C=768 vs 11.5 us warp-level; per-token conv 4 tokens/lane 306 us vs 1 token/lane 59 us at 32,768,7,7; zero-padded smem planes 35.5/12.7/32.4 us at 32,768,7,7 / 2,768,7,7 / 16,384,14,14 (correct to 1e-5); prefetching 4x4 patch conv 516 vs 549 us at the largest (FMA bound 134 us at 1500 MHz) [probe_b200]
+- [r0-convnext-coop-fp32-anchor] dead end: cooperative single kernel measured 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison) [run_tests, probe_b200]
+
+=== PORTAL RESULTS (best first) ===
+- r0-convnext-coop-fp32-anchor: portal 0.3038, S/M/L 127.2/270.0/1317.4 µs
+
+=== LEADER GAP (what the public top scores imply; poc/leader_gap.py) ===
+Leader gap for L2/035_convnextv2_block_with_grn (public board 2026-09-20T07:43:32): s1 0.6904, s2 0.6837, s3 0.6788, s5 0.6194, s10 0.5546; our best 0.3038 (#65377)
+Assumes the leader scores the same S on every workload. Ceilings at the portal lock: DRAM 7.05 TB/s read+write, 7.5 read-only, + 2.0 us; fp32 SIMT 0.06 PF/s, TF32 tensor 0.91 PF/s, FP16/BF16 tensor 1.82 PF/s, FP8 tensor 3.64 PF/s.
+| workload | MB | GFLOP | Tb us | Ts us | ours us (S) | leader us | leader TB/s | leader TF/s | needs |
+|---|---|---|---|---|---|---|---|---|---|
+| batch_size=1, dim=192, height=28, width=28 | 2.4 | 0.5 | 67.6 | 0.6 | 117.4 (0.365) | 30.6 | 0.08 | 16 | fp32 SIMT |
+| batch_size=1, dim=160, height=449, width=7 | 4.9 | 1.3 | 91.9 | 1.0 | 145.6 (0.386) | 41.7 | 0.12 | 32 | fp32 SIMT |
+| batch_size=2, dim=96, height=56, width=56 | 5.1 | 1.0 | 92.1 | 0.8 | 128.8 (0.416) | 41.7 | 0.13 | 24 | fp32 SIMT |
+| batch_size=4, dim=192, height=28, width=28 | 6.0 | 1.9 | 100.2 | 1.4 | 183.8 (0.351) | 45.7 | 0.14 | 42 | fp32 SIMT |
+| batch_size=8, dim=384, height=14, width=14 | 9.6 | 3.8 | 102.1 | 2.5 | 358.8 (0.218) | 47.2 | 0.21 | 80 | TF32 tensor |
+| batch_size=4, dim=96, height=56, width=56 | 10.0 | 2.0 | 133.1 | 1.4 | 186.2 (0.416) | 60.5 | 0.17 | 33 | fp32 SIMT |
+| batch_size=8, dim=192, height=28, width=28 | 10.9 | 3.8 | 141.8 | 2.6 | 289.3 (0.327) | 65.0 | 0.17 | 59 | TF32 tensor |
+| batch_size=16, dim=384, height=14, width=14 | 14.5 | 7.5 | 143.9 | 4.5 | 469.4 (0.231) | 67.0 | 0.22 | 112 | TF32 tensor |
+| batch_size=2, dim=768, height=7, width=7 | 19.7 | 0.9 | 76.3 | 1.7 | 158.3 (0.323) | 35.2 | 0.59 | 27 | fp32 SIMT |
+| batch_size=8, dim=768, height=7, width=7 | 21.5 | 3.7 | 95.3 | 2.4 | 345.5 (0.213) | 44.1 | 0.51 | 85 | TF32 tensor |
+| batch_size=16, dim=768, height=7, width=7 | 23.9 | 7.5 | 124.7 | 4.5 | 762.9 (0.137) | 58.4 | 0.42 | 128 | TF32 tensor |
+| batch_size=8, dim=320, height=32, width=32 | 24.3 | 13.7 | 221.9 | 8.0 | 826.8 (0.207) | 103.9 | 0.24 | 132 | TF32 tensor |
+| batch_size=32, dim=768, height=7, width=7 | 28.7 | 14.9 | 181.1 | 8.6 | 1538.3 (0.101) | 85.9 | 0.34 | 174 | TF32 tensor |
+| batch_size=32, dim=128, height=64, width=64 | 134.8 | 36.0 | 920.6 | 20.3 | 2157.1 (0.296) | 424.0 | 0.32 | 85 | TF32 tensor |
+| batch_size=64, dim=96, height=112, width=112 | 616.9 | 125.9 | 4125.9 | 70.0 | 7229.7 (0.362) | 1888.7 | 0.33 | 67 | TF32 tensor |
+Best mean score if every workload ran at the ceiling (optimistic; DRAM read ceiling, no harness flush penalty), by the precision the maths uses: fp32 SIMT 0.665, TF32 tensor 0.977, FP16/BF16 tensor 0.988, FP8 tensor 0.988.
+Every implied time fits under a ceiling listed in 'needs': the leader's score is reachable with that precision and bandwidth.
+
+=== ARCHIVE ===
+| id | niche (mem/grid/spec) | lang | rented B200 S/M/L | H200 S/M/L | A100 S/M/L | L40S S/M/L | portal B200 S/M/L | B200 score | B200 regs/smem/fit | status |
+|---|---|---|---|---|---|---|---|---|---|---|
+| r0-convnext-coop-fp32-anchor | ldg128/persistent/all | cuda_cpp | 97.5/204.7/1010.5 | -/-/- | -/-/- | -/-/- | 127.2/270.0/1317.4 | 0.303802 | 128/1024/None | passed |
+
+=== LINEAGES ===
+(no lineages yet: this is the first portfolio round; seed 2-3 from the ideas pool)

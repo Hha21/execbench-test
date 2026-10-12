@@ -1,11 +1,12 @@
-# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0).
+# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0); updated r1 2026-10-12.
 # status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
 constraints:
 - 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement,
   not kernel speed. Off-limits unless NVIDIA approves.'
 - Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
 - 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the
-  timed window.'
+  timed window. No programmatic dependent launch at all, even between our own kernels: the lint rejects griddepcontrol
+  and the PDL launch attributes, so an idea that relies on PDL must be built without it.'
 - 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids
   lost 2-5% on the portal and seemed to slow later plain launches.'
 - 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output
@@ -17,53 +18,66 @@ constraints:
 - 'Weights are converted/transposed inside the call (no cross-call cache of fp16 weights or descriptors; pointers shift every call).'
 - 'Workspaces come from torch.empty inside run() (no kernel launched); a cooperative launch counts as one kernel. Grid barriers
   via cg::grid_group or a self-resetting counter only.'
+notes:
+- 'Report effects per workload (or at least C=768 rows vs others), not per MB band: the MB bands mix weight-bound (C=768 7x7),
+  latency-bound and stream-bound rows. Card fix pending: the MB cell for 64,96,112,112 is 616.9 MB, not "118.0 G".'
+- 'Portal/rented ratio of the fp32 SIMT anchor: 1.30-1.32 in every band (clock-bound). Expect ~1.05 for DRAM-bound parts.'
 hypotheses:
 - id: H1
-  statement: FP16 tensor cores (kind::f16, fp32 accumulate) for both GEMMs meet the tolerance and turn every workload into a
-    memory/latency-bound problem (GEMMs <= 19 us except 65 us at the largest).
+  statement: FP16 or TF32 tensor cores (fp32 accumulate) for both GEMMs meet the tolerance and make every workload
+    memory/latency/fixed-cost-bound (GEMMs <= 19 us except 65 us at the largest with FP16; TF32 at twice that is still
+    under 10 us except at the top three sizes).
   status: open
   evidence:
-  - 'probe: fp16/fp16 err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% of elements beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
+  - 'probe: fp16/fp16 and tf32/tf32 (round-to-nearest) err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
   - 'arithmetic: 118 GFLOP / 1.82 PF/s = 65 us at the largest vs 2.1 ms fp32 SIMT peak; stream floor 99 us'
+  - 'audit r1: the highest rate the leader implies is 174 TF/s (19% of TF32 peak), so the FP16 2x rate buys no score; TF32 avoids the 19 MB weight conversion at C=768 (11.5 us rented, ~15 us portal, against Tb 76 us at 2,768,7,7)'
 - id: H2
-  statement: The depthwise 7x7 conv is the binding compute term once GEMMs are on tensor cores (FMA-bound 134 us per pass at
-    64,96,112,112, 29 us at 32,128,64,64); a design must do it once and near the FMA bound.
-  status: open
+  statement: The depthwise 7x7 conv becomes the binding compute term only once t < ~500 us at 64,96,112,112 (FMA bound
+    134 us per pass at 1500 MHz, 29 us at 32,128,64,64); until then a second pass costs <= 0.003 of mean score, so recompute
+    designs are not penalised and the dwconv is chosen for simplicity.
+  status: parked
   evidence:
-  - 'probe: SIMT 4x4 register patches measured 516-549 us at the largest (4x the FMA bound), latency-bound at 2 CTAs/SM'
+  - 'probe: SIMT 4x4 register patches measured 516-549 us at the largest at 1965 MHz (bound there is 102 us, so 5x off), latency-bound at 2 CTAs/SM'
   - 'probe: zero-padded smem planes do 7x7/14x14 images in 13-36 us; warp-level weight transposes 11.5 us vs 42 us block-level'
+  - 'audit r1 arithmetic with portal Tb 4126 / Tsol 70: t=400 -> S 0.925, t=534 -> 0.897, i.e. 0.0017 of mean score per extra pass'
 - id: H3
   statement: Recomputing GEMM1 in phase 2 beats materialising the 4C-wide hidden tensor at the two largest sizes (2.5 GB and
-    0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA), and ties elsewhere where it fits L2.
+    0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA); elsewhere a materialised fp16 hidden (<= 42 MB) costs a dirty-line
+    write-back per allocated line under the harness flush, so it is not a free tie.
   status: open
   evidence:
   - 'arithmetic in card section 6.2; anchor v2 materialises hidden in fp32 (its P2/P3 phases are compute-bound at 17-25 TF/s so the traffic is hidden today)'
+  - 'audit r1: #38 lost ~4 us at M/L to dirty write-backs; the cost here is untested (see H16, scheduled in E1)'
 - id: H4
   statement: One cooperative launch with two grid.sync()s costs about the same as three launches on the rented card
     (1.5 us per 296-CTA barrier vs 2.0 us per extra launch) and the portal difference is within noise.
   status: open
   evidence:
   - 'probe: empty kernel 1.8 us, 2 launches 3.8, 3 launches 5.8; 296 CTAs with 1/3 atomic barriers 3.6/6.7 us; 1184 CTAs 18 us'
-  - 'r0: the cooperative anchor ran 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison)'
+  - 'r0: cooperative anchor 6717 us vs 6263 us for the same three phases as separate launches at the largest size (one comparison; a 454 us gap cannot be two barriers, so it is register budget/occupancy under launch_bounds(256,2) or grid size). Downgraded by the r1 audit; interleaved repeats at S sizes scheduled in E2'
 - id: H5
   statement: For small-M / large-K shapes (2,768,7,7; 8,768,7,7; 1,192,28,28) split-K (cross-CTA atomics into an x+b2-initialised
-    output, or warp-level K groups) is required to use the SMs; without it GEMM2 runs on < 50 CTAs.
-  status: supported
+    output, DSMEM reduce, or warp-level K groups) is required to use the SMs; without it GEMM2 runs on < 50 CTAs.
+  status: open
   evidence:
-  - 'r0 v1 -> v2: 2,768,7,7 2091 -> 124 us, 1,192,28,28 546 -> 89 us with channel-chunked dwconv tiles and split-K configs (cost-model picked S=8..16)'
+  - 'r0 v1 -> v2: 2,768,7,7 2091 -> 124 us, 1,192,28,28 546 -> 89 us, but the dwconv tiling, layout and split-K changed together; split-K share not isolated (audit r1). Ablation split3=1 vs auto scheduled in E2'
 - id: H6
-  statement: The fp32 SIMT GEMM core can run at ~50 TF/s (65% of peak) on B200; the anchor loses to 17-25 TF/s through the
-    GELU/store/warp-sum epilogue on short-K tiles and the per-element GRN affine (4 sumsq loads + sqrt per element).
+  statement: The fp32 SIMT GEMM core runs at 46-50 TF/s on the rented card at 1965 MHz, i.e. 35-38 TF/s at the 1500 MHz
+    portal lock (the anchor is clock-bound, portal/rented 1.30-1.32 in every band); the anchor loses to 17-25 TF/s through
+    the GELU/store/warp-sum epilogue on short-K tiles and the per-element GRN affine. The fp32 SIMT ceiling mean (0.665)
+    is below the leader (0.690), so SIMT GEMMs cannot reach the top.
   status: supported
   evidence:
   - 'probe: bare 128x128x32 core 46-50 TF/s (unroll 1 best), 57-60 TF/s without global loads, layout variants within 5%'
   - 'probe ablations: no-epilogue P2 34-35 TF/s vs 20-23; no-affine P3 33-35 vs 22-25; launch_bounds(256,1) slower everywhere'
+  - 'portal #65377 vs rented: 127.2/97.5, 270.0/204.7, 1317.4/1010.5 = 1.30-1.32'
 - id: H7
   statement: Wave quantisation and tile-shape padding cost 20-30% at mid sizes (416 tiles = 1.4 waves at 32,768,7,7; N=96/160
     padded to 128), so per-size tile tables or stream-K matter as much as the core rate.
-  status: open
+  status: parked
   evidence:
-  - 'r0 cost model (waves x tile work / efficiency) picked 128x96 tiles for C=768 and 32,768,7,7 still took 1217 us vs 478 us reference'
+  - 'r0 cost model (waves x tile work / efficiency) picked 128x96 tiles for C=768 and 32,768,7,7 still took 1217 us vs 478 us reference; nothing isolates quantisation (audit r1). Revisit once a tensor-core kernel exists'
 - id: H8
   statement: Applying the GRN scale per image to W2 (or converting A to fp16 with the scale folded in) removes the per-element
     affine cost that made phase 3 35% slower than its bare GEMM.
@@ -73,12 +87,58 @@ hypotheses:
 - id: H9
   statement: The reference's hidden baseline Tb is close to eager (157 us .. 11.5 ms), so even the fp32 anchor scores > 0.5 on
     the S/M band and the first FP16 tensor-core design moves most of the score.
-  status: open
+  status: refuted
   evidence:
-  - 'profiler: 17-18 kernels per call, 40% elementwise/permute traffic, cuDNN depthwise conv 492 us at 32,128,64,64; unknown whether NVIDIA''s baseline uses torch.compile'
+  - 'portal #65377: Tb/rented-eager = 0.34-0.59 per workload (0.43 at 1,192,28,28; 0.34 at 2,768,7,7; 0.36 at the largest); the anchor scores 0.10-0.51 and only 1,96,56,56 is above 0.5. Reaching S=0.5 needs t <= 68-222 us on 14 rows'
 - id: H10
   statement: A per-image dataflow (image counters instead of grid barriers) hides the GRN dependency behind other images'
     GEMM1 work at B >= 8 and removes two barrier waits at S.
   status: open
   evidence:
   - 'none yet; needs a self-resetting counter workspace (allowed under the constraints)'
+- id: H11
+  statement: The fixed floor F (launch + barriers/launch gaps + phase ramps and tails) sets the score on 13 of 16 workloads
+    (Tb 68-222 us vs <= 10 us of tensor-core work); F <= 10 us gives S ~0.85-0.9 per row, F ~30 us gives ~0.6-0.7 (the
+    leader's profile).
+  status: open
+  evidence:
+  - 'leader gap table: implied leader times 30.6-67 us on the S/M rows need only 16-132 TF/s'
+  - 'predict_score: every size at 12 us + bytes/2 TB/s -> 0.88; 30 us + bytes/1 TB/s -> 0.75; 10 us + bytes/4 TB/s -> 0.92; a 10% cut in one band is worth 0.007-0.008'
+- id: H12
+  statement: Legacy mma.sync.m16n8k16 FP16 (fp32 accumulate) on sm_100 delivers >= 0.3 PF/s at 1.5 GHz, enough to make every
+    workload except the top two fixed-cost-bound without TMEM/TMA code.
+  status: open
+  evidence:
+  - 'none yet; microbench in E2 (clock64 + globaltimer, 148 CTAs, independent accumulator chains)'
+- id: H13
+  statement: A thread-block cluster per image (8-16 CTAs, each owning a hidden slice in smem; LN/GRN statistics and GEMM2
+    partials reduced through DSMEM) runs the 7x7/14x14 workloads in <= 30 us with no grid barrier and no global intermediates;
+    the bound is weight-slice ingest (~1.2 MB per SM at C=768 from L2).
+  status: open
+  evidence:
+  - 'arithmetic (pool I2/I20/I27): per-image hidden fp16 <= 2.6 MB fits 16 x 160 KB for 14/16 workloads; 16-CTA clusters need a GPC (~18 SMs) so ~8 concurrent clusters. Probe and first kernel in E3'
+- id: H14
+  statement: TFLOAT32 TMA tensor maps round to nearest (not truncate), so kind::tf32 GEMMs can read fp32 weights and
+    activations straight from the inputs with no conversion pass (saves 19 MB read + 9.5 MB write and a barrier at C=768).
+  status: open
+  evidence:
+  - 'tricks.md: truncation gives ~2.5x the error (~1.1e-3 rms vs atol 2.4e-3, likely failing the 98% ratio); bit-exact probe in E3'
+- id: H15
+  statement: cuBLASLt FP16 (and TF32-fast from fp32) GEMM1+GEMM2 cost <= 10 us at the S sizes and pick sane kernels at
+    M=98..784 with K=3072, so a 5-launch library pipeline lands at 25-35 us on the S rows (S ~0.7, roughly the leader).
+  status: open
+  evidence:
+  - 'r0: cuBLAS fp32 sgemm both GEMMs 36-52 us at S (8-28 TF/s) is the only library number so far. Timed per shape in E1'
+- id: H16
+  statement: Writing then reading a 10-134 MB fp16 hidden under the harness's dirty-L2 flush costs a write-back per allocated
+    line (~3-6 us at 8,320,32,32 and the C=768 rows), even when it fits L2.
+  status: open
+  evidence:
+  - '#38/#85 lesson (dirty lines evicted inside our window); untested here. Probe in E1: write+read 20/42/134 MB scratch after the 2xL2 zero-fill vs no scratch'
+- id: H17
+  statement: The anchor's phase 1 at C=768 (333 us at 32,768,7,7) is block-level weight transposes (42 us) plus the
+    4-tokens-per-lane conv (306 us); the measured replacements (warp-level transposes 11.5 us, zero-padded smem planes 35.5 us)
+    cut it to ~45 us with no other change.
+  status: supported
+  evidence:
+  - 'r0 probes: block-level transposes 42 us vs warp-level 11.5; 4 tokens/lane 306 us vs 1 token/lane 59 us; smem planes 35.5 us at 32,768,7,7, correct to 1e-5. Not in the submitted kernel; applied in E2'

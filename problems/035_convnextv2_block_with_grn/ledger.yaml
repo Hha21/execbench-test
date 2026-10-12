@@ -18,6 +18,11 @@ constraints:
 - 'Weights are converted/transposed inside the call (no cross-call cache of fp16 weights or descriptors; pointers shift every call).'
 - 'Workspaces come from torch.empty inside run() (no kernel launched); a cooperative launch counts as one kernel. Grid barriers
   via cg::grid_group or a self-resetting counter only.'
+- 'Host state shared across shapes (function attributes such as max dynamic shared memory, cached plans, handles) must
+  be right for every shape in any order: the portal sets up every workload before it times them (#65570: per-shape
+  cudaFuncSetAttribute shrank the limit for earlier shapes, code 101 on 8 workloads). Set such attributes to the maximum
+  any shape needs, or only ever raise them. run_tests re-runs every workload after all have run once and reports a
+  PORTAL-ORDER CHECK failure.'
 notes:
 - 'Report effects per workload (or at least C=768 rows vs others), not per MB band: the MB bands mix weight-bound (C=768 7x7),
   latency-bound and stream-bound rows. Card fix pending: the MB cell for 64,96,112,112 is 616.9 MB, not "118.0 G".'

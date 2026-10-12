@@ -138,6 +138,8 @@ def ingest_portal(arc):
         per.setdefault(r["vid"], {})[P().key_from_label(r["workload"])] = float(r["latency_ms"]) * 1e3
     for r in portal_rows(PORTAL):
         vid = r["vid"]
+        if r.get("result") not in (None, "", "AC"):                   # WA/RE page: its mean covers only the passing rows
+            continue
         if vid in arc:
             arc[vid]["b200"] = dict(score=float(r["sol_score"]), geomean_us=float(r["latency_ms"]) * 1e3,
                                     submission=r.get("submission_id"), timings=per.get(vid, {}))

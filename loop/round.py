@@ -634,6 +634,16 @@ def sync_remote():
     subprocess.run(["rsync", "-a", f"{ROOT}/poc/run_timing.py", f"{REMOTE}:{RSOLX}/poc/"], check=True)
 
 
+def order_warning(cid, res):
+    """Say loudly when a candidate fails the portal-order check (later passes of a repeat=2 test)."""
+    import designer
+    if "later_passes" not in res:
+        print(f"B200r {cid}: no portal-order check in this test (run loop/order_check.py before submitting)")
+    elif designer.order_check_failures(res):
+        print(f"B200r {cid}: PORTAL-ORDER CHECK FAILED on "
+              f"{', '.join(r['workload'] for r in designer.order_check_failures(res))}: do not submit")
+
+
 def b200_test(round_id):
     """Test every candidate of a round on the rented B200 (Modal): timings -> results/timing/B200r, compile stats ->
     results/static_B200r.jsonl. Runs in this process (a few minutes); candidates already timed are skipped."""
@@ -655,6 +665,7 @@ def b200_test(round_id):
         test_ok = m.get("test") and all(w["status"] == "PASSED" for w in m["test"].get("workloads") or [{}])
         if test_ok:
             b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", m["test"])
+            order_warning(sol_path.stem, m["test"])
             reused += 1
             print(f"B200r {sol_path.stem}: reused the session's B200 timing (same code)", flush=True)
             if m.get("compile"):
@@ -671,9 +682,10 @@ def b200_test(round_id):
                     statics.append(dict(id=sol_path.stem, kernels=comp.get("kernels") or [],
                                         error=comp.get("error") or ""))
                     continue
-                res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol,
+                res = b200_modal.handle.remote(dict(id=sol_path.stem, kind="test", solution=sol, repeat=2,
                                                     problem=b200_modal.problem_ref()))
                 b200_modal.write_trace(out / f"{sol_path.stem}.jsonl", res)
+                order_warning(sol_path.stem, res)
                 wl = res.get("workloads") or []
                 comp = m.get("compile") or b200_modal.handle.remote(dict(id=f"{sol_path.stem}-c", kind="compile",
                                                                          problem=b200_modal.problem_ref(),

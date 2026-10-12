@@ -50,3 +50,4 @@ r9-e1-skew-uniform-s,0.064656,0.677389,16,1.707,65321,035_flux_ada_layer_norm_ze
 r10-e1-nb2-st4-919,0.062046,0.693864,16,1.779,65334,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Public,AC,portal_html/65334_r10-e1-nb2-st4-919.txt
 r11-e1-nb2-epiwarps-split,0.062039,0.694114,16,1.779,65349,035_flux_ada_layer_norm_zero_modulation_extraction,B200,v1.1,Public,AC,portal_html/65349_r11-e1-nb2-epiwarps-split.txt
 r0-convnext-coop-fp32-anchor,0.386703,0.303802,1,0.414,65377,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65377_r0-convnext-coop-fp32-anchor.txt
+r1-lib-cublaslt-fp16-v3,0.128741,0.622438,8,1.635,65570,035_convnextv2_block_with_grn,B200,,Private,WA,portal_html/65570_r1-lib-cublaslt-fp16-v3.txt

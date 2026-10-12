@@ -61,8 +61,13 @@ _KERNEL = {}
 def _kernel_of(sid):
     if not _KERNEL:
         for r in csv.DictReader(open(ROOT / "poc" / "results" / "b200_portal.csv")):
-            _KERNEL[r.get("submission_id")] = r.get("kernel")
-    return _KERNEL.get(sid)
+            _KERNEL[r.get("submission_id")] = (r.get("kernel"), r.get("result"))
+    return (_KERNEL.get(sid) or (None, None))[0]
+
+
+def _result_of(sid):
+    _kernel_of(sid)
+    return (_KERNEL.get(sid) or (None, None))[1]
 
 
 def report(scores=None):
@@ -77,7 +82,9 @@ def report(scores=None):
     by_key = {}
     for r in rows:
         by_key.setdefault(p.key_from_label(r["workload"]), []).append(r)
-    best_sid = max({r["submission_id"] for r in rows},
+    full = {r["submission_id"] for r in rows if _result_of(r["submission_id"]) in ("AC", "", None)} or \
+        {r["submission_id"] for r in rows}                    # a WA page's passing rows are not a full submission
+    best_sid = max(full,
                    key=lambda s: statistics.mean(float(r["sol_score"]) for r in rows if r["submission_id"] == s))
     best = {p.key_from_label(r["workload"]): r for r in rows if r["submission_id"] == best_sid}
     our_mean = statistics.mean(float(r["sol_score"]) for r in best.values())

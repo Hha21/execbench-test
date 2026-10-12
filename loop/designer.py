@@ -160,12 +160,12 @@ class ToolServer:
     def stop(self):
         ssh(f"touch {self.queue}/stop; scancel {self.job}", check=False)
 
-    def call(self, kind, sol):
+    def call(self, kind, sol, **extra):
         with self.lock:
             self.n += 1
             rid = f"{kind}-{self.n:03d}"
         ssh(f"cat > {self.queue}/req/.{rid}.part && mv {self.queue}/req/.{rid}.part {self.queue}/req/{rid}.json",
-            stdin=json.dumps(dict(id=rid, kind=kind, solution=sol)))
+            stdin=json.dumps(dict(id=rid, kind=kind, solution=sol, **extra)))
         t0 = time.time()
         while time.time() - t0 < self.wait_s:
             out = ssh(f"cat {self.queue}/res/{rid}.json 2>/dev/null", check=False)
@@ -456,13 +456,14 @@ class Session:
         self.gpu_calls += 1
         self.note(f"\n### {fn} (draft {self.drafts}): {args.get('note', '')}\n")
         kind = "compile" if fn == "compile_b200" else "test"
-        res = self.server.call(kind, sol)
+        res = self.server.call(kind, sol, **({"repeat": 2} if kind == "test" else {}))
         if "B200" in str(res.get("gpu")):           # kept so the round's final B200 test can reuse it
             self.measured.setdefault(code_key(sol), {})[kind] = res
             self.measured_path.write_text(json.dumps(self.measured))
         if kind == "compile":
             return fmt_compile(res)
-        return fmt_test(res, self.server.reference(), self.best, self.anc, self.k, self.emu, args.get("paths"))
+        return (fmt_test(res, self.server.reference(), self.best, self.anc, self.k, self.emu, args.get("paths"))
+                + order_check_text(res))
 
     def turn(self, n, tool_choice=None):
         effort = self.a.effort if n == 0 else self.a.turn_effort
@@ -512,6 +513,26 @@ class Session:
                     turns=n + 1, gpu_calls=self.gpu_calls)
         self.note(f"\n---\nsession total: {info['turns']} turns, {self.gpu_calls} GPU calls, ${info['cost_usd']:.2f}\n")
         return text, info
+
+
+def order_check_failures(res):
+    """Later-pass failures of a repeat=2 test (every workload set up before any re-run, as on the portal); timing
+    flakes of the rented GPU excluded."""
+    flake = ("Expected kernel activity sequence not found", "No timing results for methodology: cupti")
+    return [r for r in res.get("later_passes") or [] if r["status"] != "PASSED"
+            and not (r["status"] == "RUNTIME_ERROR" and any(f in r["log"] for f in flake))]
+
+
+def order_check_text(res):
+    bad = order_check_failures(res)
+    if not bad:
+        return ""
+    return ("\n\nPORTAL-ORDER CHECK FAILED: the portal sets up every workload before it times them. Re-running each "
+            "workload after all of them had run once in this process failed on:\n"
+            + "\n".join(f"- {r['workload']}: {r['status']} {r['log'][-300:]}" for r in bad)
+            + "\nHost state left by another shape breaks these (a function attribute such as max dynamic shared "
+            "memory set per shape, a cached plan or handle). Make that state correct for every shape in any order; "
+            "this candidate would fail on the portal.")
 
 
 def run_sessions(round_id, jobs, static, a, slurm, sessions_dir):

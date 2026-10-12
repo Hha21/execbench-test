@@ -47,8 +47,9 @@ def harness(problem, sol_path, trace, retries=3):
     copy of the problem with just those workloads), up to `retries` times; their correctness had already passed.
     """
     recs, console = harness_once(problem, sol_path, trace)
+    is_flaky = lambda r: r["status"] == "RUNTIME_ERROR" and any(f in r["log"] for f in FLAKE)
     for attempt in range(retries):
-        flaky = [r["workload"] for r in recs if r["status"] == "RUNTIME_ERROR" and any(f in r["log"] for f in FLAKE)]
+        flaky = [r["workload"] for r in recs if is_flaky(r)]
         if not flaky:
             break
         sub = trace.parent / f"retry{attempt}"
@@ -65,7 +66,7 @@ def harness(problem, sol_path, trace, retries=3):
                         dst.write(line)
         again, _ = harness_once(sub, sol_path, trace.parent / f"retry{attempt}.jsonl")
         fixed = {r["workload"]: dict(r, retried=attempt + 1) for r in again if r["status"] == "PASSED"}
-        recs = [fixed.get(r["workload"], r) for r in recs]
+        recs = [fixed.get(r["workload"], r) if is_flaky(r) else r for r in recs]   # only the flaky records
     return recs, console
 
 
@@ -103,8 +104,23 @@ def handle(req, work, problem):
         rec = json.loads(out.read_text().splitlines()[0]) if out.exists() and out.read_text().strip() else {}
         res = dict(kernels=rec.get("kernels", []), error=rec.get("error") or ("" if rec else p.stderr[-3000:]))
     elif kind == "test":
-        recs, console = harness(problem, sol_path, d / "trace.jsonl")
-        res = dict(workloads=recs, console_tail="" if recs and all(r["status"] == "PASSED" for r in recs) else console)
+        # repeat > 1: portal-order check. The portal sets up every workload before it times them, so host state one
+        # shape leaves behind (e.g. a function attribute) can break another; listing the workloads repeat times in one
+        # process reproduces that, and the later passes are reported separately.
+        repeat, prob = int(req.get("repeat", 1)), problem
+        if repeat > 1:
+            prob = d / "problem"
+            prob.mkdir()
+            for f in problem.iterdir():
+                if f.name != "workload.jsonl" and f.is_file():
+                    shutil.copy(f, prob / f.name)
+            lines = [line for line in open(problem / "workload.jsonl") if line.strip()]
+            (prob / "workload.jsonl").write_text("".join(lines * repeat))
+        recs, console = harness(prob, sol_path, d / "trace.jsonl", retries=3)
+        n = len(recs) // repeat if repeat > 1 else len(recs)
+        res = dict(workloads=recs[:n], console_tail="" if recs and all(r["status"] == "PASSED" for r in recs) else console)
+        if repeat > 1:
+            res["later_passes"] = recs[n:]
     else:
         res = dict(error=f"unknown request kind {kind!r}")
     res.update(id=req["id"], kind=kind, seconds=round(time.time() - t0, 1), gpu=torch.cuda.get_device_name(0))

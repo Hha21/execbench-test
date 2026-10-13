@@ -1,0 +1,25 @@
+id: r6-merge
+parents:
+- r5-merge-b
+- r6-d-e2-epi-fix
+operation: repair
+language: cuda_cpp
+niche:
+  cache: default
+  grid: oneshot
+  launch: split
+  mem: bulk1d
+  red: warp
+  spec: dispatch:size
+  st: direct
+  tile: rows8
+hypothesis: 'Operator per-workload merge: Per-workload merge (loop/merge.py, kernels unchanged) of r5-merge-b with r6-d-e2-epi-fix
+  on 16,384,14,14, 16,768,7,7, 2,768,7,7, 8,384,14,14, 8,768,7,7, where they beat it side by side. Projected portal score
+  0.6884 (best 0.6747).'
+dispatch:
+- kernel: r3-coop-flat-bulkrows
+  shapes: 1,96,56,56 1,192,28,28
+- kernel: r5-a-e2-ringk2
+  shapes: 2,96,56,56 8,320,32,32 64,96,112,112 1,160,449,7 32,128,64,64 4,96,56,56 4,192,28,28 32,768,7,7 8,192,28,28
+- kernel: r6-d-e2-epi-fix
+  shapes: 8,768,7,7 16,768,7,7 16,384,14,14 8,384,14,14 2,768,7,7

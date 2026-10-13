@@ -1,0 +1,83 @@
+id: r6-f-e1-libpipe
+parents: [r0-convnext-coop-fp32-anchor]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H32, lineage F. A library-lean pipeline for the C>=192, HW<=784 rows.
+  K1 runs in clusters of 8 CTAs: a bulk-plane conv, LayerNorm finished in-CTA through a DSMEM exchange of per-token
+  sum/sumsq, and role CTAs that convert W1/W2 to fp16 and fold b2' = W2.gb + b2 into hi/lo columns of W2.
+  G1 is cuBLASLt fp16 with a BIAS epilogue and fp32 output.
+  K3 is one launch: exact-erf GELU, GRN statistics through a self-resetting 64-bit per-image cell, in-place scale to fp16.
+  G2 is cuBLASLt: NCHW swap-AB batched with x as the C operand on 28x28 images, channels-last plus a transpose-add
+  kernel (K4) elsewhere.
+  That is 4 launches on the 28x28 rows and 5 on the 7x7/14x14 rows, against 5-6 for lineage A.
+  Measured rented times beat r5-merge-b on 8,768 / 8,384 / 16,768 / 1,192.
+  The wide-C rows land within 1-4.5 us of the merge, so H32's 8-us success line is not met.
+  The portal launch-count credit (H21) is the remaining upside on the rows where F wins.
+expected_effect:
+  S: {pct: -70, confidence: medium}
+  M: {pct: -80, confidence: medium}
+  L: {pct: -60, confidence: low}
+resources_sm100a:
+  regs_per_thread: 64
+  smem_per_cta_bytes: 90000
+  threads_per_cta: 512
+  ctas_per_sm: 2
+  bytes_in_flight_per_sm: 75000
+  launches_per_call: 5
+knobs: {F_NT: 512, CLUSTER: 8, K3_TARGET_CTAS: 384, K3_KS: "8..256", NS_28x28: 4, G2_SWAPAB: "HW==784", K2_AUG: "4C+8", WS_MB: 32}
+dispatch:
+  - {shape: "C=768,7x7 (B=2..32)", kernel: "K1+G1+K3+G2(CL)+K4", meta: {KS: "16..256", launches: 5}}
+  - {shape: "C=384,14x14 (B=8,16)", kernel: "K1+G1+K3+G2(CL)+K4", meta: {KS: "32..64", launches: 5}}
+  - {shape: "C=192,28x28 (B=1,4,8)", kernel: "K1+G1+K3+G2(swap-AB NCHW, beta 1)", meta: {NS: 4, KS: "8..16", launches: 4}}
+  - {shape: "all others", kernel: r0ns::convnext_fused, meta: {fallback: true}}
+tests: [H32]
+findings:
+  - "step 0a, GELU epilogue cost: torch._addmm_activation (cuBLASLt GELU_BIAS, fp16 out) vs addmm (BIAS epilogue), harness_time x3, us: 8.9 vs 6.1 at 392x3072x768; 8.6 vs 5.7 at 1568x1536x384; 5.0 vs 3.7 at 784x768x192; 14.3 vs 10.4 at 1568x3072x768. Deltas are 2.7 / 2.9 / 1.3 / 3.9 us: over the 1.5 us target on 2 of 3 gate shapes, so the kill gate (>3 us on two shapes) did not fire [probe_b200]"
+  - "cuBLASLt's GELU epilogue is the tanh approximation: max |gelu_tanh - gelu_erf| = 4.7e-4 at x = 2.70, and the _addmm_activation output sits 1.95e-3 from the tanh form vs 1.99e-3 from erf (fp16 output rounding) [probe_b200]"
+  - "tanh-GELU precision, end-to-end emulation (harness generators, fp64 reference, 3-4 rounds). With fp16 b1: 1,192 has 11 beyond-atol elements, 4,192 has 5. With fp32 b1: max 2.43e-3 at 1,192 (atol 2.4e-3) and 2.46e-3 at 4,192 (atol 2.5e-3, 98%). Exact erf on an fp32 pre-activation: 1.70-1.91e-3. The library GELU epilogue is therefore rejected on precision, not on speed; the exact erf runs in K3 [probe_b200]"
+  - "folding gb into the fp16 hidden (round h*s + gb) raises max error to 2.4-2.5e-3, with 1 beyond-atol element at 4,192. Keeping gb in b2' = W2.gb + b2 (fp32 dot, hi/lo fp16 K-augmentation columns) holds max error at 1.6-2.1e-3 [probe_b200]"
+  - "step 0b, swap-AB NCHW batched G2 (m=HW, n=C, K=4C+8 with the b2' hi/lo columns, x as C operand, beta 1) vs channels-last G2 + 32x32 transpose-add kernel (K4), full pipeline, us. HW=49 (swap-AB vs CL): 2,768 60.7 vs 44.1; 8,768 104 vs 46.8; 16,768 170 vs 54; 32,768 258 vs 72. HW=196: 8,384 71.5 vs 51.5; 16,384 93.7 vs 69.4. HW=784: 1,192 54.8 vs 56.8; 4,192 61.2 vs 64.4; 8,192 72.4 vs 76.1. Swap-AB is adopted only at HW=784 (4 launches); K4 stays elsewhere (5 launches) [probe_b200]"
+  - "cuBLASLt rejects an fp32 bias (BIAS_DATA_TYPE R_32F) on an fp16 D: AlgoGetHeuristic returns status 7. So the BIAS epilogue is used only with fp32 z [probe_b200]"
+  - "first K3 (cooperative launch, 256 thr, bulk copies per token row, generation-counter protocol) cost 14-40 us. Plain launch saves 1.8 us over cooperative. The 6-8 serial atomics of the counter protocol cost 3-4 us. At HW=784, 784 bulk row copies per CTA issued by one warp dominated. Fixes: cp.async 16 B from all threads; 512 threads; KS chosen for about 384 CTAs; one 64-bit red.add per CTA (count in bits 52..63, sum of gf in 2^-20 fixed point) polled with ld.relaxed; departure counter whose last CTA resets the cell; plain launch when occupancy x SMs >= grid, else cooperative. K3 dropped to 7-20 us [probe_b200]"
+  - "K3 at 32,768 by ablation (+17.4 us cumulative): launch + z load 7.7 (19 MB of fp32 z at about 3.8 TB/s), GELU 4.8, write 3.2, poll 2.2. Overall K3 is about 2.6 us per million hidden elements plus a 5-7 us floor [probe_b200]"
+  - "dead end, fp16 z (G1 fp16 out, b1 added in K3): saves only 1-2 us (8,768 49.1 vs 50.1; 16,768 56.8 vs 58.8). Max error rises to 2.06-2.24e-3 (from 1.82-1.89e-3), and the extra smem pushes K3 at 32,768 out of one wave ('too many blocks in cooperative launch'). Dropped [probe_b200]"
+  - "K1 at 2,768 / 32,768, us: full 12.2 / 19.0; role-only 8.5 / 9.0; conv-only 9.1 / 14.4. Cluster cost (no-cluster cost probe, statistics from the own CTA only, not a correct kernel) 0.4 / 2.4. Conv math 2.5 / 4.4. The L2 prefetch at entry had no measurable effect (12.2 vs 12.2) [probe_b200]"
+  - "dead end: giving the conv CTAs a share of the weight conversion (one wave, no role-only second wave at 32,768) made K1 5 us slower at 2,768 (16.8 vs 11.7), because conv and conversion serialise inside a CTA. Reverted to role-only CTAs (nrole = max(C/2, slots - conv, 64)) [probe_b200]"
+  - "run_tests 16/16 PASS (portal-order re-runs included). Rented us, F vs r5-merge-b in the same container: 8,768 39.0 vs 42.2; 8,384 41.6 vs 43.8; 16,768 47.0 vs 48.0; 1,192 26.6 vs 30.8 (the merge row is lineage B's coop kernel); 2,768 35.3 vs 34.3 (lineage D's); 32,768 67.7 vs 65.3; 16,384 62.0 vs 57.5; 4,192 37.4 vs 34.0; 8,192 49.5 vs 46.1. The other 7 rows run the r0 fallback (never intended to ship). The emulator's 0.537 is meaningless for a merge-row candidate [run_tests]"
+  - "precision log (fp64 reference, 10 seeded rounds, seed 200, harness generators, shipped F code). Per row: max |err| vs atol (share), beyond-atol count. 2,768: 1.613e-3 vs 2.6e-3 (62%), 0. 8,768: 1.885e-3 vs 2.9e-3 (65%), 0. 16,768: 1.819e-3 vs 2.9e-3 (63%), 0. 32,768: 2.073e-3 vs 2.9e-3 (71%), 0. 8,384: 1.797e-3 vs 2.8e-3 (64%), 0. 16,384: 1.935e-3 vs 3.3e-3 (59%), 0. 1,192: 1.823e-3 vs 2.4e-3 (76%), 0. 4,192: 1.860e-3 vs 2.5e-3 (74%), 0. 8,192: 1.875e-3 vs 3.0e-3 (62%), 0. These are better margins than A's paths (A 1,192: 1.998e-3), because the GELU input stays fp32 and only h' is rounded once [probe_b200]"
+  - "H32 verdict: success line NOT met. Against r5-merge-b on the six wide-C rows: 8,768 -3.2, 8,384 -2.2, 16,768 -1.0, 2,768 +1.0, 32,768 +2.4, 16,384 +4.5 us. The refutation clause (within 3 us of the control on all six rows) fires on 5 of 6; the exception is 16,384 at +4.5. Stretch: 1,192 26.6 <= 28 met; 4,192 37.4 > 32; 8,192 49.5 > 44 [run_tests]"
+  - "merge value: F has one launch fewer than A at HW=49/196 and two fewer at HW=784. If the portal charges 1-1.5 us per launch (H21), take 8,768 / 8,384 / 16,768 from F, and test 1,192 against lineage B (F 26.6 rented with 4 launches vs B 30.8 single coop at about 1.25x: a toss-up) [INFERRED]"
+  - "next levers in F: K3 is the biggest custom term (7-20 us) and its floor is launch + load + poll. The fp32 z doubles K3's load bytes, but fp16 z costs precision. G1/G2 cuBLASLt cost 5-12 us each. K4 (2.3-5.5 us) remains on 7x7/14x14 because swap-AB with HW=49 or 196 rows is 20-190 us slower [INFERRED]"
+  - "NOT DONE: step 0c (4-launch stub floor); the r0 anchor not interleaved (r5-merge-b used as same-container control); A r5 not timed in this container; the TT (channel-major) a16 layout variant at 8,768 not tested [run_tests]"
+  - "pitfalls: probe containers reset /tmp between probes, so embed full sources and build with torch.utils.cpp_extension.load inside each probe (13-29 s). torch extension builds define __CUDA_NO_HALF_CONVERSIONS__, so use __half2float, not (float)h. harness_time sometimes drops the first kernel from the CUPTI sequence (retry). Cooperative launch errors when the grid exceeds residency, which serves as a useful check [probe_b200]"
+paths:
+  - {max_tokens: 1568, lang: cuda, width: 128, threads: 512, rows: 49, grid: oneshot, mem: tma, launches: 5, cluster: 8, x: none, w: none, st: none}
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 512, rows: 196, grid: oneshot, mem: tma, launches: 5, cluster: 8, x: none, w: none, st: none}
+  - {max_tokens: 6272, lang: cuda, width: 128, threads: 512, rows: 196, grid: oneshot, mem: tma, launches: 4, cluster: 8, x: none, w: none, st: none}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, cluster: 1, x: none, w: none, st: none}
+runs_on:
+  H200: {runs: true, representative: false, note: "cp.async.bulk, clusters/DSMEM and cuBLASLt exist on sm_90; launch and library ratios differ"}
+  A100: {runs: false, representative: false, note: "no cp.async.bulk / mbarrier tx / clusters on sm_80"}
+  L40S: {runs: false, representative: false, note: "no cp.async.bulk / clusters on sm_89"}
+risks:
+  - "K3's per-image poll relies on every CTA of the grid being resident. It uses a plain launch only when occupancy x SMs >= grid (the previous kernel has drained), else a cooperative launch (errors if too large). The f_cell/f_dep cells are module __device__ memory, reset by the last departing CTA of every call."
+  - "the K1 cluster of 8 (DSMEM token statistics) needs operator confirmation; it costs 0.4-2.4 us rented. The #38 clustered-grid penalty has not been measured on the portal for this problem."
+  - "cuBLASLt plans are created on first use per shape (host-only). Bias pointers are set on every call. The workspace is torch.empty per call."
+  - "the rows outside F run the slow r0 fallback; this candidate is meant for the per-workload merge only."
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

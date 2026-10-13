@@ -1,0 +1,77 @@
+id: r6-d-e2-epi-fix
+parents: [r4-d-tc05-swapab]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E2 (H33). Stamping showed that the r4 tcgen05 kernel's roughly 2x excess on 32,768 and the 14x14 rows
+  was the GEMM1 epilogue (45-49 us per tile), not operand ingest. Its hreg[4][16] array lived in local memory:
+  128 B stack and 35-36 LDL/STL per instance, with L1 squeezed by 227 KB of smem. Changes:
+  (1) a register-only epilogue (no per-thread arrays, 112-118 regs, 0 stack);
+  (2) h stored through a per-warp smem transpose, so 4 lanes write each 64-B row segment, and g = fp16(gw*gf*h) made
+  by each thread re-reading its own L2-hot h;
+  (3) phase-A weight work split into 8C equal C-float units (W1 rows plus W2 quarter rows with partial W2.gb), handed
+  out from the highest CTA down;
+  (4) a float4 red.add GEMM2 epilogue at 14x14.
+  The engine stays 1SM. The cta_group::2 probe reaches the MMA ideal, but the port is deferred.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: -30, confidence: medium}
+  L: {pct: -10, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 118
+  smem_per_cta_bytes: 227544
+  threads_per_cta: 384
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs: {ring_stages: 4, stage_k: 64, threads: 384, epilogue_warps: 8, tmem_cols: 512, TC_EPI_STAGED: 1, TC_STAMPS: 0, rows: "2,768 NI1 KS12; 8,768 NI2 KS6; 16,768 NI3 KS3; 32,768 NI3 KS3; 8,384 NI1 KS3; 16,384 NI1 KS3"}
+dispatch:
+  - {shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14", kernel: "tc_kernel<768,49> / tc_kernel<384,196>", meta: {grid: "num SMs, cooperative"}}
+  - {shapes: "other 10 rows", kernel: convnext_fused (r0 anchor), meta: {}}
+tests: [H33, H28, H31]
+findings:
+  - "STEP 2 ingest probe, self-written tcgen05 GEMM, 148 CTAs, warm L2, 4-stage SW128 ring, swap-AB 128xN tile, all variants validated against torch (max err 1.6e-5); clk per 64-k stage vs the 2N ideal. (a) 1SM: N=128 479 (1.87x), N=224 532 (1.19x), N=256 546 (1.07x); K=768 within 2%. (c) B TMA-multicast over a 2-CTA cluster: 489 / 548 / 555, no gain. (b) cta_group::2 pair (M=256, each CTA half the B tokens, leader-only MMA, multicast commit): 345 (1.35x) / 455 (1.01x) / 518 (1.01x) [probe_b200]"
+  - "H31/H33 verdict: the per-SM cap is SM-side, not L2-side, because multicast (fewer L2 reads, same per-SM landing bytes) changes nothing while the pair (half the per-SM B bytes) reaches the MMA ideal at N >= 224. 1SM landing rate is 68-92 B/clk/SM, above r4's 55-72 estimate (r4's gate config was worse). There is also a per-stage floor of ~480 clk at N=128 in 1SM [probe_b200]"
+  - "Working cta_group::2 recipe: tcgen05.alloc/relinquish/dealloc .cta_group::2 in both CTAs; cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes signalling the leader's full barrier (address from mapa ... 0), leader-only expect_tx of both CTAs' bytes; idesc M field 256>>4; tcgen05.commit.cta_group::2...multicast::cluster mask 3 for empty and accumulator-full; each CTA reads its own 128 TMEM lanes x N columns. Correct on the first try [probe_b200]"
+  - "STEP 1 stamps, r4 parent (CTA median/max, us from kernel start; first container): 32,768 phase A 11.5/17.7, sync1 18.9, GEMM1 epilogue end 74.0/76.5, sync2 78.1, GEMM2 end 96.5/98.0; per-tile GEMM1 epilogue (post-accumulator) 45.6/50.6 us, wait 4.6, LN pre 3.3; GEMM2 wait 8.5, post 7.9. 8,384: G1 post 46.7 us on 1 tile; 16,384: 49.0/64.8; 16,768: 30.5; 8,768: 12.4; 2,768: 7.4. The GEMM1 mainloop finished within 3-7 us of sync1 everywhere, so ingest was not the 2x term [probe_b200]"
+  - "Root cause: cuobjdump showed STACK 128 and 35-36 LDL/STL in each r4 tc_kernel instance (compile_b200's 'local 0' counts spills only, not the stack frame). hreg[4][16] lived in local memory, and with 227 KB smem the L1 is small, so each element paid L2 round trips (~370 clk per element per lane). Removing it cut G1 post from 46.7 to 12.6 us at 8,384 [probe_b200]"
+  - "Interleaved x3, harness_time, same container (us), parent -> spill fix: 2,768 32.7 -> 30.2; 8,768 48.1 -> 39.1; 16,768 71.3 -> 51.4; 32,768 98.5 -> 76.5; 8,384 79.8 -> 40.8; 16,384 112.2 -> 64.7 [probe_b200]"
+  - "Phase-A balance (equal C-float weight units, reversed CTA order, W2 quarter rows): -0.6 to -3.1 us across the six rows (e.g. 2,768 30.4 -> 27.3, 32,768 76.1 -> 73.3) [probe_b200]"
+  - "Dead end: lighter GEMM1 epilogue arithmetic (precomputed rstd and -rstd*mu, two weighted FFMA sumsq accumulators instead of 3 compare-selects) was 0.3-0.8 us slower than the select version. The epilogue is not issue-bound [probe_b200]"
+  - "Staged coalesced h/g stores (per-warp smem transpose, 4 lanes per 64-B row segment) vs one-row-per-lane 16-B stores: 2,768 27.4 -> 27.2; 8,768 37.0 -> 34.6; 16,768 49.3 -> 46.5; 32,768 72.9 -> 67.1; 8,384 39.3 -> 37.9; 16,384 63.8 -> 59.7. Per-tile G1 post is now 5.7 (8,768), 8.8 (16,768), 9 (32,768, 2 tiles = 18.1), 10.9 (8,384), 11.7 (16,384) us [probe_b200]"
+  - "Remaining terms at 16,384 / 32,768: 192 / 264 GEMM1 tiles on 148 CTAs, so 44 / 116 CTAs run 2 tiles (16,384 G1 epilogue end 32.3 median vs 44.5 max); phase A 10-16 us; GEMM2 ~11-19 us (wait 3.7-8 us, post 6-8 us at 2 units) [probe_b200]"
+  - "Pitfall: globaltimer stamps taken by tid 0 right after __syncthreads can be scheduled ahead of the barrier by the compiler: the pre-sync2 and end stamps read earlier than the epilogue warps' own stamps. Only use stamps from the warp that does the work [probe_b200]"
+  - "PRECISION LOG (owed, delivered for D r4 and this kernel): fp64 reference, harness generator rules (randn; weight matrices /sqrt(shape[-1]); LN weight 1, bias 0; biases randn), torch.manual_seed(200) per row, 10 rounds; max|err| and count beyond own atol + 1e-5|ref|, parent / this: 2,768 (atol 2.6e-3) 1.700e-3 / 1.700e-3, 0/0; 8,768 (2.9e-3) 1.700e-3 / 1.700e-3, 0/0; 16,768 (2.9e-3) 1.701e-3 / 1.701e-3, 0/0; 32,768 (2.9e-3) 1.811e-3 / 1.810e-3, 0/0; 8,384 (2.8e-3) 1.796e-3 / 1.796e-3, 0/0; 16,384 (3.3e-3) 1.946e-3 / 1.946e-3, 0/0. Max error is 59-67% of atol, more margin than A's fp16 paths [probe_b200]"
+  - "NOT DONE: the precision log for r3-ws-coop-widec at 2,768 (the merge's current 2,768 path). get_kernel returned 72 KB that could not be read in-session. This kernel is faster at 2,768 (27.6 vs 34.3 rented) and has a delivered log, so the merge can drop D r3 there [run_tests]"
+  - "run_tests 16/16 PASS (portal-order re-runs included), rented, this vs r5-merge-b in the same container: 2,768 27.6 vs 34.3 (-6.7); 8,768 34.6 vs 49.4 (-14.8); 16,768 46.5 vs 55.4 (-8.9); 32,768 66.6 vs 70.9 (-4.3); 8,384 38.0 vs 51.0 (-13.0); 16,384 58.5 vs 62.4 (-3.9). The other 10 rows run the r0 anchor (merge-only kernel) [run_tests]"
+  - "H33 success line: at least 8 us under A r5 on 3 of the 5 rows (8,768, 8,384, 16,768), 2,768 <= 32 kept, 0 beyond-atol: MET, but through the epilogue fix rather than the 2SM engine. The pair port (STEP 3) is still the lever for the GEMM2 wait (3.4-8 us) and the 32,768 / 16,384 mainloops [INFERRED]"
+  - "Next levers: port the cta_group::2 recipe above to GEMM1 (M=256 hidden pairs: 12 pair-rows at C=768, so tile counts drop to 132 pairs at 32,768) and GEMM2; rebalance 16,384's 192 tiles (2 tiles on 44 CTAs = 12 us tail); cut phase A's 10-16 us (conv units of 32 planes are uneven at 16,384: 192 units on 148 CTAs) [INFERRED]"
+paths:
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "six wide-C rows only (2/8/16/32,768,7,7; 8/16,384,14,14): tc_kernel, cooperative, 1 CTA per SM, tcgen05 kind::f16 swap-AB, staged coalesced epilogue"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "other 10 rows: r0 fp32 anchor (merge-only; use other lineages there)"}
+runs_on:
+  H200: {runs: false, representative: false, note: "tcgen05/TMEM are sm_100a-only"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05"
+  - "cooperative launch at 227.5 KB smem and 384 threads requires every SM free (grid = SM count)"
+  - "split-K red.add and float4 red.add make summation order nondeterministic (max err stable to 1e-6 across 10 rounds)"
+  - "the 10 non-target rows run the slow r0 anchor; only useful merged into a dispatch with lineages A/B on the six wide-C rows"
+  - "portal ratio for D paths was ~1.32 (single cooperative launch); the gains here are SM-side cycles plus L2 traffic, so expect roughly 1.25-1.35x on the portal"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

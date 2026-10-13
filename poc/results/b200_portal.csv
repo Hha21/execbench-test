@@ -57,3 +57,4 @@ r4-merge-m3-a4,0.085425,0.655340,16,1.876,65972,035_convnextv2_block_with_grn,B2
 r5-merge,0.079436,0.672132,16,2.018,66310,035_convnextv2_block_with_grn,B200,,,AC,portal_html/66310_r5-merge.txt
 r5-merge-b,0.078550,0.674696,16,2.040,66402,035_convnextv2_block_with_grn,B200,,,AC,portal_html/66402_r5-merge-b.txt
 r6-merge,0.073353,0.690827,16,2.185,66643,035_convnextv2_block_with_grn,B200,,,AC,portal_html/66643_r6-merge.txt
+r7-merge,0.063556,0.720739,16,2.522,66740,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/66740_r7-merge.html

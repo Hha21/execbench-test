@@ -1,0 +1,91 @@
+<!doctype html><meta charset=utf-8><title>solx round 9</title>
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:960px;height:540px;overflow:hidden;background:#0b1020;color:#e8ecf8;font-family:"DejaVu Sans Mono",monospace;position:relative}
+.abs{position:absolute}
+.h{font-family:"DejaVu Sans",sans-serif;font-weight:700}
+.dim{color:#7f8bb0}
+.tag{position:absolute;left:36px;top:22px;font-size:13px;color:#7f8bb0;letter-spacing:2px}
+.card{position:absolute;width:276px;height:150px;border:1px solid #2a3560;border-radius:10px;background:#121a36;padding:14px;font-size:13px}
+.D{color:#5ec8ff}.G{color:#ffb454}
+.row{font-size:12px;white-space:nowrap}
+.pop{position:absolute;padding:8px 12px;border-radius:8px;background:#0f3d2e;border:1px solid #3ddc97;color:#aef5d2;font-size:14px}
+table{border-collapse:collapse;font-size:13px}td{padding:2px 10px}
+</style>
+<div class=tag id=tag></div><div id=stage></div>
+<script>
+const P=new URLSearchParams(location.search);const T=+P.get('t')||0;const DUR=15;
+const $=s=>document.getElementById(s);
+const cl=(x,a=0,b=1)=>Math.min(b,Math.max(a,x)),ease=x=>1-Math.pow(1-cl(x),3);
+const seg=(t,a,b)=>cl((t-a)/(b-a));
+function A(html,css,op=1){return `<div class=abs style="${css};opacity:${op}">${html}</div>`}
+const plan=[['E1','D','sonnet','r9-d-e1-asyncA','phase A async chain','defer W2 + prefill'],
+['E2','D','opus','r9-d-e2-pair-smemg','GEMM2 cta_group::2 pairs','g built in smem'],
+['E3','G','opus','r9-g-e3-tc05-p1s','tcgen05 GEMM1','single-tile kernel']];
+const tools=[
+ ['compile run_tests probe run_tests probe probe run_tests run_tests'.split(' '),8],
+ ['probe get_kernel compile probe probe compile run_tests run_tests probe probe probe probe probe probe run_tests probe probe run_tests run_tests'.split(' '),19],
+ ['probe probe probe probe get_kernel compile run_tests run_tests probe probe probe probe probe probe probe probe probe probe probe run_tests'.split(' '),20]];
+const tc={compile:'#c792ff',run_tests:'#3ddc97',probe:'#5ec8ff',get_kernel:'#7f8bb0'};
+const nm={compile:'compile_b200',run_tests:'run_tests',probe:'probe_b200',get_kernel:'get_kernel'};
+const rows=[['1,96,56,56','r8'],['1,192,28,28','r8'],['2,96,56,56','r8'],['1,160,449,7','r8'],['2,768,7,7','E1','33.5 → 30.1 µs'],['4,192,28,28','r8'],['8,768,7,7','r8'],['8,384,14,14','r8'],['4,96,56,56','r8'],['8,192,28,28','r8'],['16,768,7,7','r8'],['16,384,14,14','r8'],['32,768,7,7','E2','82.1 → 79.9 µs'],['8,320,32,32','E3','87.6 → 75.5 µs'],['32,128,64,64','r8'],['64,96,112,112','r8']];
+const sc=[['r0',.3038,'portal'],['r2',.6198,'portal'],['r3',.6355,'portal'],['r4',.6553,'portal'],['r5',.6747,'portal'],['r6',.6908,'portal'],['r7',.7207,'portal'],['r8',.7313,'portal'],['r9',.7351,'projected']];
+function scene(t){let h='';
+ const fo=seg(t,DUR-.5,DUR),fi=seg(t,0,.4);const g=Math.min(1-fo,fi);
+ // scene 1 title 0-1.6
+ if(t<1.8){const o=cl(1-seg(t,1.5,1.8))*g;
+  h+=A('<span class=h style="font-size:64px;color:#fff">solx</span>','left:60px;top:150px',o);
+  h+=A('Claude agents write CUDA kernels. A loop runs them on a B200.','left:62px;top:240px;font-size:18px;color:#cfd6f0',o*ease(seg(t,.3,.9)));
+  h+=A('Round 9 &middot; L2 #129 &middot; convnextv2 block + GRN','left:62px;top:290px;font-size:18px;color:#5ec8ff',o*ease(seg(t,.6,1.2)));}
+ // scene 2 plan 1.6-4.2
+ if(t>=1.6&&t<4.4){const o=ease(seg(t,1.6,2))*(1-seg(t,4.1,4.4));
+  $('tag').textContent='1 / 4  THE LEAD PLANS THREE EXPERIMENTS';
+  h+=A('lead: the remaining score sits in six wide-C rows','left:36px;top:70px;font-size:15px;color:#cfd6f0',o);
+  plan.forEach((p,i)=>{const e=ease(seg(t,2+i*.3,2.5+i*.3));
+   h+=A(`<div class=dim>${p[0]} &middot; ${p[2]}</div><div class=h style="font-size:20px;margin:6px 0" ><span class=${p[1]}>lineage ${p[1]}</span></div><div>${p[3]}</div><div class=dim style="margin-top:8px">${p[4]}<br>${p[5]}</div>`,`left:${36+i*296}px;top:${130+(1-e)*30}px;width:276px;height:170px;border:1px solid #2a3560;border-radius:10px;background:#121a36;padding:14px;font-size:13px`,e*o);});
+  h+=A('2 on lineage D &middot; 1 on lineage G','left:36px;top:340px;font-size:16px;color:#7f8bb0',o*ease(seg(t,3,3.4)));}
+ // scene 3 parallel 4.2-9.2
+ if(t>=4.2&&t<9.4){const o=ease(seg(t,4.2,4.6))*(1-seg(t,9.1,9.4));
+  $('tag').textContent='2 / 4  THREE SESSIONS, IN PARALLEL, ON A RENTED B200';
+  const k=seg(t,4.4,8.6);
+  tools.forEach((tl,i)=>{const n=Math.floor(k*tl[0].length+.0001);const shown=tl[0].slice(0,n);const last=shown.slice(-9);
+   const x=36+i*296;
+   h+=A(`<span class=${plan[i][1]}>${plan[i][0]} ${plan[i][1]}</span> <span class=dim>${plan[i][3].replace('r9-','')}</span>`,`left:${x}px;top:70px;font-size:13px`,o);
+   h+=A(`<div style="font-size:30px;color:#fff" class=h>${Math.round(k*tl[1])}</div><div class=dim style="font-size:11px">tool calls</div>`,`left:${x}px;top:92px`,o);
+   last.forEach((nme,j)=>{const idx=n-last.length+j+1;h+=A(`<span class=dim>${String(idx).padStart(2,'0')}</span> <span style="color:${tc[nme]}">&#9679; ${nm[nme]}</span>`,`left:${x}px;top:${150+j*22}px`,o*(0.35+0.65*(j+1)/last.length)+0*j);});});
+  const pops=[[5.4,'E1 &middot; 2,768: 33.5 &rarr; 30.1 µs (-10.2%)',36,365],[6.4,'E2 &middot; 32,768: 82.1 &rarr; 79.9 µs (-2.7%)',330,405],[7.4,'E3 &middot; 8,320: 87.6 &rarr; 75.5 µs (-13.8%)',624,365],[8.2,'E1: "H39 as specified is refuted"',36,450]];
+  pops.forEach(p=>{const e=ease(seg(t,p[0],p[0]+.35));h+=A(p[1].replace(/^(E\d)/,'$1'),`left:${p[2]}px;top:${p[3]-(1-e)*-12}px;padding:8px 12px;border-radius:8px;background:${p[1].includes('refuted')?'#3d2a0f':'#0f3d2e'};border:1px solid ${p[1].includes('refuted')?'#ffb454':'#3ddc97'};color:${p[1].includes('refuted')?'#ffd9a0':'#aef5d2'};font-size:13px;width:${p[1].includes('refuted')?290:296}px`,e*o);});}
+ // scene 4 merge 9.2-11.8
+ if(t>=9.2&&t<12){const o=ease(seg(t,9.2,9.6))*(1-seg(t,11.7,12));
+  $('tag').textContent='3 / 4  MERGE: EACH INPUT SIZE GOES TO ITS FASTEST KERNEL';
+  let tb='<table>';rows.forEach((r,i)=>{const e=ease(seg(t,9.4+i*.05,9.8+i*.05));const win=r[1]!='r8';const hi=win?ease(seg(t,10.4,10.8)):0;
+   const col=r[1]=='E3'?'#ffb454':(win?'#5ec8ff':'#7f8bb0');
+   tb+=`<tr style="opacity:${e};background:${win?`rgba(61,220,151,${.14*hi})`:'none'}"><td style="width:150px;color:${win&&hi>.5?'#fff':'#9aa5c8'}">${r[0]}</td><td style="width:150px;color:${col}">${win?'r9-':''}${win?{E1:'asyncA',E2:'pair-smemg',E3:'tc05-p1s'}[r[1]]:'r8-merge'}</td><td style="width:170px;color:#aef5d2">${win?r[2]:''}</td></tr>`;});
+  tb+='</table>';
+  h+=A(tb,'left:36px;top:62px',o);
+  h+=A(`<div class=dim style="font-size:12px">16 input sizes</div><div class=h style="font-size:38px;margin:6px 0;color:#fff">13 stay<br>3 move</div><div style="font-size:13px;color:#cfd6f0">16/16 workloads pass<br>the merged kernel's test</div><div class=dim style="font-size:11px;margin-top:10px">times: projected portal µs</div>`,'left:600px;top:90px;width:320px',o*ease(seg(t,10.4,10.9)));}
+ // scene 5 chart 11.8-15
+ if(t>=11.8){const o=ease(seg(t,11.8,12.2))*(1-fo);
+  $('tag').textContent='4 / 4  #129 SCORE, ROUND BY ROUND';
+  const X0=70,X1=900,Y0=470,Y1=90,lo=.28,hi=.76;const X=i=>X0+(X1-X0)*i/8,Y=v=>Y0+(Y1-Y0)*(v-lo)/(hi-lo);
+  const k=seg(t,12,14)*8;let svg=`<svg width=960 height=540 style="position:absolute;left:0;top:0;opacity:${o}">`;
+  svg+=`<line x1=${X0} x2=${X1} y1=${Y(.7435)} y2=${Y(.7435)} stroke="#ffb454" stroke-dasharray="6 5"/><text x=${X0+4} y=${Y(.7435)-8} fill="#ffb454" font-size=12>live board top: 0.7435 (target)</text>`;
+  svg+=`<text x=${X0-6} y=${Y0+4} fill="#7f8bb0" font-size=11 text-anchor=end>0.30</text><text x=${X0-6} y=${Y(.6)+4} fill="#7f8bb0" font-size=11 text-anchor=end>0.60</text>`;
+  let pts=[];sc.forEach((s,i)=>{if(i<=k+0.001)pts.push([X(i),Y(s[1])])});
+  const f=k-Math.floor(k);if(k<8&&f>0){const i=Math.floor(k);const a=sc[i],b=sc[i+1];pts.push([X(i+f),Y(a[1]+(b[1]-a[1])*f)]);}
+  const solid=pts.filter((_,i)=>i<=Math.min(7,Math.floor(k)));
+  svg+=`<polyline fill=none stroke="#3ddc97" stroke-width=3 points="${pts.map(p=>p.join(',')).join(' ')}"/>`;
+  sc.forEach((s,i)=>{if(i<=k+0.001){const pj=s[2]=='projected';
+   svg+=`<circle cx=${X(i)} cy=${Y(s[1])} r=${pj?7:5} fill="${pj?'#0b1020':'#3ddc97'}" stroke="${pj?'#ffb454':'#3ddc97'}" stroke-width=3 ${pj?'stroke-dasharray="3 2"':''}/>`;
+   svg+=`<text x=${X(i)} y=${Y0+22} fill="#7f8bb0" font-size=12 text-anchor=middle>${s[0]}</text>`;
+   if(i==0||i==7||i==8||i==4)svg+=`<text x=${X(i)} y=${Y(s[1])+(i==8?-26:(i==0?-14:26))} fill="${pj?'#ffb454':'#e8ecf8'}" font-size=${i>=7?16:13} font-weight=700 text-anchor=middle>${s[1].toFixed(4)}</text>`;
+   if(i>=7)svg+=`<text x=${X(i)} y=${Y(s[1])+(i==8?-44:44)} fill="${pj?'#ffb454':'#7f8bb0'}" font-size=11 text-anchor=middle>${s[2]}</text>`;}});
+  svg+='</svg>';h+=svg;
+  h+=A('score = mean over 16 sizes &middot; r0-r8 portal, r9 projected (not yet scored)','left:70px;top:505px;font-size:12px;color:#7f8bb0',o);}
+ if(t<1.6||t>=11.8&&false)$('tag').textContent='';
+ // global fade for loop
+ $('stage').innerHTML=`<div style="opacity:${g}">${h}</div>`;
+ if(t<1.6)$('tag').textContent='';
+ $('tag').style.opacity=g;}
+scene(T);
+</script>

@@ -2,6 +2,8 @@
 
 **Claude agents that design, race and merge B200 kernels for NVIDIA's SOL-ExecBench.**
 
+![Round 9 of the loop: the lead plans three experiments, three Claude sessions build kernels in parallel on a rented B200, the merge routes each input size to its fastest kernel, and the #129 score climbs from 0.30 towards the live board's 0.7435](docs/media/solx-round9.gif)
+
 An automated research loop for NVIDIA's [SOL-ExecBench](https://research.nvidia.com/benchmarks/sol-execbench)
 leaderboard. Each round, a research lead (Claude Fable) reads everything learned so far and plans two or three
 experiments. Parallel design sessions (headless Claude Code, Opus) then build and measure kernels on a rented B200

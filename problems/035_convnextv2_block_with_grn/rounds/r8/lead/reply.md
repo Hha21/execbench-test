@@ -1,0 +1,417 @@
+### Assessment
+
+The remaining score sits in eight rows at 0.66-0.70: the six wide-C small-image rows (16,384 0.659; 8,384 0.679; 32,768 0.686; 16,768 0.688; 8,768 0.695; 2,768 0.702) plus 8,320 and 4,96 (0.700/0.702, still on A's 5-6 launch pipeline). The score model says M -20 % and L -20 % gives 0.753, M/L -10 % gives 0.736; S-row cuts are worth less now (+0.0063 per 10 %). Reaching S = 0.74 on the wide-C rows needs about -22 % rented on each (16,384 58.5 to 41, 32,768 66.6 to 53, 8,384 38 to 29).
+
+What the lineages taught: D's single-launch tcgen05 skeleton wins wherever it has been instantiated, at portal ratio 1.20-1.27, and its remaining terms are all stamped: the post-accumulator GEMM1 epilogue (5.7-11.7 us per tile, 8 warps, issue- and latency-bound), the GEMM2 ingest wait (0.3-0.45 us per 64-k block), phase A (conv at 10x its FMA bound plus the weight pass) and tile tails (2 tiles on 44/116 CTAs). G's fusion holds the two largest rows but is SIMT-bound at 2.5x its tile bound; its unbuilt rows 8,320 and 4,96 are worth more score than any further top-row gain. F, E and B are retired: each lost to D on every row it shared and its argued ceiling is below 0.72.
+
+This round: (E1, D) run the GEMM1 epilogue on all 12-16 warps (4 per TMEM quadrant, A&S erfc GELU) across tc_kernel and sc_kernel, with 4,96 added to the sc_kernel table and a GEMM2 pair port as the stretch. (E2, G) instantiate 8,320 (streamed W1') and 4,96 (112-token tiles with a masked warp tile). (E3, new lineage H) an image-counter dataflow persistent tcgen05 kernel (work queue, no grid barrier) for the B >= 8 wide-C rows, where packing conv, epilogue tails and GEMM2 of different images onto the same SMs is worth ~15 us at 16,384 and 32,768 on top of E1.
+
+```yaml lineages
+lineages:
+  - id: A
+    thesis: Phase-separated pipeline of plain launches (bulk/TMA-staged dwconv+LN, cuBLASLt FP16 GEMMs, lean one-round elementwise kernels, fp16 materialised hidden) that wins by per-phase efficiency; the control lineage and carrier of conv/epilogue techniques.
+    status: paused
+    started: r1
+    best: r5-a-e2-ringk2
+    conclusions:
+      - Still carries 32,768 / 8,320 / 4,96 in r7-merge (all at portal ratio 1.23-1.30); every one of those rows is targeted by D, G or H this round, so A gets no experiment and pauses as the merge fallback.
+      - Each custom launch is a 2-3 dependent-round chain; the portal charges 5-6 launch pipelines 1.40-1.55x rented on S/M rows against 1.20-1.32x for single-launch kernels, so launch count is a first-order axis there.
+      - K2 is not stream-bound (59 % of copy rate at 64,96); the ~100 us left is FMA/INT issue of the exact erf, so only a GEMM-epilogue GELU removes it (lineage G does this).
+      - cuBLASLt FP16 is 1.4-2.1x faster than TF32 everywhere; its GELU epilogue is the tanh form (rejected on precision); swap-AB batched NCHW GEMM2 is right at HW >= 784 and 20-190 us slower at HW = 49/196.
+      - Precision log delivered for all 16 shipped paths (0 beyond own atol over 10 seeded rounds). Cross-host rented drift is 5-12 us on unchanged rows, so every pick needs an interleaved same-container control.
+  - id: B
+    thesis: One cooperative launch with every phase fused (FP16 mma.sync, fp16 hidden in L2), aiming at S rows <= 24 us rented by cutting the per-phase chain between the two grid barriers.
+    status: retired
+    started: r1
+    best: r3-coop-flat-bulkrows
+    conclusions:
+      - Retired r8. D's sc_kernel (same single-launch structure, tcgen05 engine) runs 1,192 at 19.4 and 1,96 at 19.1 us rented against B's 29.5-30.6, so B's ceiling (10-13 us floor plus >= 10 us of mma.sync-era SM work) is below the current best on every row it held.
+      - Keep. Single-launch coop beats a launch pipeline on the portal even where the bench says otherwise (ratio 1.25-1.31 vs 1.40-1.55).
+      - Keep. Barrier microbench (r4): flat atomic-counter barrier 0.86-1.07 us vs 1.6-1.9 us for the cg flip barrier; a two-level tree is worse (3.9 us); one flag polled by 295 CTAs is observed in 0.64 us. This is the counter mechanism lineage H builds on.
+      - Keep. Per-tile dataflow (H27) lost 1.4-2x for skeleton reasons (per-tile weight re-conversion, static round-robin lists), not because of the counters: a dataflow must convert weights once and claim items dynamically.
+      - Pitfalls. runtime guards around mma.sync cost ~470 clk per k-block; register-direct erff epilogues take 16 us per tile; a release arrive with loads in flight stalls.
+  - id: C
+    thesis: On-chip hidden with no global intermediates (hidden tile in shared memory across one grid barrier, weight slices ingested from L2, GEMM2 split-K reduced with red.add into a prefilled output).
+    status: retired
+    started: r1
+    best: r2-e3-onchip-hidden-v2
+    conclusions:
+      - Retired r3. H13 (16-CTA clusters, DSMEM ~12 B/clk/SM) and H20 (one-barrier on-chip hidden, 30.8 us at 1,192 vs 25 kill) refuted; no edge over a materialised fp16 hidden.
+      - Keep. One-shot cp.async.bulk into smem after the flush runs at ~120 GB/s/SM; converting inside the ring is 2-2.5x slower, so keep slices fp32-resident and cvt.rn.f16x2 at fragment load.
+      - Keep. TFLOAT32 TMA maps round to nearest even bit-exactly (H14); red.global.add.f32 into L2 reaches 4.1-4.4 TB/s from 256-512 CTAs.
+      - Keep. Cold __ldg of small vectors at the point of use adds a DRAM round each; bulk-load them at entry.
+      - Conv redundancy 4C/BN (2-6x) and per-CTA serial rounds dominated, not bytes; the all-N token-tile family (I17/I21) is dead for C >= 384 because every CTA would ingest the whole 2.4 MB W1 (20 us at 120 GB/s/SM).
+  - id: D
+    thesis: Cooperative single-launch specialist (bulk-plane conv, CTA-local or per-tile GRN statistics, split-K GEMM2 with coalesced red.add) whose GEMM engine is hand-written tcgen05 kind::f16 in the swap-AB orientation (weights as M, tokens as N), so the output tile is NCHW and the stats are thread-local; the six wide-C rows (tc_kernel) and the C <= 192 rows plus 1,160 (sc_kernel), from r8 also 4,96.
+    status: active
+    started: r3
+    best: r7-d-e2-smallc
+    conclusions:
+      - Holds 11 of 16 rows in r7-merge (sc_kernel 1,96 / 1,192 / 2,96 / 1,160 / 4,192 / 8,192 at ratio 1.20-1.27; tc_kernel = r6-d-e2-epi-fix at 2,768 / 8,768 / 16,768 / 8,384 / 16,384 at 1.20-1.32). The merge projection matched the portal to 0.0001, so D's ratios are trusted.
+      - Stamped remaining terms (r6/r7): the post-accumulator GEMM1 epilogue is the largest (tc_kernel 5.7 / 8.8 / 9 / 10.9 / 11.7 us per tile at 8,768 / 16,768 / 32,768 / 8,384 / 16,384; sc_kernel 2 us per 64-column and 3.9 us per 112-column chunk, 3 chunks per CTA at 4,192 / 8,192), issue- and latency-bound on 8 warps; GEMM2 B-tile scale 0.3-0.45 us per 64-k block tracks TMA landing, not arithmetic; phase A 5-16 us; tile tails at 16,384 / 32,768 (12 us).
+      - Validated and reusable: MN-major SW128 B descriptor (LBO 8192, SBO 1024, +2048 per k16), instruction descriptor bits, cta_group::2 pair recipe (reaches the MMA ideal at N >= 224), 2-accumulator GEMM2, staged coalesced h stores, register stats over plane subgroups, target_hardware [B200] only, stamps only from the warp that does the work, check STACK in cuobjdump (compile_b200's local 0 counts spills only).
+      - Dead ends: splitting phase A into weight warps plus conv warps (conv 1.3-3x slower than weights-first on all warps); lighter epilogue arithmetic (0.3-0.8 us slower, so the epilogue is not issue-bound at 8 warps but latency-bound); flush vs no-flush differs only on the first GEMM1 tile (the per-phase costs are latency and issue, not cold misses).
+      - Precision: tc_kernel paths 59-67 % of atol (hidden rounded once), sc_kernel paths 79-89 % (hidden rounded twice via fp16(h*s) in the B-tile scale); margin lever if a row ever fails is scaling the A tile from fp32 W2 instead.
+  - id: E
+    thesis: Library tcgen05 with fused epilogues (CUTLASS 4.4 sm100 builder GEMMs whose EVT epilogues carry the LN fold, exact erf GELU, hidden store and per-image GRN sum of squares; TF32 operands straight from fp32 memory where the MMA is cheap).
+    status: retired
+    started: r5
+    best: none
+    conclusions:
+      - Retired r8 (H30 refuted r5, paused r6-r7). Per-image batching re-reads W1 once per image and TF32 doubles the bytes; G1 with the full EVT was 17.0 us at 8,768 against D's whole row at 34.6 now, so its ceiling is below the current best on every wide-C row.
+      - Keep. EVT nodes that instantiate on sm100 TmaWarpSpecialized1Sm: Sm90ColBroadcast (batch stride), Sm90RowBroadcast, Sm90Compute<multiply_add>, Sm90Compute<GELU> (erf form), Sm90RowReduction with FinalReduction=false; the erf GELU costs +2.4-8.5 us when the epilogue does not overlap a one-tile-per-CTA mainloop.
+      - Keep. CUTLASS tfloat32_t on fp32 memory rounds to nearest (H14); split-K as the batch mode works on sm100; three .cu files build in 26-50 s wall.
+      - Unresolved. run_tests 14/16 twice from CUPTI sequence-matching errors on changing rows (first kernels of the call fall before the CPU start timestamp); any multi-kernel library path must clear this before a portal slot.
+  - id: F
+    thesis: Library-lean four-launch pipeline for the HW<=784 rows (LayerNorm finished inside the conv launch via a cluster-of-8 DSMEM statistics exchange, cuBLASLt FP16 GEMM1, a one-launch GRN statistics-and-scale kernel with per-image counters, cuBLASLt swap-AB batched GEMM2 writing NCHW) that wins by launch count.
+    status: retired
+    started: r6
+    best: r6-f-e1-libpipe
+    conclusions:
+      - Retired r8 (incubation over). H32 refuted: D r6 beat F by 4-10 us on every wide-C row and D r7 sc_kernel beat F's best S row (1,192 19.4 vs 26.6 rented, single launch vs four), so F's ceiling (library GEMMs plus 3-4 launch rounds) is below the current best everywhere.
+      - Keep. cuBLASLt's GELU epilogue is the tanh form (max 4.7e-4 from erf): fails the own-atol bar at 1,192 / 4,192; folding gb into the fp16 hidden also fails. The exact erf on an fp32 pre-activation and gb kept in b2' = W2.gb + b2 are required.
+      - Keep. One-launch GRN kernel with a plain launch when grid <= residency: 64-bit red.add (count in bits 52..63, fixed-point sum of gf), ld.relaxed poll, departure counter resetting the cell; 7-20 us, floor 5-7 us plus 2.6 us per million hidden elements. Plain launch saves 1.8 us over cooperative. This protocol is the self-resetting counter pattern lineage H reuses.
+      - Keep. Cluster-of-8 LN exchange costs 0.4-2.4 us; L2 weight prefetch at K1 entry had no measurable effect (I26 dead at that position); conv and weight conversion serialise inside a CTA (keep role-only CTAs or do weights first on all warps).
+      - Precision log delivered for all 9 F paths (0 beyond atol, 59-76 % of atol).
+  - id: G
+    thesis: Fused pass-1 persistent kernel for the HW >= 1024 rows (64,96; 32,128; 8,320; 4,96): CUDA-core warps stage x and run the 7x7 conv plus LN statistics, writing the fp16 d tile straight into shared memory as the GEMM1 B operand (swap-AB, W1' as A, mma.sync now, tcgen05 later); epilogue warps apply the LN fold, an exact erf GELU, per-(image,k) sumsq and the fp16 hidden store; a GRN scale launch (per-image fp16 W2_b, b2') and a cuBLASLt batched swap-AB GEMM2 writing NCHW finish the row. Conv, GELU, MMA and DRAM traffic overlap inside one kernel instead of three passes.
+    status: active
+    started: r7
+    best: r7-g-e1-fusedp1-mma
+    conclusions:
+      - r7: fused pass 1 with 7 conv + 9 GEMM warps, double-buffered d tile, token-permuted d layout, A&S erfc GELU: 64,96 857.5 us rented (A 1026.7, -16.5 %), 32,128 229.8 (257.0, -10.6 %), both taken by r7-merge at portal ratio 1.26-1.27; 4,96 lost (64.6 vs 46.8: only 56 tiles of 224 tokens), 8,320 not instantiated.
+      - Pass 1 is SIMT-bound at 2.5x its tile bound: conv side alone 472 us at 64,96 (FMA bound 102; L1/L2 load path, 49 weights in registers), GEMM side 522 (mma.sync ~100-130 us serialised in the epilogue warps, A&S GELU 2 MUFU per element = 133 us MUFU floor); the phases add because 122-128 regs allow 1 CTA (16 warps) per SM.
+      - cuBLASLt batched swap-AB GEMM2 (h_b col-major, W2_b per image, x_b as C, beta 1, b2' as hi/lo K-augmentation columns) runs at ~6.6 TB/s at HW >= 1024 (186 us at 64,96, 48 at 32,128, 7.3 at 4,96); the GRN sums via red.add per tile into a [B][4C] buffer zeroed by K0 cost 7-8 us in K3.
+      - W1' resident in smem (74 KB at C=96, 128 KB at C=128) forbids 2 CTAs/SM and R=4 tiles at 64,96; at C=320 (819 KB) W1' must be streamed per hidden block, which 8,320 needs.
+      - Precision log delivered for the 3 built rows (61-71 % of atol, 0 beyond). Pitfalls: /tmp wiped between probes (embed sources); harness_time drops the first kernel intermittently (retry).
+  - id: H
+    thesis: Image-counter dataflow (pool I4/I23, with B's flat counters and F's self-resetting protocol) in one persistent tcgen05 kernel for the B >= 8 wide-C rows: a static work queue (weight units, conv units, GEMM1 tiles, GEMM2 tiles, image-major) claimed through an atomic head, each item gated on per-image readiness counters instead of grid barriers, so the conv, the GEMM1-epilogue tails and the GEMM2 of different images pack onto the same SMs and the row runs near summed CTA-time / 148.
+    status: active
+    started: r8
+    best: null
+    conclusions:
+      - Seeded r8 from the one wide-C family no lineage has built (the dataflow family at image level; the per-tile version H27 lost for skeleton reasons, not counter cost). Arithmetic at 16,384 with D's stamped per-item costs: summed CTA-time ~6400 CTA-us / 148 = 43 us against 58.5 us phase-serial; with a 2x faster epilogue ~31 us. Targets: 16,384 <= 45, 32,768 <= 55, 8,384 <= 32, 16,768 <= 40, 8,768 <= 30 us rented.
+```
+
+```yaml ledger
+# Hypothesis ledger for #035 (035_convnextv2_block_with_grn). Seeded 2026-10-11 (research phase r0); updated r8 2026-10-13.
+# status: open | supported | refuted | parked. evidence cites kernels, portal submissions, probes or findings.
+constraints:
+- 'No discard/invalidate of cache lines (discard.global.L2 etc.), even on our own inputs: it targets the harness''s measurement, not kernel speed. Off-limits unless NVIDIA approves.'
+- Never touch memory we do not own; no state carried between calls except a scratch counter that is correct for every call.
+- 'No overlap with the harness''s own kernels (no PDL against the flush memset, no other streams): it hides work from the timed window. No programmatic dependent launch at all, even between our own kernels: the lint rejects griddepcontrol and the PDL launch attributes, so an idea that relies on PDL must be built without it.'
+- 'Clusters only where a GEMM tile needs them (2SM tcgen05 pairs, split-K cells); inherited from #38: clustered row-wise grids lost 2-5% on the portal and seemed to slow later plain launches.'
+- 'Eviction-priority operations (createpolicy, applypriority.L2::evict_normal) only on the current call''s own input/output buffers, inside our kernel. Any candidate that uses applypriority goes to the operator for a legitimacy check before a portal slot.'
+- 'Precision: FP16 and TF32 operands with fp32 accumulation pass every workload with ~5 sigma margin (simulated with the harness generators); BF16 fails. Any reduced-precision candidate must be re-simulated or run_tests 16/16 before a slot; the erf GELU must stay exact (no tanh approximation).'
+- 'Weights are converted/transposed inside the call (no cross-call cache of fp16 weights or descriptors; pointers shift every call).'
+- 'Workspaces come from torch.empty inside run() (no kernel launched); a cooperative launch counts as one kernel. Grid barriers via cg::grid_group or a self-resetting counter only.'
+- 'Host state shared across shapes (function attributes such as max dynamic shared memory, cached plans, handles) must be right for every shape in any order: the portal sets up every workload before it times them (#65570: per-shape cudaFuncSetAttribute shrank the limit for earlier shapes, code 101 on 8 workloads). Set such attributes to the maximum any shape needs, or only ever raise them. run_tests re-runs every workload after all have run once and reports a PORTAL-ORDER CHECK failure.'
+notes:
+- 'Report effects per workload (or at least C=768 rows vs others), not per MB band: the MB bands mix weight-bound (C=768 7x7), latency-bound and stream-bound rows. Card fix pending: the MB cell for 64,96,112,112 is 616.9 MB, not "118.0 G".'
+- 'Where the score is (r8; r7-merge #66740 = 0.7207, projection 0.7208; live first place about 0.74, so +0.02 of mean = +0.32 summed S is needed). Per-row S, lowest first (portal us, path): 16,384 0.659 (76.7, D tc); 8,384 0.679 (49.6, D tc); 32,768 0.686 (87.5, A); 16,768 0.688 (58.9, D tc); 8,768 0.695 (43.2, D tc); 8,320 0.700 (99.7, A); 2,768 0.702 (33.3, D tc); 4,96 0.702 (57.4, A); 8,192 0.719 (57.0, D sc); 4,192 0.728; 1,160 0.733; 2,96 0.736; 1,192 0.748; 32,128 0.768 (G); 1,96 0.787; 64,96 0.800 (G). predict_score r8: M -20 % and L -20 % = 0.753; M -10 % and L -10 % = 0.736; a 10 % cut is worth +0.0063 (S) / +0.0072 (M) / +0.0083 (L). Rented times for S = 0.74 at D''s ratio 1.3: 16,384 41 (58.5 now), 8,384 29 (38), 32,768 53 (66.6), 16,768 36 (46.5), 8,768 27 (34.6), 2,768 21.5 (27.6): about -22 % each. 8,320 at 50 rented and 4,96 at 32 rented (A: 78.6 / 46.8) would add +0.011. The S rows are above the leader-implied times on every row; a 15 % cut at 64,96 is worth only +0.002.'
+- 'Portal/rented ratio (audit r4, extended r6/r7/r8, replaces the uniform 1.28): per path, per row AND per launch structure. On S/M rows the 5-6 launch A pipeline runs at 1.40-1.55x its rented time, the single-launch cooperative B/D kernels at 1.20-1.32x (r7-merge: D sc_kernel 1.20-1.27 on six rows, D tc_kernel 1.20-1.32, G''s 4-launch pipeline 1.26-1.27 on the two largest rows, A 1.23-1.30 on 32,768 / 8,320 / 4,96); moving 1,96 and 1,192 from B to A looked 5-8 % faster rented and was 6-8 % slower on the portal. Rented hosts differ in launch speed and the portal behaves like the slow host. Rule: each launch removed on an S/M row is worth about 1-1.5 us more on the portal than the bench shows; judge S/M designs by launch count as well as rented time; project each path with its own lineage ratio (the merge step does this; r7-merge projected 0.7208 vs 0.7207 measured).'
+- 'Audit r8 answers (the critic''s list is unchanged from r4). (1) Uniform ratio: corrected in H21; r7-merge''s projection matched the portal to 0.0001 with per-path ratios. (2) Top two rows low priority: acted on in r7 (lineage G, -16.5 % / -10.6 % rented, portal 0.800 / 0.768); they are now the two highest rows, so G is redirected to its unbuilt rows 8,320 and 4,96 where the same structure is worth 5x more score per us. (3) "E1 lost because of mma.sync": stands as corrected in H26. (4) Coop S-row floor ~20 us: refuted by r7 E2 (1,192 at 19.4 us rented in one launch with phase A 5.4 us; H11 supported). (5) Precision margin: delivered for A (16 rows), D r6/r7 (12 rows), E (6), F (9), G (3), all 0 beyond own atol over 10 seeded rounds; B''s paths no longer ship (sc_kernel replaced them), so the owed B log is moot. (6) Merge picks: portal-measured merges only; r7-merge confirmed.'
+- 'Pool families (dedup r8; built or refuted ones are not re-run): dataflow/counters (I1, I4, I12, I23: per-tile version refuted H27; the image-counter version is lineage H from r8, H38); zero-conversion TF32 in a custom engine (I2, I20: library route refuted H30; worth <= 3-5 us on 2,768 / 8,768 only, low priority); tcgen05 wide-C (I3, I7, I18, I25: built = D); small-image conv (I5, I22: built A r4 / D); library EVT (I6, I8, I16: E refuted, retired); K2 rewrite (I9 built; I30 balanced erf unbuilt, G''s GEMM side is MUFU-bound at 133 us so it applies there); barrier (I10: microbenched; superseded by H''s counters); fused top-row kernels (I11 built = G; I19, I12 unbuilt, blocked until G''s conv and GELU are near their SIMT bounds); tensor-core conv (I13, I15, I29: long shots, kept); die-local placement (I14: long shot, kept); on-chip all-N token tiles (I17, I21: dead for C >= 384 because each CTA would ingest the whole W1, 20 us at 120 GB/s/SM; superseded by sc_kernel at C <= 192); SIMT conv rewrites (I24, I28: unbuilt, G''s conv side is the binding term at 64,96: 472 us vs 102 bound); prefetch/hints (I26: no effect at K1 entry in F); library-lean (I27: F built, H32 refuted, retired).'
+- 'Precision logging (audit r2, tightened r3, delivered r5 for A, r6 for D/F, r7 for D sc and G): the margin is about the MAX error over 1e7-1e8 elements x 10 rounds, not the rms. Every run_tests records per workload the max |err| and the count of elements beyond that row''s OWN atol + 1e-5|ref| over the harness''s 10 seeded rounds (seed 200) against an fp64 reference, for every path the lineage ships. A row with any beyond-atol element switches the cheap operand to a hi/lo fp16 split (2 MMAs, free at S/M). Passing through the 98 % ratio is not acceptable. A session that ends without the log returns no candidate. Status r8: every shipped path logged (0 beyond atol everywhere; tightest 2.427e-3 vs 2.7e-3 at 1,96 on A, now replaced by sc_kernel at 88 %). The cuBLASLt GELU epilogue is the tanh form and fails this bar (F r6): the exact erf must run in our own code; the A&S erfc form (1.2e-6 in h) is accepted as exact.'
+- 'Cross-session rented timings drift by ~6 us per call and across Modal hosts by 5-12 us on unchanged rows. Every experiment times its parent and the merge interleaved x3 in its own container. Rented within-noise picks lose on the portal (r3 merge at 8,768); the merge step now times candidates side by side in one container and projects with per-lineage ratios.'
+- 'Portal #65570 per-row S for lineage A v3 (8 rows that ran): 1,192 0.61; 1,96 0.63; 2,96 0.59; 4,192 0.60; 4,96 0.65; 8,192 0.63; 32,128 0.62; 64,96 0.65.'
+- 'Audit r3/r4 on tcgen05 (H23): the ideal GEMM savings on the four GEMM-heavy rows are worth about +0.010 of mean, +0.005 against cuBLASLt; but tcgen05 is also the enabler for fused epilogues (K2 removal at the top rows, K2/K3/K4 removal on wide-C rows), because the custom mma.sync engine lost 4x to cuBLASLt (H26). Routes: D''s hand-written engine (H28 supported r6, H34 supported r7), E''s CUTLASS builder (H30 refuted, retired), F''s library-lean pipeline (H32 refuted, retired), G''s fused pass (H35, partly supported r7), H''s dataflow (H38, r8).'
+- 'Cross-problem code: a design session may read another problem''s archive kernel as a structure reference (the #35 tc_ws tcgen05 ring, tricks s5); within this problem lineages still share conclusions only. r4: get_kernel refused #35 tc_ws from lineage D, so the gate ran on a self-written probe. r7: get_kernel on r6-d-e2-epi-fix returns 75 KB, above the tool limit; sessions should request the kernel''s card and sources in parts or rely on the notebook recipes. A new lineage builds its tcgen05 engine from the notebook recipes (descriptor constants, idesc bits, pair recipe, ring structure) and validates it against torch before anything else.'
+- 'Per-SM operand ingest (H31, corrected r6): a tcgen05 tile fed from L2 through a TMA ring lands 68-92 B/clk/SM in 1SM mode (not 55-72), the cap is SM-side (B multicast across a cluster changes nothing), and a cta_group::2 pair halves per-SM B bytes and reaches the MMA ideal at N >= 224. There is a per-stage floor of ~480 clk at N=128 in 1SM mode. Operands produced in smem by the same CTA (G''s conv-produced B tile, resident W1'') pay no ingest at all. r7 sc_kernel: the GEMM2 B-tile scale costs 0.3-0.45 us per 64-k block, linear in k-blocks even when every block fits the ring, i.e. TMA landing of 32 KB stages, not arithmetic.'
+- 'r6/r7 engineering lessons: (a) a per-thread array that the compiler cannot keep in registers becomes a local stack frame (cuobjdump STACK 128, LDL/STL); compile_b200''s "local 0" counts spills only, so check STACK in the SASS; with 227 KB smem the L1 is tiny and each local access is an L2 round. (b) globaltimer stamps taken by tid 0 after __syncthreads can be hoisted above the barrier: stamp from the warp that does the work. (c) Coalesce 16-B hidden stores through a per-warp smem transpose (2-5 us per wide-C row). (d) target_hardware [B200] only for tcgen05 solutions. (e) torch extension builds define __CUDA_NO_HALF_CONVERSIONS__: use __half2float. (f) Do the weight conversion first on all warps, then the conv; splitting warps between the two serialises worse (r7 D). (g) Register stats over plane subgroups beat per-element post-conv passes (1-9 us per row, r7 D). (h) A token-permuted d layout lets each lane store 8 consecutive tokens per hidden row with one STG.128 (r7 G).'
+- 'r4 dataflow lesson (H10/H27): a cheap release-to-observe (0.64 us for one flag polled by 295 CTAs; flat atomic barrier 0.86-1.07 us) does not translate into kernel time; the barrier version wins because each phase''s per-CTA work is uniform and the weight conversion is spread over all warps once per call. Any future dataflow must keep a one-pass weight conversion (or a weights-ready counter) and claim tiles dynamically. Lineage H (r8) does both.'
+- 'r5 K2 lesson (H29): a register-prefetch or smem-ring K2 reaches only 47-59 % of the plain copy rate (6.0-6.6 TB/s r+w) because the per-element math (13 instr erf + 7 other) is FMA/INT issue, not MUFU (removing both MUFU ops saves 29 of 319 us at 64,96); the A&S erf form is 1.16e-6 from erff but changes the end-to-end max error by <= 6e-6; the in-gate NR 10-coefficient form costs ~30 us more at 64,96. SIMT bounds at 64,96 (rented 1.95 GHz): conv 102 us, exact GELU at 20 instr/element 167 us, so a fused pass-1 kernel cannot beat ~270 us without moving part of the erf to the MUFU pipe (I30). r7 G: the A&S erfc form in the fused epilogue is MUFU-bound (2 MUFU per element, 133 us floor at 64,96), so the balance point is about one third of the elements on an FMA-only polynomial.'
+- 'Cluster note for lineage F (r6): the constraint allows clusters where a GEMM tile or split-K cell needs them; F''s K1 used a cluster of 8 CTAs per (image, row strip) to exchange per-token LayerNorm statistics through DSMEM (2 floats per token), a one-wave grid of <= 256 CTAs; measured cost 0.4-2.4 us. F is retired; the pattern stays available.'
+- 'Retirements r8: B (sc_kernel beats it on every S row by 10 us single-launch), E (H30, library EVT re-reads W1 per image; CUPTI sequence failures unresolved), F (H32, lost to D by 4-10 us on wide-C rows and to sc_kernel at 1,192). A is paused as the merge carrier of 32,768 / 8,320 / 4,96 (all targeted this round). Active: D (leading, one experiment), G, H (new).'
+hypotheses:
+- id: H1
+  statement: FP16 or TF32 tensor cores (fp32 accumulate) for both GEMMs meet the tolerance and make every workload memory/latency/fixed-cost-bound (GEMMs <= 19 us except 65 us at the largest with FP16; TF32 at twice that is still under 10 us except at the top three sizes).
+  status: supported
+  evidence:
+  - 'probe: fp16/fp16 and tf32/tf32 (round-to-nearest) err rms 4.5e-4 vs tol 2.4e-3..3.8e-3, 0.000% beyond tol on 6 workloads x 2 seeds; bf16 fails 28-50%'
+  - 'arithmetic: 118 GFLOP / 1.82 PF/s = 65 us at the largest vs 2.1 ms fp32 SIMT peak; stream floor 99 us'
+  - 'r1 A and B: FP16 GEMMs 16/16 pass in two independent kernels; cuBLASLt FP16 vs TF32 cold: 3.3/5.4 us at 784x192x768, 7.2/11.8 at 98x3072x768, 129/270 at the largest, so FP16 is 1.4-2.1x faster everywhere'
+  - 'r5 A precision log (fp64 reference, 10 seeded rounds, 16 rows): 0 beyond-own-atol elements on every row, max |err| 2.427e-3 vs atol 2.7e-3 at 1,96 (tightest); r5 E TF32 paths 1.67-1.94e-3; r6 D 1.70-1.95e-3 (59-67 % of atol); r6 F 1.61-2.07e-3 (59-76 %). The margin is a max-error statement now, not only rms'
+  - 'r6 F: the tanh GELU (cuBLASLt epilogue) fails (11 beyond-atol at 1,192 with fp16 b1; max 2.43-2.46e-3 with fp32 b1), and folding gb into the fp16 hidden fails (1 beyond atol at 4,192): the exact erf on an fp32 pre-activation and gb kept in b2'' are required'
+  - 'r7 D sc_kernel (6 rows): 79-89 % of atol, 0 beyond, with the hidden rounded twice (fp16 h then fp16(h*s)); r7 G (3 rows): 61-71 %, 0 beyond, with d16, fp16(lnw*W1), h16, fp16(s_b*W2) per image and the A&S erfc GELU. Every shipped path is logged'
+- id: H2
+  statement: The depthwise 7x7 conv is a first-order cost at every size because the implementations are staging-bound, not FMA-bound (K1 315 us in A at the largest against a 134 us FMA bound; 81 us at 32,128 against 29); a conv at ~1.5x its FMA bound is worth ~+0.01 at the top two rows, and the bulk-plane conv in A's K1 is worth 8-20 us on seven W=7/14/449x7 rows.
+  status: supported
+  evidence:
+  - 'probe r0: SIMT 4x4 register patches 516-549 us at the largest at 1965 MHz (bound 102 us), latency-bound at 2 CTAs/SM'
+  - 'r1 A: removing global->smem staging cut K1 20.7 -> 6.5 us (1,96) and 148 -> 28 us (8,320); ~8 GB/s per SM through LDG/LDGSTS staging'
+  - 'r2 A (H18 part): TMA 3-D box ring lifted ingest to 15-34 GB/s/SM; full K1 5.6 us at 1,192, 23 at 8,320, 81 at 32,128, 315 at the largest (3x the FMA bound: LDS about equal to FMA, per-stage __syncthreads, ~40% FMA busy)'
+  - 'r3 D: bulk-plane conv (1-D cp.async.bulk of 32-plane groups, thread per 7-output row segment) 1.5 us at 2,768, 6 at 8,768, 10 at 32,768, 8-9 at 8/16,384, correct 16/16'
+  - 'r4 A (E1) SUPPORTED for the W=7/14/449x7 part: K1 interleaved x3: 2,768 18.1 -> 9.7; 8,768 23.2 -> 12.2; 32,768 33.4 -> 14.2; 16,384 28.9 -> 16.7; 1,160 17.9 -> 5.2 us'
+  - 'r7 G: inside the fused pass the conv side alone is 472 us at 64,96 (L1/L2 load path, 49 weights in registers, 3-row register prefetch) against a 102 us FMA bound, and 109 at 32,128; r7 D sc_kernel: the plane conv runs 3-6x its FMA bound (latency-bound at 10-12 warps). The top-two-row part (conv at 1.5x FMA) is still open and is the binding term of H35'
+- id: H3
+  statement: Recomputing GEMM1 in phase 2 beats materialising the 4C-wide hidden tensor at the two largest sizes (2.5 GB and 0.54 GB of extra traffic vs 32 and 9 us of FP16 MMA); elsewhere a materialised fp16 hidden (<= 42 MB) is a tie.
+  status: parked
+  evidence:
+  - 'arithmetic in card section 6.2; anchor v2 materialises hidden in fp32'
+  - 'r1 H16: the fp16 round trip costs 3.6 us over the two-launch floor at 20 MB and ~1.4x ideal (57 vs 38 us) at 134 MB; at the largest row K2 alone took 447 us (616 MB write + read)'
+  - 'audit r4/r6: after the r5 ring K2 the rows sit at 0.770 / 0.748 and the remaining K2 cost is FMA issue of the GELU (H29), which recompute would double. r7 G materialises the fp16 hidden once from the fused pass and reads it once in GEMM2 (186 us DRAM-bound at 64,96); the pass itself is SIMT-bound at 668 us, so recompute (a second GELU pass) stays parked until the conv and GELU reach their bounds'
+- id: H4
+  statement: One cooperative launch with two grid.sync()s costs about the same as three launches on the rented card and the portal difference is within noise.
+  status: refuted
+  evidence:
+  - 'probe r0: empty kernel 1.8 us, +2.0 us per extra launch; 296-CTA atomic barrier ~1.5 us'
+  - 'r1 B, interleaved x3: coop vs three plain launches 29.7 vs 36.3 us at 1,192,28,28 and 46.7 vs 50.2 at 2,768,7,7; stubbed floors 4.6 vs 9.9 us'
+  - 'portal r6 (#66310 vs #66402 vs #66643): the coop kernel''s portal ratio is 1.20-1.32 against 1.40-1.55 for the 5-6 launch pipeline on S/M rows, so the portal difference is larger than the bench difference, not within noise'
+- id: H5
+  statement: For small-M / large-K shapes (2,768,7,7; 8,768,7,7) split-K is required to use the SMs; at 1,192,28,28 it is not needed.
+  status: supported
+  evidence:
+  - 'r1 B ablation, split-K auto vs forced 1: 2,768,7,7 46.5 vs 64.6 us, 8,768,7,7 86.1 vs 120.6 (28-29%); 1,192,28,28 29.9 vs 30.6 (none)'
+  - 'r4 D gate: 768x1568x3072 without split-K 20 us warm (48 CTAs); H31 explains why: per-SM ingest, not MMA, sets the time at low CTA counts'
+- id: H6
+  statement: The fp32 SIMT GEMM core runs at 46-50 TF/s on the rented card at 1965 MHz, i.e. 35-38 TF/s at the 1500 MHz portal lock; the anchor loses to 17-25 TF/s through the epilogue and affine. The fp32 SIMT ceiling mean (0.680) is below the leader (0.690), so SIMT GEMMs cannot reach the top.
+  status: supported
+  evidence:
+  - 'probe: bare 128x128x32 core 46-50 TF/s, 57-60 TF/s without global loads; ablations no-epilogue 34-35 TF/s, no-affine 33-35'
+  - 'portal #65377 vs rented: 127.2/97.5, 270.0/204.7, 1317.4/1010.5 = 1.30-1.32'
+- id: H7
+  statement: Wave quantisation and tile-shape padding cost 20-30% at mid sizes (416 tiles = 1.4 waves at 32,768,7,7; N=96/160 padded to 128), so per-size tile tables or stream-K matter as much as the core rate.
+  status: supported
+  evidence:
+  - 'r0 cost model picked 128x96 tiles for C=768; r1 B: 1,160,449,7 P3 ~26 us with N=160 padded to 2x128 tiles is the one measured padding loss. r4 D gate: 3072x1568x768 = 168 CTAs = 1.14 waves (4.3 us per CTA)'
+  - 'r6 D stamps: 192 / 264 GEMM1 tiles on 148 CTAs at 16,384 / 32,768 leave 44 / 116 CTAs with 2 tiles; at 16,384 the GEMM1 epilogue ends at 32.3 us median vs 44.5 max, a 12 us tail on a 58.5 us row'
+  - 'r7 D sc_kernel stamps: 3 GEMM1 chunks per CTA on 40 CTAs at 4,192 / 8,192 (3.9 us each) are the largest term there; r7 G: 4,96 with 224-token tiles uses 56 of 148 SMs (64.6 vs 46.8 us) and 32,128 runs 1024 tiles in 6.9 rounds. The tail is now attacked three ways: a faster epilogue (H36), tile shapes per row (H37) and dynamic claiming across phases (H38)'
+- id: H8
+  statement: Applying the GRN scale per image to W2 (or scaling the hidden tile in smem while converting to fp16) removes the per-element affine cost that made phase 3 35% slower than its bare GEMM.
+  status: open
+  evidence:
+  - 'probe r0: noaff phase 3: 495 vs 678 us at 32,128,64,64, 1816 vs 2684 us at the largest'
+  - 'r1 B applies the GRN as an in-smem scale pass and A as a separate K3 launch (6-17 us per row, a 3-round chain); r3 D folds fp16(s_img*W2) per image; r4/r6 D uses two accumulators (h and g = gw*gf*h, scale inv_b in the epilogue) at the price of doubled GEMM2 B ingest; r6 F''s one-launch K3 costs 7-20 us (floor 5-7 plus 2.6 us per million hidden elements). None isolated as a win yet'
+  - 'r7 D sc_kernel scales the fp16 B tile in smem (0.3-0.45 us per 64-k block, which is TMA landing, not the scale); r7 G uses per-image fp16 W2_b = fp16(W2*s_b) built in a 7-8 us K3 (74 KB per image at C=96), the cheapest form when the hidden is huge and the weights small. Per-image W2_b costs precision margin only through one extra rounding (G 61-71 % of atol)'
+- id: H9
+  statement: The reference's hidden baseline Tb is close to eager (157 us .. 11.5 ms), so even the fp32 anchor scores > 0.5 on the S/M band.
+  status: refuted
+  evidence:
+  - 'portal #65377: Tb/rented-eager = 0.34-0.59 per workload; the anchor scores 0.10-0.51. Reaching S=0.5 needs t <= 68-222 us on 14 rows'
+- id: H10
+  statement: A per-image dataflow (image counters instead of grid barriers) hides the GRN dependency behind other images' GEMM1 work at B >= 8 and removes two barrier waits.
+  status: open
+  evidence:
+  - 'r4 B (E2) microbench: one red.release flag polled by 295 CTAs is observed in 0.64 us median; a flat atomic-counter barrier releases in 0.86-1.07 us; a two-level tree is worse (3.9 us). The per-tile dataflow kernel (H27) was 1.4-2x SLOWER on every S row for skeleton reasons'
+  - 'r6/r7 D stamps give it concrete targets: the 12 us GEMM1 tail at 16,384, 2 tiles on 116 CTAs at 32,768, the 3.7-8 us GEMM2 wait, and the conv units (192 on 148 CTAs at 16,384) that precede sync 1. Arithmetic at 16,384 with D''s per-item costs: summed CTA-time ~6400 CTA-us / 148 = 43 us vs 58.5 phase-serial. Built from scratch as lineage H in r8 (H38) with a work queue and per-image counters; this hypothesis is the mechanism, H38 the kernel-level claim'
+- id: H11
+  statement: The fixed floor F (launch + barriers + ramps) is 4.6 us in a cooperative kernel and 9.9 us for three launches; what sets the S rows is the SM work and dependent rounds inside each phase (8-10 us per phase at 1,192,28,28 in B; 6-17 us per custom launch in A). Cutting the per-phase chain to ~3-4 us gives S rows of 15-20 us rented (S ~0.78-0.82).
+  status: supported
+  evidence:
+  - 'r1 B stub: all three phases stubbed = 4.2-4.7 us on every shape; full 1,192 = 29.7 (P1 13.2 / P2 +7 / P3 +9.6)'
+  - 'r1 A: cold dependent load 0.44 us per step, ~1 us per round once loaded; K1/K2/K3 are 2-3 round chains each'
+  - 'r2 B audit at 1,192 (globaltimer): ~12 dependent steps of 1.5-2.5 us between P1 end (1.8 us median, 8.6 max on 48 conv CTAs) and the end at 28.2 us'
+  - 'r3/r4 B microbench: barrier release 1.6-1.9 us per 296-CTA flip barrier, flat atomic-counter barrier 0.86-1.07 us, cold rounds 1.2-3.5 us, just-written 32 KB bulk round 0.83 us, so the two-barrier coop floor is 10-13 us and 15-18 us of SM work and tail waits remain at 1,192'
+  - 'r7 D (E2) SUPPORTED: sc_kernel runs 1,192 at 19.4 us and 1,96 at 19.1 us rented in one launch (portal 23.2 / 23.8, S 0.748 / 0.787). Stamped chain at 1,192: phase A 5.4 (weights 2.6-3.1 then conv 2.5-3), sync 1 release ~1.5-2, GEMM1 single tile 0.6 + 1.0 + 3.7 post-accumulator, sync 2, GEMM2 1.4 + 1.0 + 1.6. Flush vs no-flush differs only on the first GEMM1 tile: the per-phase costs are latency and issue rate, not cold misses. The S-row target band (15-20 us) is reached; what remains there is worth less than the M/L rows'
+- id: H12
+  statement: Legacy mma.sync.m16n8k16 FP16 (fp32 accumulate) on sm_100 delivers >= 0.3 PF/s at 1.5 GHz.
+  status: supported
+  evidence:
+  - 'r1 probes (B and C): 2018-2048 FLOP/clk/SM = 0.455 PF/s at 1.5 GHz, 1/4 of tcgen05 kind::f16'
+  - 'r3 A (E1) and D: real tiles reach 160 TF/s (64x128, 4-stage cp.async) and 0.64 us per 32-k chunk vs 0.40 ideal (D); cuBLASLt does the same GEMMs ~4x faster, so mma.sync loses on every MMA-heavy row'
+  - 'r7 G: inside the fused pass mma.sync costs ~100-130 us of the 668 us at 64,96 because it is serialised in the epilogue warps; acceptable only where the MMA is a minor term'
+- id: H13
+  statement: A thread-block cluster per image (8-16 CTAs, hidden slices in smem, statistics and GEMM2 partials reduced through DSMEM) runs the 7x7/14x14 workloads in <= 30 us.
+  status: refuted
+  evidence:
+  - 'r1 C: DSMEM all-gather 13.5-18.5 B/clk/SM, reduce-scatter ~12 B/clk/SM; v1 at 2,768,7,7 129 us. Floor ~50-60 us per cluster wave at C=768. A 2-float-per-token statistics exchange (F''s K1, 0.4-2.4 us) is three orders of magnitude smaller than the bulk DSMEM traffic refuted here'
+- id: H14
+  statement: TFLOAT32 TMA tensor maps round to nearest, so kind::tf32 GEMMs can read fp32 weights and activations straight from the inputs with no conversion pass.
+  status: supported
+  evidence:
+  - 'r1 C probe: bit-exact round-to-nearest-even through a TFLOAT32 map; FLOAT32 maps leave bits unchanged'
+  - 'r5 E: CUTLASS tfloat32_t A/B on fp32 memory gives max |err| 1.1-1.4e-5 vs an fp64 reference with RNE-rounded operands. But the library TF32 route lost on time (H30): TF32 doubles operand bytes on an ingest-bound engine and cuBLAS TF32 is 1.4-2.1x slower than fp16, so the zero-conversion idea only pays inside a custom engine where the weight pass is the binding term (D phase A at 2,768: 7.4 us of 27.6)'
+- id: H15
+  statement: cuBLASLt FP16 GEMM1+GEMM2 cost <= 12 us at the S sizes and pick sane kernels at M=98..784 with K=3072, so the library is not what limits a launch pipeline; the pipeline's floor is its custom launches.
+  status: open
+  evidence:
+  - 'r1 A: GEMM1+GEMM2 5.1+6.8 us at 1,192, 6.0+9.6 at 2,768, 10.1+13.8 at 32,768; 8 heuristic algos per shape, top-3 within 0.3% (checked at 1,192 only)'
+  - 'r1 A: NCHW strided-batched GEMM2 (m=HW) is 20-200 us for HW=49/196/odd; channels-last GEMM2 + 32x32 transpose-add (4-8 us) instead'
+  - 'audit r3: supported at 1,192 (and C<=192); at C=768 the two GEMMs cost 15.6-24 us against a 2.7 us weight stream, so the library IS a first-order term on four rows (now held by D''s engine)'
+  - 'r6 F: GELU_BIAS epilogue costs +1.3-3.9 us over BIAS and is the tanh form (rejected); fp32 bias on an fp16 D is rejected by the heuristic; swap-AB batched NCHW GEMM2 (m=HW, x as C, beta 1) is 2-4 us faster than channels-last + K4 at HW=784 and 20-190 us slower at HW=49/196. r7 G: the batched swap-AB GEMM2 runs at ~6.6 TB/s at HW >= 1024 (nvjet 256x96 2cta kernel)'
+- id: H16
+  statement: Writing then reading a 10-134 MB fp16 hidden under the harness's dirty-L2 flush costs little (<= 4 us over the launch floor at 20-42 MB; ~1.4x ideal at 134 MB), so a materialised fp16 hidden is not a lever below 42 MB.
+  status: supported
+  evidence:
+  - 'r1 A probe, two launches after the 2xL2 zero-fill: 0.01 MB 5.4 us, 20 MB 9.0, 42 MB 14.6, 134 MB 57.4 (ideal 5.7/12/38)'
+  - 'r2 C (E3): an on-chip hidden with one barrier was no faster than B''s materialised hidden at 1,192 / 2,96'
+  - 'r5 A: store hints on the hidden are within 1 us except evict_first -4 us at 32,128 (already auto above 42 MB)'
+- id: H17
+  statement: The anchor's phase 1 at C=768 is block-level weight transposes plus the 4-tokens-per-lane conv; warp-level transposes and zero-padded smem planes cut it to ~45 us.
+  status: supported
+  evidence:
+  - 'r0 probes: 42 vs 11.5 us transposes; 306 vs 59 us conv; smem planes 35.5 us at 32,768,7,7'
+- id: H18
+  statement: Staging the dwconv input through TMA boxes (3-D map over x for W%4==0 rows; 1-D cp.async.bulk plane copies for 7x7, 14x14 and 449x7 rows) in a multi-stage mbarrier ring lifts conv ingest from ~8 GB/s per SM to >= 40 GB/s per SM, so the conv phase lands within 1.5x of its FMA bound.
+  status: open
+  evidence:
+  - 'r2 A (E1): ingest part SUPPORTED for W%4==0 rows: 15-34 GB/s/SM, 11x the old staging; full K1 5.6 / 23 / 81 / 315 us at 1,192 / 8,320 / 32,128 / 64,96. The 1.5x-of-FMA-bound part is NOT met (3x at the largest). Box inner start must be a multiple of 16 B (start at w=-4, box W+8)'
+  - 'r3 D: bulk-plane copies SUPPORTED for W=7/14 (conv phase 1.5-10 us on the six wide-C rows). r4 A: 449x7 SUPPORTED with per-lane 1-D bulk copies (K1 5.2 us at 1,160); plane slots must be 16-B aligned in smem (bank skew by channel mod 4 for odd HW). r7 D sc_kernel: plane copies of 3136 / 12544 / 12572 B work for 28x28, 56x56 and 449x7 images'
+  - 'r7 G: inside the fused pass the x staging through L1/L2 (no TMA ring, W1'' occupying smem) left the conv at 4.6x its FMA bound; the 1.5x part is still open and is G''s binding term at 64,96'
+- id: H19
+  statement: In the cooperative mma.sync kernel, the S-row time above F is mostly dependent global rounds that can be overlapped across the grid syncs; together they cut 1,192,28,28 from 29.7 to <= 22 us rented.
+  status: refuted
+  evidence:
+  - 'r2 B (E2): collapsing every phase to one load round did not move 1,192 (30.5 flat vs 30.4 ring); the remaining cost is barrier release plus cold rounds plus the conv tail (H11, H24)'
+- id: H20
+  statement: A one-barrier cooperative kernel that keeps each CTA's hidden tile in shared memory across the grid sync and reduces GEMM2 split-K partials with red.global.add runs the seven C <= 192 rows in <= 15-20 us rented.
+  status: refuted
+  evidence:
+  - 'r2 C (E3) v2: 1,192 30.8 us, 2,96 46.3 (kill line 25 us); conv redundancy 4C/BN (2-6x) and serial dependent rounds dominate. Lineage C retired r3; r7 D''s sc_kernel reached 19.4 us at 1,192 with a materialised hidden, so the on-chip hidden was never the lever'
+- id: H21
+  statement: The portal/rented ratio is a per-path, per-row and per-launch-structure quantity, not a constant 1.28. Multi-launch pipelines pay more on the portal than single-launch cooperative kernels on S/M rows (A's 5-6 launches 1.40-1.55x, B/D coop 1.20-1.32x), and the portal behaves like the slow rented hosts; each launch removed on an S/M row is worth 1-1.5 us more on the portal than the bench shows. Project every path with its own lineage ratio.
+  status: supported
+  evidence:
+  - 'portal #65570 (A v3) vs rented on 8 rows: 1.27-1.28 each; fp32 anchor 1.30-1.32'
+  - 'portal #65878 (A r2, 16 rows): 1.16 at 1,96, 1.20 at 1,192, 1.22 at 2,96 and 2,768, 1.23-1.32 elsewhere. #65879 (merge): B paths 1.24-1.26, D paths ~1.32'
+  - 'operator r6 (#66310 vs #65972 vs #66402): moving 1,96 and 1,192 from B to A looked 5-8 % faster rented and was 6-8 % slower on the portal; A''s S rows measured 26 vs 33 us on two Modal hosts with B unchanged'
+  - 'r6-merge #66643 (0.6908): D r6 on five rows at 1.20-1.32 (e.g. 8,768 43.7/34.6, 16,384 77.4/58.5), A at 1.40-1.55 on S/M rows'
+  - 'r7-merge #66740 (0.7207, projected 0.7208): D sc_kernel 1.20 (1,192 23.2/19.4), 1.25 (1,96), 1.27 (1,160), 1.24 (2,96), 1.26 (4,192), 1.27 (8,192); G''s 4-launch pipeline 1.26-1.27 at 64,96 / 32,128; A 1.23-1.30 at 32,768 / 8,320 / 4,96. The per-path projection is now accurate to 0.001 of mean'
+- id: H22
+  statement: Single-pass FP16 operands leave a max-error tail that touches the smallest atol (2.4e-3) on the 77M-element rows; a hi/lo fp16 split of one operand (2 MMAs) restores fp32-class accuracy at no cost where MMA work is <= 2 us (all S/M rows), so per-row error logging decides where to spend it.
+  status: supported
+  evidence:
+  - 'r1 B: err rms 3.9-4.2e-4, max 1.9-2.8e-3; r0 simulation: FP16 hi/lo split err 1e-6'
+  - 'r2 A: fp64 reference, 1-3 rounds per row: 0 beyond 2.4e-3 + 1e-5|ref| on all 16 rows, max 2.39e-3 at 32,128'
+  - 'r5 A, 10 seeded rounds, 16 rows: 0 beyond-own-atol everywhere; max |err| 1.871e-3 (2,768) .. 2.427e-3 (1,96, 90 % of atol). r6 D (6 rows) 59-67 % of atol, r6 F (9 rows) 59-76 %, r5 E TF32 (6 rows) 1.67-1.94e-3; r7 D sc (6 rows) 79-89 %, r7 G (3 rows) 61-71 %. Verdict: no hi/lo split needed on any shipped path; the logging rule stays for every new path'
+- id: H23
+  statement: tcgen05 kind::f16 (TMA-fed from fp16 L2 scratch) is worth +0.02-0.03 of mean over mma.sync at the four GEMM-heavy rows and is the lever for the L band once the S/M rows are near the fused floor.
+  status: supported
+  evidence:
+  - 'arithmetic: mma.sync ideal 29/33/76/260 us vs tcgen05 7/8/19/65 us at those rows; audit r3: with the score formula the ideal savings give +0.010 of mean, ~+0.005 against cuBLASLt'
+  - 'r6: D''s tcgen05 engine took five rows from A/B in r6-merge (+0.016 of mean from r5-merge-b, 0.6747 -> 0.6908), through the engine plus fused epilogues (no K2/K3/K4) in one launch. r7: the same engine on the C <= 192 rows took six more rows (+0.030 of mean, 0.6908 -> 0.7207). The engine is now the carrier for every lineage except G (mma.sync, pending its own port)'
+- id: H24
+  statement: The 2-4 us cost of a 12-32 KB per-CTA load round right after a grid sync is an issue-rate artefact of 4-byte copies, integer div/mod and serialised waits, not post-barrier L2 latency; one cp.async.bulk per operand brings the round to <= 1.2 us, which cuts 1,192 to <= 22 us rented.
+  status: refuted
+  evidence:
+  - 'r3 B microbench (296 CTAs, after the flush): just-written 32 KB round cp4+div 2.4 us / cp16 1.36 / ldg128 0.95 / one bulk 0.83 us median; cold DRAM source 2.7-3.5 us whatever the method; barrier release 1.5-2.0 us after the last arrival'
+  - 'r3 B run_tests with a same-build control: bulk rows 1,192 31.4 vs ring 29.5 (+1.9); the 2-4 us post-sync steps are barrier release plus cold or dependent rounds'
+- id: H25
+  statement: A weight-stationary cooperative kernel for the six wide-C small-image rows (CTA owns a hidden slice and whole-image token tiles, fp32 W slices ingested once through bulk rings, CTA-local GRN statistics, bulk-plane conv, split-K red.add GEMM2) runs 2,768 <= 35 us, 8,768 <= 45, 16,768 <= 55, 32,768 <= 75, 8,384 <= 45, 16,384 <= 60 rented.
+  status: refuted
+  evidence:
+  - 'r3 D stub with real bytes: 16-29 us on the six rows, so ingest and post-sync rounds are NOT the binding term'
+  - 'r3 D v3 run_tests: 2,768 34.1 (met); 8,768 63.9; 16,768 93.6; 32,768 169.6; 8,384 53.5; 16,384 93.7 (all missed). Binding term: mma.sync 0.64 us per 32-k chunk plus 0.26 us per chunk of bare wait+sync at 16 warps/SM. The skeleton, not the thesis''s ingest, failed: engine swap in H28 (supported r6 with the same six targets)'
+- id: H26
+  statement: Replacing cuBLASLt GEMM1 + K2 and K3 + cuBLASLt GEMM2 + K4 in lineage A with two custom mma.sync FP16 GEMMs whose epilogues carry the LN fold, GELU, sumsq (GEMM1) and the s_b reduction, A-scale, residual and NCHW store (GEMM2) cuts the pipeline to 3 launches and the S/M rows by 10-14 us rented.
+  status: refuted
+  evidence:
+  - 'r3 A (E1): 1,192 36.3 us (target <= 26; library 34.3 in-container), 2,768 60.1 (<= 48), 8,384 97.5 (<= 60); GEMM1f alone 12-14 us cold at 1,192 vs cuBLASLt GEMM1 + K2 5.1 + 9.8; at 8,320 the custom GEMMs run at 160 TF/s vs cuBLASLt ~4x faster'
+  - 'audit r4: at 1,192 the MMA share of GEMM1f is 3-5 us, so a tcgen05 engine would save 2-4 us per S row; the rest is 2-3 dependent rounds per launch (H11). r6: the launch-count part retried with library GEMMs in F (H32, refuted); r7: the single-launch tcgen05 form (H34) reached 19.4 us'
+- id: H27
+  statement: In the cooperative kernel, replacing grid sync 1 with per-token-tile ready counters and sync 2 with per-image counters, plus spreading the conv over all CTAs, removes the two barrier releases and the conv tail wait, cutting 1,192 to <= 24 us rented and 2,96 / 4,192 / 1,160 / 4,96 / 8,192 by 4-8 us each.
+  status: refuted
+  evidence:
+  - 'for: r2 B stamps at 1,192: sync1 at 9.9 us with P1 median 1.8 us; r4 microbench: one flag released and observed by 295 CTAs in 0.64 us median; a monotone counter with a generation number is a legal self-resetting workspace'
+  - 'against (r4 B E2, run_tests): the dataflow kernel is slower on every S row: 1,192 42.8 vs 29.8; 1,96 37.5 vs 28.4; 1,160 84.3 vs 51.8; 2,96 50.5 vs 43.4; 4,192 79.4 vs 46.3; 4,96 71.7 vs 56.5; 8,192 137.7 vs 66.5. Suspected: per-tile fp32 weight re-conversion with smem atomics; static round-robin lists; at B=1 GEMM2 still waits for the last GEMM1 tile. The image-level version with dynamic claiming and a one-pass weight conversion is H38 (lineage H, r8)'
+- id: H28
+  statement: 'A tcgen05 kind::f16 engine (TMA 128B-swizzled ring, warp-uniform TMA/MMA/epilogue roles, TMEM accumulators) in the swap-AB orientation (A = weight tile of 128 hidden or output channels, B = activations [channel][token] MN-major with tokens of one image or image group as N) inside D''s cooperative skeleton makes the six wide-C rows MMA- and byte-bound: thread-local LN fold and GRN sumsq per (image, k) with no atomics, hidden stored [k][token] fp16, GRN scale via two accumulators, output tile [c][tokens] = NCHW for HW=49/196 with the residual in the epilogue. Targets rented: 2,768 <= 32, 8,768 <= 45, 16,768 <= 55, 32,768 <= 75, 8,384 <= 45, 16,384 <= 60.'
+  status: supported
+  evidence:
+  - 'arithmetic: kind::f16 ideal 0.5/2/4/8 us at 2/8/16/32,768 and 2/4 us at 8/16,384; D stub with real bytes 16-29 us'
+  - 'r4 D (E3) first build, run_tests 16/16: 2,768 32.4 / 8,768 49.1 / 16,768 70.8 / 32,768 99.3 / 8,384 79.8 / 16,384 111.7 us rented; targets met 0 of 6; per 64-k stage 524-683 clk vs 224-448 ideal'
+  - 'r6 D (E2): stamps showed the GEMM1 mainloop finished within 3-7 us of sync 1 everywhere; the 2x term was the post-accumulator epilogue (46.7 us per tile at 8,384) caused by hreg[4][16] living in a 128-B local stack frame with a tiny L1 under 227 KB smem. Fix plus phase-A balance plus staged coalesced stores: 2,768 27.6 / 8,768 34.6 / 16,768 46.5 / 32,768 66.6 / 8,384 38.0 / 16,384 58.5 us rented, 16/16 pass, precision 59-67 % of atol. All six targets met; wins five rows in r6-merge and r7-merge (32,768 ties A). Remaining: tile tails at 16,384 / 32,768 (12 us), phase A 10-16 us, GEMM2 wait 3.7-8 us, and the per-tile epilogue of 5.7-11.7 us (H36)'
+- id: H29
+  statement: Rewriting lineage A's K2 (GELU + GRN stats over the fp16 hidden) as a stream-rate kernel cuts 447 -> ~200 us at 64,96, 113 -> ~50 at 32,128 and 38 -> ~15 at 8,320 (about +0.01 of mean), and a tcgen05 GEMM1 with the same epilogue would remove K2 entirely.
+  status: supported
+  evidence:
+  - 'r1 A per-launch: K2 447 us at 64,96 (616 MB write + read, ideal ~175), 113 at 32,128, 37.8 at 8,320'
+  - 'r5 A (E2): copy probe after the flush 6.6 / 6.0 / 4.2 TB/s r+w at 617 / 134 / 21 MB. Ring K2 (smem bulk ring, A&S erf): 444 -> 319 us at 64,96, 117.8 -> 79.5 at 32,128, 37-39 -> 21-23 at 8,320; full pipeline 1155 -> 1029, 301 -> 260, 96 -> 80 rented. Partially supported: the direction and +0.01 of mean hold (r5-merge-b 0.6747); the stream-rate targets do not, because the no-math ring floor is 212 us and the remaining ~100 us is FMA/INT issue of the GELU'
+  - 'r7 G: K2 removed by the fused pass (GELU in the GEMM1 epilogue); 64,96 857.5 and 32,128 229.8 us rented (A: 1026.7 / 257.0). The GELU is now MUFU-bound inside the fused warps (133 us floor at 64,96)'
+- id: H30
+  statement: 'A CUTLASS 4.4 sm100 builder GEMM1 (batched per image) whose EVT epilogue carries the LN fold, the exact erf GELU, the hidden store and a per-batch column reduction, followed by a one-round in-place GRN scale kernel and a batched split-K GEMM2 writing NCHW with the residual as the source, removes K2, K3 and K4 from the wide-C rows; with TF32 operands straight from fp32 memory the weight pass disappears on the M <= 400 rows. Targets rented: 2,768 <= 32, 8,768 <= 38, 8,384 <= 42, 16,384 <= 58, 16,768 <= 50, 32,768 <= 68.'
+  status: refuted
+  evidence:
+  - 'r5 E (E1): G1 with the full EVT 17.0 us at 8,768 (kill line 14) and 20.0 at 8,384 (kill 12); binding term is per-image batching re-reading W1 once per image with TF32 doubling the bytes. Pipeline cold: 2,768 40.1; 8,768 47.7; 16,768 61.5; 32,768 95.5; 8,384 62.3; 16,384 94.2 vs A r4 48.5 / 44.4 / 53.2 / 70.1 / 50.4 / 71.5: wins only 2,768. Plus unresolved CUPTI sequence-matching failures (14/16 twice). Lineage E retired r8'
+- id: H31
+  statement: 'On B200 a CTA fed from L2 through a TMA or 1-D bulk ring lands at most ~68-92 B/clk/SM in 1SM mode whatever the stage depth, and the cap is SM-side (not the L2 slice), so a tcgen05 tile whose (A + B) stage bytes exceed that per clk of MMA time is ingest-bound, and a GEMM with fewer than ~100 CTAs is a per-SM ingest chain. Designs must halve per-SM operand bytes (cta_group::2 pairs, or operands produced in smem by the CTA itself) rather than multicast; there is also a per-stage floor of ~480 clk at N=128 in 1SM mode.'
+  status: supported
+  evidence:
+  - 'r4 D gate: per 64-k stage 683 clk at N=224 (ideal 448), 587 at N=112 (224), 524 at N=128 (256); stage depth 2-3 vs 8 unchanged; 874-1003 clk at 48 CTAs. r3 C/D stubs: 1-D bulk rings ingest ~120-135 GB/s/SM'
+  - 'r6 D probe (148 CTAs, warm L2, 4-stage SW128 ring, swap-AB 128xN, validated vs torch): 1SM 479 / 532 / 546 clk at N = 128 / 224 / 256 (ideal 256 / 448 / 512), landing 68-92 B/clk/SM; B TMA multicast over a 2-CTA cluster 489 / 548 / 555 (no gain, so the cap is SM-side); cta_group::2 pair 345 / 455 / 518 (1.35x / 1.01x / 1.01x of ideal)'
+  - 'r7 D sc_kernel: the GEMM2 B-tile scale costs 0.3-0.45 us per 64-k block, linear in k-blocks even with every block in the ring (5.3 us at 8,192 with 12 k-blocks): the same per-SM landing cap on 32 KB stages'
+- id: H32
+  statement: 'A library-lean four-launch pipeline (K1: bulk-plane conv with the full LayerNorm finished in-CTA through a cluster-of-8 DSMEM exchange, fp16 W1/W2 conversion by role CTAs; G1: cuBLASLt FP16 with the GELU+bias epilogue; K3'': one launch of GRN statistics and in-place scale with per-image counters; G2: cuBLASLt swap-AB batched per image writing NCHW with x as C) removes K2 and K4 and the K3 chain from every HW <= 784 row. Targets rented: 8,768 <= 40, 8,384 <= 42, 16,384 <= 54, 16,768 <= 48, 32,768 <= 64, 2,768 <= 34; later 1,192 <= 28, 4,192 <= 32, 8,192 <= 44.'
+  status: refuted
+  evidence:
+  - 'arithmetic: A r5 at 8,768 is K1 10 + G1 ~6 + K2 ~8 + K3 ~10 + G2 ~9.6 + K4 ~4; the new chain was estimated at ~33-37 us'
+  - 'r6 F (E1), run_tests 16/16, same container vs r5-merge-b: 8,768 39.0 vs 42.2; 8,384 41.6 vs 43.8; 16,768 47.0 vs 48.0; 2,768 35.3 vs 34.3; 32,768 67.7 vs 65.3; 16,384 62.0 vs 57.5; 1,192 26.6 vs 30.8 (B); 4,192 37.4 vs 34.0; 8,192 49.5 vs 46.1. Refutation clause fires on 5 of 6 wide-C rows; D r6 then beat F by 4-10 us on each and D r7 beat F''s 1,192 (19.4 vs 26.6). Lineage F retired r8'
+- id: H33
+  statement: 'In D''s swap-AB tcgen05 engine, cta_group::2 pairs (cluster 2x1, M = 256 across the pair, each CTA loading half of the B token tile, multicast commit to both CTAs'' barriers) bring the per-64-k stage to <= 1.3x the MMA ideal, and with the biggest stamped term fixed the kernel runs 8,768 <= 40, 16,768 <= 48, 32,768 <= 62, 8,384 <= 42, 16,384 <= 54, 2,768 <= 30 us rented.'
+  status: open
+  evidence:
+  - 'r6 D probe: the pair reaches 1.35x / 1.01x / 1.01x of the MMA ideal at N = 128 / 224 / 256 (345 / 455 / 518 clk); multicast gives nothing. The pair recipe (tcgen05.alloc/relinquish/dealloc .cta_group::2 in both CTAs, cp.async.bulk.tensor .cta_group::2 .shared::cluster to the leader''s full barrier via mapa, leader-only expect_tx of both CTAs'' bytes, idesc M = 256>>4, tcgen05.commit .cta_group::2 .multicast::cluster mask 3, each CTA reads its own 128 TMEM lanes) worked first try. Mechanism part SUPPORTED'
+  - 'r6 D kernel: the row targets were met or nearly met by the epilogue fix instead (8,768 34.6, 16,768 46.5, 32,768 66.6, 8,384 38.0, 16,384 58.5, 2,768 27.6); the pair port is unbuilt. r7 sc_kernel stamps make GEMM2 the pair''s target (B-tile scale 0.3-0.45 us per 64-k block = TMA landing; 5.3 us at 8,192). Kernel part open; the stretch step of D''s r8 experiment (E1) after the epilogue (H36)'
+- id: H34
+  statement: 'D''s single-launch tcgen05 skeleton (bulk-plane conv, one-pass fp16 weight conversion, two grid syncs, swap-AB GEMM1 with the LN fold, exact erf GELU and per-(image,k) sumsq in the epilogue, split-K GEMM2 with coalesced red.add into an output prefilled with x + b2'') extended to the C <= 192 rows and 1,160 (plane copies of 3136 / 12544 / 12572 B, N-chunked token tiles of one image with red.add sumsq per tile, small-C tile tables) runs 1,192 <= 24 us rented, 4,192 <= 30, 8,192 <= 42, 2,96 <= 32, 1,160 <= 34 (merge paths: B 29.5-30.8, A 34.0 / 46.1 / 36.8 / 39.6), and at the single-launch portal ratio of 1.25-1.32 that is about +0.01 of mean on the five lowest-scoring S/M rows.'
+  status: supported
+  evidence:
+  - 'arithmetic: D at 2,768 is 27.6 us with phase A 7.4 us dominated by the 19 MB weight pass and 0.46 GFLOP of GEMM1; 1,192 has the same GEMM FLOPs, 1.2 MB of weights and 0.6 MB of x, so phase A should fall to ~3-4 us and the row to ~22-24 us'
+  - 'r7 D (E2) sc_kernel, run_tests 16/16 vs r6-merge in the same container: 1,192 19.4 (<= 24 met); 1,96 19.1 (bonus, vs 30.6); 1,160 26.9 (<= 34 met); 2,96 27.0 (<= 32 met); 4,192 30.5 (<= 30, 0.5 over); 8,192 44.8 (<= 42 missed, still -1.3 vs A). Precision 79-89 % of atol, 0 beyond. r7-merge took all six rows: +0.030 of mean (0.6908 -> 0.7207), three times the +0.01 estimate because the portal ratio is 1.20-1.27 against A''s 1.40-1.55. Remaining terms: the GEMM1 epilogue (3 chunks x 3.9 us per CTA at 4,192 / 8,192, H36), GEMM2 TMA landing (5.3 us at 8,192, H33), the conv at 3-6x its FMA bound'
+- id: H35
+  statement: 'A fused persistent pass-1 kernel for the HW >= 1024 rows (64,96; 32,128; 8,320; 4,96), in which CUDA-core warps stage x, compute the 7x7 depthwise conv and the per-token LN statistics and write the fp16 d tile for 2-4 image rows x all C channels into shared memory as the GEMM1 B operand (swap-AB: A = W1'' = fp16(lnw-folded W1) resident or streamed), with epilogue warps applying the LN fold, an exact erf GELU, per-(image,k) sumsq and coalesced fp16 hidden stores, replaces K1 + G1 + K2 (A r5: 825 / 205 / 55 us rented at 64,96 / 32,128 / 8,320) with one kernel bounded by the SIMT work of conv + GELU (~200-270 us at 64,96 rented): pass 1 <= 300 / 75 / 25 us. With a GRN-scale launch and a cuBLASLt batched swap-AB GEMM2 the rows run <= 550 / 140 / 55 us rented (A r5: 1027 / 259 / 78.6), about +0.015-0.02 of mean.'
+  status: open
+  evidence:
+  - 'arithmetic (rented 1.95 GHz): conv 102 us; exact GELU 167 us on the FMA/INT pipes, ~85 us if half the elements take the 2-MUFU form; MMA 59 GFLOP = 21 us at kind::f16 with no ingest; DRAM 308 MB x + 616 MB h = 140 us. GEMM2 at 64,96 is DRAM-bound (~187 us)'
+  - 'r7 G (E1), mma.sync engine, 7 conv + 9 GEMM warps, double-buffered d tile, A&S erfc GELU, token-permuted d layout: pass 1 668 us at 64,96 (target <= 300 missed, 2.5x the 21.6k-clk tile bound), 171 at 32,128 (<= 75 missed); full rows 857.5 / 229.8 rented (targets 550 / 140 missed) but -16.5 % / -10.6 % vs A in the same container; taken by r7-merge (portal 1082.8 / 292.1, S 0.800 / 0.768). Ablations: conv side alone 472 us (L1/L2 load path), GEMM side 522 (mma.sync 100-130 serialised, 2-MUFU GELU floor 133), phases add because 1 CTA of 16 warps fits per SM. 4,96 lost (56 tiles); 8,320 not instantiated. Direction supported, targets open; r8 E2 (H37) takes the two unbuilt rows, which are worth more score than the top-row terms'
+- id: H36
+  statement: 'In D''s tcgen05 kernels the post-accumulator GEMM1 epilogue (tc_kernel 5.7 / 8.8 / 9 / 10.9 / 11.7 us per tile at 8,768 / 16,768 / 32,768 / 8,384 / 16,384; sc_kernel 2 us per 64-column and 3.9 us per 112-column chunk, 3 chunks per CTA at 4,192 / 8,192) is latency- and issue-bound on 8 epilogue warps (2 per TMEM quadrant). Running it on all 12-16 warps after the mainloop (4 warps per TMEM quadrant, each on a column slice, two tcgen05.ld of 16-32 columns in flight per thread, the A&S erfc GELU, sumsq partials combined through smem) cuts the per-tile epilogue by >= 40 %, taking 16,384 <= 48, 8,384 <= 32, 32,768 <= 58 (so D takes it from A), 16,768 <= 41, 8,768 <= 31, 2,768 <= 25 us rented and 4,192 / 8,192 down by 2-5 us; about +0.012 of mean at D''s ratios.'
+  status: open
+  evidence:
+  - 'r6 D: lighter epilogue arithmetic was 0.3-0.8 us slower (not issue-bound at 8 warps); the stack-frame fix cut the epilogue 4x, so each remaining element still costs ~130-200 clk per lane, i.e. TMEM-load and store latency with too few warps to cover it. r7 D sc stamps: ~40 instructions per element including the exact erf; 8 epilogue warps per SM. Arithmetic: 128 x 112 elements x 40 instr over 8 warps at 1 IPC per scheduler = 2.3 us vs 3.9 measured; 16 warps halve both the issue term and the exposed latency. r7 G: the A&S erfc form saved 80 of 952 us of GELU at 64,96 with identical end-to-end max error. Built in D (E1, r8)'
+- id: H37
+  statement: 'G''s fused pass-1 pipeline instantiated for 8,320,32,32 (C=320: W1'' = 819 KB streamed per 128-hidden-row block through a double-buffered bulk ring instead of resident; 64-token tiles, 128 CTAs, or 32-token tiles in two rounds) and 4,96,56,56 (112-token tiles padded to 128 with a masked fourth warp tile, 112 CTAs) runs 8,320 <= 50 us and 4,96 <= 34 us rented (A r5: 78.6 / 46.8), which at a 1.3 ratio is S 0.80 / 0.78 (+0.011 of mean); the mma.sync engine is acceptable there because the per-CTA MMA is 13 / 2 us.'
+  status: open
+  evidence:
+  - 'arithmetic at 8,320 per 64-token tile: W1'' ingest 819 KB at ~120 GB/s/SM = 7 us (overlappable with the mma), mma.sync 52 MFLOP = 13 us, GELU 82k elements ~6 us, conv 1M FMA ~4 us plus staging; pass 1 ~30-35 us, K0 3, K3 ~7, cuBLASLt batched swap-AB GEMM2 ~8-10 (fine at HW = 1024) = 48-55 us. At 4,96 per 112-token tile: conv 2 us, mma 2 us, GELU 43k elements ~3 us; pass 1 ~12-15, K3 ~5, G2 7.3 (measured r7), K0 3.3 = ~30 us. r7 G measured 4,96 at 64.6 us with 56 tiles of 224 tokens (56 of 148 SMs busy). Built in G (E2, r8)'
+- id: H38
+  statement: 'One persistent tcgen05 kind::f16 kernel (cooperative launch, 148 CTAs, 1 per SM, swap-AB tiles built from the notebook recipes) that claims items from a static queue through an atomic head (weight-conversion units, then conv units image-major, then GEMM1 tiles image-major, then GEMM2 split-K tiles image-major) and gates each item on self-resetting per-image counters (w_done; conv_done[b]; g1_done[b]; a departure counter that zeroes the workspace) runs the B >= 8 wide-C rows without grid barriers and packs the conv, the GEMM1-epilogue tails and GEMM2 of different images onto the same SMs: 16,384 <= 45, 32,768 <= 55, 8,384 <= 32, 16,768 <= 40, 8,768 <= 30 us rented (D r6: 58.5 / 66.6 / 38.0 / 46.5 / 34.6), about +0.012 of mean on top of H36 if both land.'
+  status: open
+  evidence:
+  - 'arithmetic at 16,384 from D''s stamps: 192 GEMM1 tiles x (3 mainloop + 11.7 epilogue) + 192 conv units x 7 + 148 GEMM2 units x 15 = ~6400 CTA-us; / 148 = 43 us if packed (31 us with a 2x faster epilogue) vs 58.5 phase-serial with two syncs. Mechanisms measured: one flag observed by 295 CTAs in 0.64 us, flat counter barrier 0.86-1.07 us (r4 B); F''s 64-bit red.add counter with ld.relaxed poll and departure reset (r6); the per-tile dataflow lost only for skeleton reasons (H27). Risks: forward progress needs co-residency (cooperative launch) and queue order (every item an item depends on is claimed earlier); spinning CTAs waste SM time if conv items are too few; the engine is written from scratch in one session. Built as lineage H (E3, r8)'
+```
+
+```json tasks
+[
+  {
+    "id": "E1",
+    "lineage": "D",
+    "hypothesis": "H36",
+    "title": "GEMM1 epilogue on all warps (4 per TMEM quadrant, A&S erfc GELU) in tc_kernel and sc_kernel; 4,96 added to the sc table; GEMM2 cta_group::2 as the stretch",
+    "operation": "structural_mutation",
+    "parents": ["r6-d-e2-epi-fix", "r7-d-e2-smallc"],
+    "band": "all",
+    "instructions": "Target rows: 16,384 / 8,384 / 32,768 / 16,768 / 8,768 / 2,768 (tc_kernel) and 4,192 / 8,192 / 4,96 (sc_kernel). get_kernel on either parent exceeds the tool limit: request the card and the sources in parts. STEP 0 (<= 8 B200 min): add 4,96,56,56 to sc_kernel's dispatch table (the C=96 56x56 instantiation exists; B=4 only changes the tile table) and, if the C=320 32x32 instantiation compiles without new code paths (4096-B planes, 4C = 1280 = 20 N-chunks of 64, 5 K-blocks), 8,320 too; run_tests with r7-merge as the same-container control; keep each row only if it beats the merge path by >= 2 us rented. STEP 1 (stamps): TC_STAMPS on tc_kernel at 16,384 and 8,384 from the epilogue warps (per-tile post-accumulator time, expected 11.7 / 10.9 us) and on sc_kernel at 8,192 (3 x 3.9 us); record them as the baseline. STEP 2 (the experiment): after the accumulator-full barrier of each GEMM1 tile, run the epilogue on every warp of the CTA (12 now; go to 16 warps / 512 threads if registers stay <= 128 with STACK 0): warp w serves TMEM lanes 32*(w%4)..+31 and the column slice (w/4) of the tile, each thread keeps two tcgen05.ld of 16-32 columns in flight, applies the LN fold rs*(acc - mu*u) + v, the A&S erfc GELU (the form used by G r7 and A r5, |err| <= 1.2e-6 in h), accumulates its per-(image,k) sumsq partial in registers and combines partials across the column-slice warps through smem (one value per lane per quadrant) before the existing red.add / store; keep the staged coalesced h stores. Check cuobjdump: STACK 0, no LDL/STL, registers; stamp again at the same rows. STEP 3: interleaved x3 vs the parent in one container (harness_time) at 16,384 / 8,384 / 32,768 / 8,768 / 4,192 / 8,192. STEP 4 (stretch, only if >= 15 B200 min remain): port the r6 cta_group::2 recipe to GEMM2 (cluster 2x1, each CTA loads half of the B token tile, leader-only MMA, multicast commit) and measure the GEMM2 wait / B-tile scale term at 8,192 and 8,768. STEP 5: run_tests 16/16 with the portal-order check, and the PRECISION LOG (fp64 reference, harness generators, torch.manual_seed(200), 10 rounds, max |err| and beyond-own-atol count) for every changed path (all 12 rows). Report per-row rented times vs the parent, the per-tile epilogue before/after, registers, and which rows the merge should take.",
+    "success": "In one container vs the parent: per-tile post-accumulator epilogue down >= 40 % at 16,384 and 8,384; rows 16,384 <= 48, 8,384 <= 32, 32,768 <= 58 us rented (D takes 32,768 from A), no row slower than the parent by > 1 us; 16/16 pass; 0 beyond-own-atol on every changed path.",
+    "refuted_if": "Doubling the epilogue warps cuts the per-tile post-accumulator time by < 25 % with STACK 0 and no spills: then the epilogue is bound by TMEM-load or store latency per warp, not by warp count, and the next lever is restructuring the loads (report the stamps and the SASS mix).",
+    "model": "opus"
+  },
+  {
+    "id": "E2",
+    "lineage": "G",
+    "hypothesis": "H37",
+    "title": "Fused pass-1 pipeline instantiated for 8,320 (streamed W1', 64-token tiles) and 4,96 (112-token tiles with a masked warp tile)",
+    "operation": "specialisation",
+    "parents": ["r7-g-e1-fusedp1-mma"],
+    "band": "all",
+    "instructions": "Rows 8,320,32,32 and 4,96,56,56 only; the 64,96 / 32,128 paths stay as shipped and must time within noise of the parent. STEP 1, 4,96: tiles of R=2 image rows = 112 tokens padded to 128 (four 32-token warp tiles, the fourth half-masked: zero the padded d columns and skip their stores and sumsq), 112 CTAs; W1' (74 KB) resident as at 64,96; reuse the 56x56 TMA halo staging. Time pass 1, K3 and the batched swap-AB cuBLASLt GEMM2 (7.3 us measured at 4 batches); compare with the merge path (A, 46.8 rented in r7's container) interleaved x3. STEP 2, 8,320: C=320 makes W1' 819 KB, so stream it per 128-hidden-row block (80 KB fp16 per block, 10 blocks) through a double-buffered cp.async.bulk ring from the fp16 W1' scratch written by K0, double-buffered against the mma loop; d tile 64 tokens x 320 channels fp16 (40 KB); try R=2 (64-token tiles, 128 CTAs) first and R=1 (32-token tiles, 256 items, 2 per CTA) if the per-tile chain is latency-bound; GEMM2 batched swap-AB at HW=1024 with 8 batches (check the heuristic kernel and time it cold). Stamp pass 1 per tile (ingest wait, mma, GELU, stores) from the working warps. STEP 3: run_tests 16/16 (portal-order check) with r7-merge as the same-container control; PRECISION LOG (fp64 reference, harness generators, seed 200, 10 rounds) for both new rows. STEP 4 (stretch, only if >= 12 B200 min remain): the balanced erf (I30): route one third of the elements through an FMA-only minimax erf polynomial (|err| <= 5e-7, clamped) and measure the GEMM side alone at 64,96 and 32,128. Report per-row rented times, the per-tile stamps, registers/smem per instantiation, and which rows the merge should take.",
+    "success": "In one container vs r7-merge: 4,96 <= 36 us rented (merge path 46.8) and 8,320 <= 55 us (78.6), 16/16 pass, 0 beyond-own-atol on both rows, the two large rows unchanged within 2 %.",
+    "refuted_if": "4,96 with 112 tiles is not faster than the merge path, or 8,320 pass 1 exceeds 45 us with the W1' ring stamped as overlapped (then the serial per-tile chain, not SM count, binds and the fused structure does not transfer to C >= 320).",
+    "model": "opus"
+  },
+  {
+    "id": "E3",
+    "lineage": "H",
+    "hypothesis": "H38",
+    "title": "New design: image-counter dataflow persistent tcgen05 kernel (work queue, no grid barrier) for the B >= 8 wide-C rows",
+    "operation": "new_design",
+    "parents": [],
+    "band": "all",
+    "instructions": "Rows 8,768 / 16,768 / 32,768 (7x7, C=768) and 8,384 / 16,384 (14x14, C=384); other rows run the r0 anchor fallback (merge-only candidate). Read the notebook and the lineage conclusions (D, B, F, C) first: the engine and the counter protocol are both documented there. STEP 0 (<= 5 min): queue/counter microbench, 148 cooperative CTAs with stub items (32 KB bulk copy each) in the proposed order and per-image gating, at B = 8 and 32, vs two flat-counter barriers; record the span and the median claim-to-start latency (expect <= 1 us). STEP 1 (engine, <= 15 min): a self-contained tcgen05 kind::f16 swap-AB tile (A = 128 weight rows K-major via a 128B-swizzled TMA box, B = activations [channel][token] MN-major with the validated descriptor: LBO 8192, SBO 1024, +2048 per k16; 4-stage ring; whole-warp TMA and MMA roles with elect.sync; accumulator in TMEM; tcgen05.ld with two loads in flight per thread), validated bit-close against torch (fp32 matmul of the fp16 operands, max err <= 2e-5) at 768x196x384 and 384x196x1536, warm L2, before any fusion. STEP 2 (kernel): one cooperative launch, 148 CTAs x 384-512 threads, 1 CTA/SM, dynamic smem set to the maximum over all shapes at module load. Workspace from torch.empty: queue head, w_done, conv_done[B], g1_done[B], departure counter, plus the fp16 W1'/W2 scratch, d16 and LN partials, hidden [k][token] fp16, gsq[B][4C]. Items in the static queue, claimed by atomicAdd on the head: (i) weight units: W1' = fp16(lnw-folded W1) with u = W1.lnw and c1 = W1.lnb + b1, W2 fp16, b2' = W2.gb + b2 and the out = x + b2' prefill (16-B loads/stores, spread over all CTAs); (ii) conv units: bulk-plane 7x7 / 14x14 depthwise conv of one plane group of ONE image plus per-token LN partials, so conv_done[b] counts units of image b; (iii) GEMM1 tiles (128 hidden rows x the tokens of one image, image-major): wait w_done == W units and conv_done[b] == units(b) with an ld.acquire poll, run the tile, epilogue = LN fold rs*(acc - mu*u) + c1, exact erf GELU (A&S erfc form accepted), per-(image,k) sumsq thread-local (lane = k) red.add into gsq[b][k], fp16 h stores coalesced through smem, then red.release.gpu on g1_done[b]; (iv) GEMM2 tiles (128 output channels x image tokens x split-K slice, image-major): wait g1_done[b] == tiles1(b), compute s_b = 1 + gw*gf/(mean gf + eps) from gsq[b] (one round, all loads issued first), scale the fp16 B stage in smem after it lands (fence.proxy.async before the MMA) or use D's two-accumulator form, red.global.add.v4 into out. The last departing CTA zeroes every counter so the workspace is correct for the next call. Keep every role warp-uniform; stamp phases from the working warps; check cuobjdump STACK 0. Compile with target_hardware [B200] only. STEP 3: stamps at 16,384 and 32,768 showing GEMM2 items of early images starting before the last GEMM1 items, and the per-CTA idle (spin) time. STEP 4: run_tests 16/16 with the portal-order check, r7-merge as the same-container control, PRECISION LOG (fp64 reference, harness generators, seed 200, 10 rounds) for the five rows. Report per-row rented times vs the merge, the stamps, the microbench, registers/smem, and which rows (if any) the merge should take; negative results in full.",
+    "success": "First build correct on all five rows and, in one container vs r7-merge, >= 5 us faster on at least one of 16,384 / 32,768 / 8,384 with stamps showing GEMM2 items running before the last GEMM1 items; 0 beyond-own-atol. Incubation line: within 15 % of the merge on 16,384 and 8,384 with the overlap visible in the stamps keeps the lineage alive for r9.",
+    "refuted_if": "With a validated engine, the packed kernel is slower than the merge by > 10 % on every B >= 8 wide-C row AND the stamps show the GEMM1 tails are not filled by GEMM2 or conv items (then the dataflow family is closed for the wide-C rows, and the remaining value is in the engine terms D already owns).",
+    "model": "opus"
+  }
+]
+```

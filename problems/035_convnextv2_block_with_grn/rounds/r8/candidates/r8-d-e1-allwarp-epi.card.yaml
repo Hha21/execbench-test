@@ -1,0 +1,109 @@
+id: r8-d-e1-allwarp-epi
+parents:
+  - r7-d-e2-smallc
+  - r6-d-e2-epi-fix
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E1 (H36). tc_kernel goes to 512 threads and its GEMM1 epilogue runs on all 16 warps: warps 4-15 take
+  every tile (3 per TMEM quadrant) and warps 0-3 join the CTA's last tile (4 per quadrant). Each warp handles
+  16-column chunks with tcgen05.ld x16 and applies the A&S erfc GELU. h stays in registers (5x8 words) and g = fp16(gw*gf*h)
+  is written from the same registers, so the old L2 re-read of h is gone. Per-image sums of squares are taken per
+  8-column group and combined across warps through smem buffers carved out of the ring. sc_kernel takes the A&S GELU and
+  a 4,96,56,56 tile table (NS3, NC1 64, NC2 112, KS1). Measured: the per-tile post-accumulator epilogue falls by 16-28%,
+  not the 40% hoped for. What remains is bandwidth for storing h and g (~106 KB per SM per tile), not warp count. Rows
+  get 1.2-7.1 us faster in the same container on the wide-C 8/16-image rows, 1-2.3 us on the small-C rows and 4,96.
+expected_effect:
+  S:
+    pct: -4
+    confidence: medium
+  M:
+    pct: -6
+    confidence: medium
+  L:
+    pct: -5
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 227544
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  tc_threads: 512
+  tc_epilogue_warps: "12 (3/quadrant) on non-last tiles, 16 (4/quadrant) on the last tile"
+  tc_epi_chunk_cols: 16
+  tc_gemm1_stages: "min(4, 160KB/STG1): 3 at 14x14, 4 at 7x7"
+  tc_gelu: "A&S 7.1.26 erfc form"
+  sc_threads: 384
+  sc_gelu: "A&S 7.1.26 erfc form"
+  sc_rows_added: "4,96,56,56 PG4 NS3 NC1 64 NC2 112 KS1"
+  TC_STAMPS: 0
+  SC_STAMPS: 0
+dispatch:
+  - shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14"
+    kernel: "tc_kernel<768,49> / tc_kernel<384,196> (512 threads, all-warp GEMM1 epilogue)"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "1,192,28,28 4,192,28,28 8,192,28,28 1,96,56,56 2,96,56,56 4,96,56,56 1,160,449,7"
+    kernel: "sc_kernel<192,28,16> / sc_kernel<96,56,4> / sc_kernel<160,7,4> (A&S GELU)"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "8,320,32,32 32,128,64,64 64,96,112,112"
+    kernel: "convnext_fused (r0 anchor, merge-only)"
+    meta: {}
+tests:
+  - H36
+findings:
+  - "Final build run_tests 16/16 PASS (portal-order re-runs included), rented us this vs r7-merge in the same container: 16,384 51.7 vs 58.8 (-7.1); 8,384 34.2 vs 37.5 (-3.3); 16,768 44.0 vs 46.2 (-2.2); 8,768 33.3 vs 34.5 (-1.2); 2,768 26.5 vs 26.4 (tie); 32,768 64.2 vs 63.9 (tie with lineage A; D r6 was ~68); 4,96 38.8 vs 41.1 (-2.3; merge path is A's 5-6 launch pipeline); 8,192 43.4 vs 45.3 (-1.9); 4,192 29.4 vs 30.7 (-1.3); 2,96 25.5 vs 26.8 (-1.3); 1,96 18.4 vs 19.5 (-1.1); 1,160 26.0 vs 26.6 (-0.6); 1,192 18.6 vs 18.5 (tie). The other 3 rows run the r0 anchor (merge-only) [run_tests]"
+  - "Interleaved x3 in one container (harness_time, tc rows), r6 epilogue (384 thr, 8 epilogue warps, erff) vs all-warp epilogue: 2,768 27.3 -> 26.1; 8,768 35.0 -> 32.7; 16,768 46.8 -> 44.1; 32,768 68.2 -> 64.1; 8,384 37.5 -> 33.6; 16,384 59.0 -> 51.3 us [probe_b200]"
+  - "STEP 1/2 stamps (warp 4, per-tile post-accumulator GEMM1 epilogue, CTA median), r6 epilogue -> all-warp epilogue, same container: 2,768 3.26 -> 3.04; 8,768 5.68 -> 4.77 (-16%); 16,768 8.88 -> 7.07 (-20%); 32,768 9.92 -> 7.92 (-20%); 8,384 10.77 -> 7.78 (-28%); 16,384 11.10 -> 8.11 (-27%) us. Success bar (>= 40%) NOT met. The refutation bar (< 25%) is crossed at 8,768 / 16,768 / 32,768 and missed narrowly at 8,384 / 16,384 [probe_b200]"
+  - "Resources (ptxas -v, sm_100a): all-warp tc_kernel 127 / 128 regs at 512 threads, 0 B stack frame, 0 spills; sc_kernel 123 / 168 / 168 regs, 0 stack (unchanged class). A stamped build with extra per-warp stamp stores went to 128 regs + 88 B stack frame + 140-160 B spills: instrumentation alone pushes this epilogue over the cap, so stamp builds must be checked for STACK too [probe_b200]"
+  - "Ablation at 8,384 (stamped build, which spilled; relative numbers only): post 7.6 us = pass 1 4.3 + pass 2 (g write) ~3.0. No GELU (identity): post 5.4, pass 1 2.9 -> the A&S GELU costs ~1.4 us. No global stores: post 5.3 -> h+g stores ~2.3 us. No pass 2: post 4.9. All three removed: 1.9 us. The epilogue is now bound by the h+g store bytes (~106 KB per SM per tile, ~15.7 MB per tile wave, ~6-7 TB/s with the dirty-L2 flush), not by warp count or issue [probe_b200]"
+  - "Dead end: 2-deep pipelined tcgen05.ld (next chunk's load in flight while processing the current one, tie via asm '+r') was slower (8,384 post 7.94 vs 7.58 us) and spilled at the 128-reg cap [probe_b200]"
+  - "Dead end (tested, not shipped): g built in smem during GEMM2 from the landed h tile instead of a global g tensor. The GEMM1 epilogue drops to pass 1 only, and gw*gf per (image,k) goes to a [B][4C] array. GEMM1 post/tile -56% (8,384 4.74, 16,384 4.85, 32,768 4.39, 16,768 4.03, 8,768 2.69 us; G1 end 4-7 us earlier), precision identical. But GEMM2 got slower. (a) The drain warps producing g serialise unit 2's mainloop behind unit 1's drain: 32,768 75.2 us. (b) Warps 12-15 producing per stage, with the gw*gf slice landing by a 1 KB fp32 TMA box: 70.0. (c) Warp 12+s owning stage s: run_tests 32,768 70.1 vs 63.9, 16,768 46.7, 2,768 27.0; 14x14 rows tie the register variant (8,384 33.7, 16,384 52.0). The g producer gates every stage at ~0.8 us at 7x7 [probe_b200, run_tests]"
+  - "STEP 0: 4,96,56,56 added to sc_kernel's table (sc_kernel<96,56,4> instantiation, NS3 NC1 64 NC2 112 KS1; 588 GEMM1 tiles of 64 cols, 112 GEMM2 units): 38.8 vs 41.1 us (A pipeline) in run_tests, single launch. 8,320,32,32 is NOT instantiable without new code paths: sc_kernel requires W % 7 == 0 (7-wide conv segments) and 4C <= 768 (static_assert); C=320 gives 4C=1280 [run_tests, INFERRED]"
+  - "sc_kernel with the A&S GELU instead of erff: -0.6 to -1.9 us on 1,96 / 2,96 / 4,192 / 8,192 / 1,160, tie at 1,192 (same container vs r7-merge) [run_tests]"
+  - "PRECISION LOG (fp64 reference, harness generator rules: randn, weight matrices / sqrt(shape[-1]), LN weight 1 bias 0, biases randn; torch.manual_seed(200), 10 rounds per row; shipped arithmetic). tc_kernel: 2,768 1.700e-3 vs atol 2.6e-3 (65%), 0 beyond; 8,768 1.700e-3 / 2.9e-3 (59%), 0; 16,768 1.701e-3 / 2.9e-3 (59%), 0; 32,768 1.810e-3 / 2.9e-3 (62%), 0; 8,384 1.796e-3 / 2.8e-3 (64%), 0; 16,384 1.945e-3 / 3.3e-3 (59%), 0 (identical to r6). sc_kernel: 1,192 2.027e-3 / 2.4e-3 (84%), 0; 4,192 2.215e-3 / 2.5e-3 (89%), 0; 8,192 2.381e-3 / 3.0e-3 (79%), 0; 2,96 2.266e-3 / 2.7e-3 (84%), 0; 1,96 2.266e-3 / 2.7e-3 (84%), 0; 1,160 2.238e-3 / 2.6e-3 (86%), 0; 4,96 2.310e-3 / 2.8e-3 (82%), 0 [probe_b200]"
+  - "Row targets of H36 (rented): 16,384 51.7 (<= 48 missed), 8,384 34.2 (<= 32 missed), 32,768 64.2 (<= 58 missed; now ties A instead of losing by 4), 16,768 44.0 (<= 41 missed), 8,768 33.3 (<= 31 missed), 2,768 26.5 (<= 25 missed) [run_tests]"
+  - "NOT DONE: STEP 4 (cta_group::2 pairs for GEMM2); sc_kernel stays at 384 threads (168 regs at C=96/192 rules out 512 threads) [INFERRED]"
+  - "Next levers: GEMM2 is now the largest post-sync term at 7x7 (~0.7 us per 48 KB stage with two MMAs; 2 units per CTA at 32,768). cta_group::2 halves the per-SM landing. A cheaper g (the smem-g variant's GEMM1 saving of 4-7 us is real if g production stops gating stages, e.g. production warps running two stages ahead or g folded into the A operand per image group) could still take 4-7 us off every wide-C row [INFERRED]"
+  - "Merge picks: take 16,384, 8,384, 16,768, 8,768 (tc) and 4,96, 8,192, 4,192, 2,96, 1,96, 1,160 (sc) from this kernel; 2,768, 1,192 and 32,768 are within noise of the merge paths (32,768 vs A: single launch 64.2 vs A's 63.9 at 5-6 launches) [INFERRED]"
+paths:
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "tc_kernel on 2/8/16/32,768,7,7 and 8/16,384,14,14: cooperative, 1 CTA/SM, tcgen05 kind::f16 swap-AB, GEMM1 epilogue on 16 warps (A&S GELU, h in registers), two-accumulator GEMM2"}
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "sc_kernel on 1/4/8,192 / 1/2/4,96 / 1,160: cooperative single launch, strip-unit bulk conv, A&S GELU, B-tile GRN scale, red.add GEMM2"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "r0 fp32 anchor on 8,320 / 32,128 / 64,96 (merge-only; use lineages A/G there)"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM are sm_100a-only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05"
+  - "tc_kernel sits at 127-128 registers with 0 stack at 512 threads; any added live state in the epilogue (or stamp instrumentation) spills, so re-check ptxas -v stack frame on every change"
+  - "cooperative launch with 512 threads and ~227 KB smem requires every SM free (grid = SM count)"
+  - "sc_kernel paths keep 79-89% of atol (double fp16 rounding of the hidden), 0 beyond over 10 seeded rounds; tc paths 59-65%"
+  - "split-K red.add and red.add GRN sums keep summation order nondeterministic (max error stable to ~1e-6)"
+  - "every red.add target (gsum/gsq per (image,k), the output) is zeroed or prefilled in phase A before sync 1; workspace is torch.empty"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

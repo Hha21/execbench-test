@@ -1,0 +1,70 @@
+id: r8-h-dataflow-queue
+parents: [r0-convnext-coop-fp32-anchor]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: rows128
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H38 (lineage H, E3): one cooperative persistent tcgen05 kernel, 148 CTAs with 256 threads each, works through a static queue
+  [W1 units][conv units][GEMM1 tiles][W2 units][GEMM2 tiles]. CTAs claim items from an atomic head one item ahead. Each item
+  waits only on self-resetting per-image counters (w1_done, conv_done[b], g1_done[b], w2_done), so there is no grid barrier.
+  The aim was to pack the conv, the GEMM1 tails and the GEMM2 of different images onto the same SMs. Measured result:
+  REFUTED in this form. Per-item CTA-time summed over the queue and divided by 148 SMs already exceeds D's whole-row time
+  (47 / 111.5 / 71.9 us at 8,768 / 32,768 / 16,384). Each item runs claim, first TMA load, mainloop, epilogue and release
+  serially on its own CTA, which costs 11.8-15.9 us per GEMM1 tile and about 14.6 us per GEMM2 tile.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: 75, confidence: high}
+  L: {pct: 85, confidence: high}
+resources_sm100a:
+  regs_per_thread: 156
+  smem_per_cta_bytes: 205824
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs: {NTH: 256, NST: 4, STAGE: 49152, IPT1_C768: 2, N1_C768: 128, N1_C384: 208, KS2: 2, PG: "32 (B=8, C=384) / 64 (16,768) / 128 (32,768)", TMEM_cols: 512}
+dispatch:
+  - {rows: "8,768 / 16,768 / 32,768 (7x7) and 8,384 / 16,384 (14x14)", kernel: hk::h_kernel, meta: {C768: "<768,7>", C384: "<384,14>"}}
+  - {rows: "all other 11", kernel: convnext_fused (r0 anchor, fallback only; merge-only candidate)}
+tests: [H38, H10]
+findings:
+  - "run_tests 16/16 PASS (portal-order re-runs included). In the same container vs r7-merge, rented us: 8,768 65.3 vs 34.4 (+90 %); 16,768 81.5 vs 45.8 (+78 %); 32,768 123.3 vs 63.8 (+93 %); 8,384 74.2 vs 37.5 (+98 %); 16,384 90.8 vs 57.5 (+58 %). The other 11 rows run the r0 anchor, so the 0.414 prediction is meaningless; the merge should take NONE of the five rows [run_tests]"
+  - "H38 verdict: success line missed on every row; the incubation line (within 15 % on 16,384 and 8,384) also missed (+58 % / +98 %). Refutation clause, first half fires: more than 10 % slower on every B>=8 wide-C row. Second half is mixed: W2 units fill the GEMM1 tails, and 18/96 (8,768), 60/192 (16,384) and 0/384 (32,768) GEMM2 items start before the last GEMM1 item ends. The dataflow family with whole-CTA serial items is closed for the wide-C rows; the value left is in D's engine terms [probe_b200, run_tests]"
+  - "Decisive arithmetic from the stamps (v3): summed item CTA-time / 148 = 47.0 us (8,768), 111.5 (32,768), 71.9 (16,384) against D's whole rows 34.4 / 63.8 / 57.5. Perfect packing cannot win; the per-item cost structure is the binding term, not barriers [probe_b200]"
+  - "Per-item costs (v3, us median, globaltimer from thread 0): GEMM1 tile at 8,768 (N=128, 12 k-blocks): dependency wait 2.05, mainloop 3.6, epilogue pass 1 (LN fold + erff GELU + sumsq + fp16 staging) 3.1-4.4, pass 2+3 (gf, h16/g16 coalesced stores) + release 2.8-3.6, about 12.5 total. At 16,384 (N=208, 6 k-blocks): mainloop 2.6, pass 1 5.9-8.5. GEMM2 tile at 8,768 (KS=4, 12 k-blocks, two accumulators, 48 KB stages): mainloop 5.6-6.1, epilogue 6.9-7.4. conv unit 3.3 (PG=32, 7x7) to 7.9 (PG=128 7x7 or PG=32 14x14). Weight units 4-17 us depending on version (see below) [probe_b200]"
+  - "Queue mechanics are cheap, as the counter microbench predicted: claim-to-start (dependency wait with deps already satisfied) is 1.0-2.0 us median, the inter-item gap 1.5-3.3 us per CTA, total dependency spin 1.1-1.9k CTA-us per row (5-15 % of item time). STEP 0's standalone microbench was not run separately; these in-kernel numbers replace it [probe_b200]"
+  - "GEMM2 epilogue: 16K scalar red.add per item cost about 4 of 7.4 us (store ablation 3.3 us). KS2=2 beats KS2=4 by 7-10 us per C=768 row (8,768 65.2 vs 74.5; 16,768 80.8 vs 90.7; 32,768 121.5 vs 128.3), because total atomics scale with split-K. Shipped with KS2=2 [probe_b200]"
+  - "LN-statistics prestage: a runtime-bounded loop over NG partial groups (unroll 4) ran as ~6 serial L2 rounds. GEMM1 'mainloop' was 10 us at 8,768 (NG=24) and 6.9 at 16,384. A fully unrolled predicated load array (one round) cut it to 3.6-3.8 / 2.6 us [probe_b200]"
+  - "Dead end: weight conversion with warp_sum shuffles inside an '#pragma unroll 8' load loop serialised the loads: W1 units went 5 -> 14.6 us and W2 units 6-10 -> 13-21 us. Fix: load JB=8 float4 per thread into register arrays first, shuffle afterwards. W2 units still take 11-17 us, which suggests the out = x + b2' prefill (37 scalar loads per thread, runtime division) is the slow part [probe_b200]"
+  - "Writer-side fence.proxy.async (full) vs fence.proxy.async.shared::cta at item ends, with the consumer doing ld.acquire + fence.proxy.async before its TMA: only ~1 us difference, and both are correct on 16/16. The CUTLASS-style release (bar.sync then red.release.gpu from thread 0, no __threadfence) works for TMA consumers in other CTAs [probe_b200, run_tests]"
+  - "Engine validated on the first build (STEP 1 folded into the kernel): tcgen05 kind::f16, swap-AB, A = 128x64 K-major SW128 box (SBO 1024, +32 B per k16), B = [channel][token] MN-major 64-token chunks (LBO 8192, SBO 1024, +2048 per k16), idesc = (1<<4)|(1<<16)|(N>>3)<<17|(128>>4)<<24, N = 64/128/208/80. Whole-warp TMA and MMA roles with elect.sync, 4-stage ring with a running stage counter across items, acc barrier per item, 512 TMEM columns, tcgen05.ld 32x32b.x32 (+wait in one asm). Correct on all five rows; 156/132 regs, 0 spills [probe_b200, compile_b200]"
+  - "PRECISION LOG (fp64 reference, harness generator rules, torch.manual_seed(200) per row, 10 rounds, shipped code): 8,768 max|err| 1.689e-3 vs atol 2.9e-3 (58 %), 0 beyond; 16,768 1.689e-3 (58 %), 0; 32,768 1.791e-3 (62 %), 0; 8,384 1.797e-3 vs 2.8e-3 (64 %), 0; 16,384 1.952e-3 vs 3.3e-3 (59 %), 0. Roundings: d16, fp16(lnw*W1) with u = rowsum of the fp16 values, h16 once, g16 = fp16(gw*gf*h16), fp16 W2; exact erff GELU [probe_b200]"
+  - "Self-resetting counters: a module-level __device__ g_hctr[256] (zero at load), reset by the last departing CTA after its departure atomic. gsum is zeroed by W1 unit 0 and every gsum add waits on w1_done. Repeated calls and the portal-order re-runs pass [run_tests]"
+  - "Pitfalls: the lint rejects __nanosleep in spin loops (deliberate-delay rule), so spins are plain ld.acquire loops. Probe containers persist files only within one session; embed full sources when /root is empty. Cross-container rented timings of this kernel varied 10-20 % (v1 64/66/107/66/79 vs 74/91/128/74/91 for close builds), so only same-container comparisons count [probe_b200]"
+  - "What would revive the family (not built): overlap item i's epilogue with item i+1's mainloop inside a CTA (warp-specialised producer/MMA warps running one item ahead, 2 TMEM accumulators). That attacks the per-item serial chain, but it is D's engine territory (H36 epilogue, H33 pairs), not a counter or queue effect [INFERRED]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "tcgen05/TMEM are sm_100a only"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Slower than the merge on every row it serves: never ship as the source of a row; merge-only candidate whose rows the merge should not take"
+  - "Spin-waits rely on co-residency: cooperative launch with grid = SM count, 1 CTA/SM at 205 KB smem; every item waits only on lower queue indices"
+  - "Counters live in a module-level __device__ buffer reset by the last departing CTA; a kernel aborted mid-flight would leave them dirty for the next call in the same process"
+  - "Fallback rows run the slow r0 anchor"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

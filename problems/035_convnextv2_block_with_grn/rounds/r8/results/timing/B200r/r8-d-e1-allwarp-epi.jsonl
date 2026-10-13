@@ -1,0 +1,16 @@
+{"workload": {"axes": {"batch_size": 2, "dim": 96, "height": 56, "width": 56}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.02552}}}
+{"workload": {"axes": {"batch_size": 8, "dim": 320, "height": 32, "width": 32}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.62475}}}
+{"workload": {"axes": {"batch_size": 8, "dim": 768, "height": 7, "width": 7}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.033299999999999996}}}
+{"workload": {"axes": {"batch_size": 64, "dim": 96, "height": 112, "width": 112}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 5.5873800000000005}}}
+{"workload": {"axes": {"batch_size": 1, "dim": 160, "height": 449, "width": 7}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.026}}}
+{"workload": {"axes": {"batch_size": 16, "dim": 768, "height": 7, "width": 7}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.04405}}}
+{"workload": {"axes": {"batch_size": 16, "dim": 384, "height": 14, "width": 14}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.05171}}}
+{"workload": {"axes": {"batch_size": 32, "dim": 128, "height": 64, "width": 64}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 1.6521}}}
+{"workload": {"axes": {"batch_size": 4, "dim": 96, "height": 56, "width": 56}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.038829999999999996}}}
+{"workload": {"axes": {"batch_size": 1, "dim": 96, "height": 56, "width": 56}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01844}}}
+{"workload": {"axes": {"batch_size": 8, "dim": 384, "height": 14, "width": 14}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.03418}}}
+{"workload": {"axes": {"batch_size": 4, "dim": 192, "height": 28, "width": 28}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.02943}}}
+{"workload": {"axes": {"batch_size": 1, "dim": 192, "height": 28, "width": 28}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.01859}}}
+{"workload": {"axes": {"batch_size": 2, "dim": 768, "height": 7, "width": 7}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.02646}}}
+{"workload": {"axes": {"batch_size": 32, "dim": 768, "height": 7, "width": 7}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.06417}}}
+{"workload": {"axes": {"batch_size": 8, "dim": 192, "height": 28, "width": 28}}, "evaluation": {"status": "PASSED", "log": "", "performance": {"latency_ms": 0.04336}}}

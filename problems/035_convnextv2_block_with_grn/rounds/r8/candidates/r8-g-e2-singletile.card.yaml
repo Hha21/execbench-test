@@ -1,0 +1,100 @@
+id: r8-g-e2-singletile
+parents:
+  - r7-g-e1-fusedp1-mma
+operation: specialisation
+language: cuda_cpp
+niche:
+  lin: "G:E2:H37"
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows2
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  The fused pass 1 (conv -> LN stats -> mma.sync GEMM1 -> LN fold + exact GELU + GRN sumsq + fp16 hidden) is now built
+  for the two missing HW >= 1024 rows. Each CTA takes one 2-row tile and all 16 warps work through it in order.
+  4,96 uses 112-token tiles padded to 128 (112 CTAs) with W1' resident in shared memory. 8,320 uses 64-token tiles
+  (128 CTAs) and streams W1' in 64-row blocks of 40 KB, one buffer per 4-warp group, through a cp.async.bulk +
+  mbarrier ring. Rented B200, same container as r7-merge, 16/16 pass: 4,96 37.0 vs 41.4 us (-10.7 %) and 8,320 67.2
+  vs 73.1 us (-8.0 %); 64,96 and 32,128 within 0.2 % of the parent. Success lines (<= 36 / <= 55 us) are missed.
+  H37 is not refuted: pass 1 at 8,320 is 43.3 us, under the 45 us line, with the W1' ring wait stamped at 0.34 us.
+  What binds: the mma.sync pipe (16 warps saturate it, ~14.5 us of MMA at 8,320), an epilogue that does not overlap
+  the MMA (8.4 us), and a latency-bound conv (9-13 us).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -9
+    confidence: medium
+  L:
+    pct: -7
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 210496
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 163840
+  launches_per_call: 4
+knobs:
+  tile_4_96: "R=2, 112 tokens padded to 128, MG=3, W1' resident (73.7 KB bulk copy at entry), dw weights from global/L1 (DWS off), smem 101 KB"
+  tile_8_320: "R=2, 64 tokens, 4 groups x 4 warps, MG=2 x 32 tokens per warp, W1' streamed 20 blocks x 40 KB (5 per group), smem 210 KB"
+  k3: "__launch_bounds__(512,2), W2 row loaded into registers up front (MAXI=12)"
+  gemm2: "cuBLASLt heuristic top-1 (algo sweep: top-1 best or tied at both rows)"
+dispatch:
+  - {shape: "64,96,112,112", kernel: "g_pass1<96,2,112,7,9,3,true> + g_grn + cublasLt (unchanged from r7)"}
+  - {shape: "32,128,64,64", kernel: "g_pass1<128,2,64,8,8,2,false> + g_grn + cublasLt (unchanged from r7)"}
+  - {shape: "4,96,56,56", kernel: "g_p1s<96,2,56,128,3,false,false> + g_grn + cublasLt", meta: {ctas: 112}}
+  - {shape: "8,320,32,32", kernel: "g_p1s<320,2,32,64,2,true,false> + g_grn + cublasLt", meta: {ctas: 128}}
+  - {shape: "all others", kernel: "r0 anchor convnext_fused (fallback only; do not merge)"}
+tests:
+  - H37
+findings:
+  - "run_tests 16/16 PASS (portal-order re-runs included), rented B200, this vs r7-merge in the same container (us): 4,96 37.0 vs 41.4 (-10.7 %); 8,320 67.2 vs 73.1 (-8.0 %); 64,96 867.9 vs 866.1 (+0.2 %); 32,128 227.6 vs 227.8 (-0.1 %). The other 12 rows run the r0 anchor (merge-only candidate; the emulator's 0.44 is meaningless). Timed once in run_tests plus 2-4 harness_time repeats per variant in probes, not interleaved x3 against the merge [run_tests]"
+  - "H37 verdict: success line NOT met (4,96 37.0 > 36; 8,320 67.2 > 55); refutation clauses do not fire (4,96 112-tile path is 4.4 us faster than the merge path in-container; 8,320 pass 1 = 43.3 us <= 45 with the ring wait stamped at 0.34 us of 40 us). The fused single-tile structure transfers to C=320 but with mma.sync it lands at ~-8 %, not the -30 % the arithmetic assumed [run_tests, probe_b200]"
+  - "Per-launch, harness_time cumulative (K0 / +P1 / +K3 / +G2, us), shipped config: 4,96 3.5 / 25.1 / 30.7 / 37.3; 8,320 4.5 / 47.8 / 56.7 / 68.0. First build (dw weights staged in smem, old K3): 4,96 3.5 / 27.4 / 32.5 / 39.1; 8,320 4.5 / 48.7 / 59.8 / 71.1 [probe_b200]"
+  - "Per-tile stamps (globaltimer, flush, CTA median/max from kernel start; tid 0 / warp 0), 4,96 shipped: prologue 0.5, conv end 9.2/10.2, stats end 10.0/11.0, GEMM end 18.7/19.5 us; warp 0 GEMM side mma 3.3 us + epilogue 4.5 us for 2 warp tiles; W1' wait 0.05 us. 8,320: conv end 12.8/13.8, stats 14.1/14.9, end 39.7/41.0; warp 0 ring wait 0.34, mma 16.2, epilogue 8.4 us over 5 blocks (clock 1.78-1.88 GHz) [probe_b200]"
+  - "mma.sync is pipe-bound at 16 warps: 800 mma per warp in 16.2 us = 9 clk per mma per scheduler vs the 8-clk peak (2048 FLOP/clk/SM). With 8 warps (ping-pong halves) the same work takes 11.7 us per half, i.e. 13 clk per mma per scheduler (latency-bound), so alternating mma and epilogue between warp halves gave only 1 us at 8,320 and 1.2 us at 4,96 in the stamps and nothing in harness time. Without tcgen05 the GEMM side of 8,320 cannot go below ~14.5 us MMA + the non-overlapped epilogue [probe_b200]"
+  - "Dead end: cp.async.bulk.prefetch.L2 of the whole x halo footprint (one per channel, 1-1.8 KB) at kernel entry did not move the conv (11.26 vs 11.26 us at 4,96, 12.8 vs 13.3 at 8,320). The conv is not DRAM-latency-bound; it is the serial 3-row prefetch chain per item (2-3 rounds x 1.3-2.5 items per thread) plus FMA issue (8,320: 1M FMA per CTA = ~4.4 us at 128/clk) [probe_b200]"
+  - "Fix kept: staging the 21.5 KB dw weights into smem with a plain load/store loop serialised (~11 dependent L2 rounds, prologue 3.3 us); reading them via __ldg from the K0-padded [C][7][8] buffer instead cut the 4,96 prologue to 0.5 us and the row by 2.5 us (40.0 -> 37.5) [probe_b200]"
+  - "Fix kept: K3 at 8,320 took 11-12 us because grid (8,20) = 160 blocks of 512 threads ran as 2 waves (1 block/SM). __launch_bounds__(512,2) with the W2 row loaded up front puts it in one wave: 70.9 -> 67.9 us at 8,320, no change at 4,96 (24 blocks). Same arithmetic order as r7, so 64,96 / 32,128 are unaffected (run_tests within 0.2 %) [probe_b200]"
+  - "cuBLASLt GEMM2 algo sweep (8 heuristic results, cold, us): 4,96 6.6 / 8.3 / 6.7 / 6.6 / 6.5 / 9.0 / 7.2 / 9.4 (top-1 tied best); 8,320 11.1 / 12.6 / 12.8 / 18.0 / 12.4 / 15.7 / 23.5 / 20.2 (top-1 best). At 8,320 it moves 42 MB in 11.1 us (~3.8 TB/s), below the 6.6 TB/s it reaches at HW >= 4096 [probe_b200]"
+  - "PRECISION LOG (fp64 reference, harness generator rules: randn, weight matrices / sqrt(shape[-1]), LN weight 1 / bias 0, biases randn; torch.manual_seed(200), 10 rounds per row; first r8 build, whose arithmetic equals the shipped one: the shipped changes only move where the dw weights are read from and prefetch the W2 row in K3, same summation order): 4,96 max|err| 1.978e-3 vs atol 2.8e-3 (71 %), 0 beyond 2.4e-3+1e-5|ref|; 8,320 1.907e-3, 0 beyond 2.4e-3+1e-5|ref| (the smallest atol of any row, so 0 beyond its own atol; <= 79 % of it). Single-seed checks on the shipped variants: 4,96 2.01e-3, 8,320 1.90e-3 [probe_b200]"
+  - "Resources (compile_b200, nvcc 13 sm_100a): g_p1s<320> 128 regs, 0 spill, 210496 B dynamic smem, 6 UBLKCP; g_p1s<96> 128 regs, 0 spill, 101 KB smem (DWS off); g_pass1 unchanged 122/128 regs; g_grn now __launch_bounds__(512,2) (<= 64 regs) [compile_b200]"
+  - "Merge recommendation: take 4,96 and 8,320 from this kernel (4 launches each vs A's 5-6, so the portal ratio should be no worse than A's 1.23-1.30); keep 64,96 / 32,128 from r7 G (identical code). Rough portal: 4,96 37 x 1.27 = 47 us vs 57.4; 8,320 67 x 1.27 = 85 us vs 99.7 [INFERRED]"
+  - "Next levers (in order): (1) tcgen05 GEMM1 for g_p1s: removes the 14.5 us mma.sync floor at 8,320 and lets the epilogue warps overlap the MMA (the r7 lever, now quantified); (2) conv: stage x per channel with cp.async.bulk (4,96 needs 172 KB, so two 86 KB halves after the W1' copy; 8,320 cannot fit 327 KB beside a 160 KB W1' ring); (3) GEMM2 at 8,320 runs at ~3.8 TB/s, so a custom swap-AB or a different layout is worth ~4 us; (4) the stretch STEP 4 (balanced erf, I30) was not run: stamps show the epilogue is per-warp latency/issue-bound, not MUFU-bound, at these rows [INFERRED]"
+  - "Pitfalls: harness_time's CUPTI sequence check failed 3x in a row on one variant (dropped kernel); wrap it in a 6-try retry. Probe extension builds of kernel.cu + cuBLASLt take 12-21 s [probe_b200]"
+paths:
+  - {max_tokens: 8192, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 131072, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "built for sm_100a only (target_hardware B200)"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Merge-only candidate: 12 rows run the slow r0 anchor; the merge must take only 4,96 / 8,320 (new) and 64,96 / 32,128 (r7 G code) from it"
+  - "4 launches per call; at 4,96 (37 us) launch gaps matter on the portal more than on the bench, though A's path has 5-6"
+  - "fp32 red.add GRN sums are order-nondeterministic (relative 1e-7)"
+  - "cuBLASLt heuristic cached per (B,C,HW); descriptors, strides and pointers rebuilt every call"
+  - "g_p1s<320> uses 210.5 KB dynamic smem; the attribute is set once per instantiation and never lowered (portal-order check passed)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

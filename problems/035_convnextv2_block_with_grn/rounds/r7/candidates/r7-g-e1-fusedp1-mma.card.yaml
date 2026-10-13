@@ -1,0 +1,83 @@
+id: r7-g-e1-fusedp1-mma
+parents: [r0-convnext-coop-fp32-anchor]
+operation: new_design
+language: cuda_cpp
+niche:
+  lin: "G:E1:H35"
+  mem: ldg128
+  st: direct
+  grid: persistent
+  launch: split
+  tile: rows2
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Fusing the 7x7 conv, GEMM1, the LN fold, the exact GELU, the GRN sum of squares and the fp16 hidden store into one
+  persistent warp-specialised pass removes A's K1 + G1 + K2 chain at the two largest rows. Conv warps produce an fp16 d
+  tile in smem. GEMM warps run mma.sync with W1' resident in smem and the epilogue in registers. A K3 launch builds the
+  per-image fp16 W2_b, and a cuBLASLt swap-AB batched GEMM2 writes NCHW. Measured on the rented B200, interleaved with
+  r6-merge in the same container: 64,96 857.5 vs 1026.7 us (-16.5%), 32,128 229.8 vs 257.0 us (-10.6%).
+  Pass 1 alone is 668 / 171 us, against A's K1+G1+K2 of 825 / 205 us.
+  H35 is not refuted, but its success line (750 / 190 us, pass 1 <= 450 / 110 us) is missed.
+  The binding terms are the GEMM side (mma.sync tensor time, plus 2 MUFU ops per element in the GELU) and the conv
+  side's L2-latency-bound loads. Merge-only: ship 64,96 and 32,128; every other row runs the r0 anchor.
+expected_effect:
+  S: {pct: 0, confidence: low}
+  M: {pct: 0, confidence: low}
+  L: {pct: -14, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 194048
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 32768
+  launches_per_call: 4
+knobs: {R_64_96: 2, R_32_128: 2, R_4_96: 4, warps_64_96: "7 conv + 9 gemm", warps_32_128: "8 conv + 8 gemm", MG_96: 3, MG_128: 2, conv_item: "2 rows x 8 cols", prefetch_rows: 3, gelu: "A&S 7.1.26 erfc (rcp+ex2 MUFU)", grid: "min(tiles, 148)"}
+dispatch:
+  - {shape: "64,96,112,112", kernel: g_pass1<96,2,112,7,9,3,true> + g_grn + cublasLt, meta: {tiles: 3584, smem: 194048}}
+  - {shape: "32,128,64,64", kernel: g_pass1<128,2,64,8,8,2,false> + g_grn + cublasLt, meta: {tiles: 1024, smem: 210944}}
+  - {shape: "4,96,56,56", kernel: g_pass1<96,4,56,7,7,3,true> + g_grn + cublasLt, meta: {tiles: 56, note: "loses to A; do not merge"}}
+  - {shape: "all others", kernel: r0 convnext_fused (cooperative fp32), meta: {note: "fallback only"}}
+tests: [H35]
+findings:
+  - "Engine choice: I went straight to mma.sync m16n8k16 for GEMM1 (the task's allowed fallback; the hypothesis is the fusion) to fit the session budget. The fused tile was correct on the first build at all 3 shapes (max err 2.15e-3 / 1.94e-3 / 1.89e-3 vs fp64, 0 beyond atol) [probe_b200]"
+  - "v1, phase-serial (1 CTA/SM, 14 warps, 126 regs, R=4 448-token tiles; conv -> sync -> LN stats -> sync -> GEMM+epilogue): pass 1 1011 us at 64,96, 250 at 32,128. Full rows 1217 / 323 us, i.e. slower than A (1027 / 259) [probe_b200]"
+  - "v1 ablations at 64,96 (us): full 1042, conv only 419, GEMM phase only 608, no conv 628, GELU as identity 814 (erff GELU ~230), no mma 911 (mma.sync ~130), no h stores 983 (~60), GEMM with identity GELU and no stores 231. 32,128: full 241, conv only 107, GEMM only 136. The phases add almost exactly: with 126 regs only 1 CTA (14-16 warps) fits per SM, so nothing overlaps [probe_b200]"
+  - "Warp specialisation (7 conv + 7 GEMM warps, double-buffered d tile, named barriers 1-6, R=2 224-token tiles): pass 1 872 us (64,96), 197 (32,128). A&S erfc GELU vs erff inside it: 872 vs 952 us at 64,96 (-80 us), 197 vs 210 at 32,128, identical end-to-end max error [probe_b200]"
+  - "WS ablation at 64,96: conv side alone 653 us, GEMM side alone 522. Conv was L2-latency-bound: each input row of an item is an L2 round, and 49 weights held in registers left no room for hoisted loads. A 3-row register prefetch with weights read from smem as float4 per kernel row cut the conv side to 472 us (32,128: 144 -> 109) and the full kernel to 748 / 185. Prefetch distance 4: 756 / 187 (no gain). Weights from global instead of smem at 64,96: 841 [probe_b200]"
+  - "Token-permuted d layout (token t = 8q+2n+e stored at n*8+2q+e inside each 32-token chunk) gives each lane 8 consecutive tokens per hidden row after ldmatrix.trans + mma, so one STG.128 per row instead of four STG.32: pass 1 748 -> 702 us (64,96), 185 -> 171 (32,128) [probe_b200]"
+  - "Warp split at 64,96: 7 conv + 9 GEMM warps 668 us (shipped); 7+7 702; 9+5 953. At 32,128, 8+8 is the only split that keeps the items and the stats split divisible [probe_b200]"
+  - "Gate check, tile cycles: 64,96 pass 1 is 668 us over 24.2 tiles of 224 tokens per CTA = 27.6 us = ~54k clk at 1.95 GHz per tile, vs the brief's ~21.6k clk SIMT bound (conv 8.2k + GELU 13.4k): 2.5x. Every term is identified and removable, so the >=2x refutation clause does not fire. GEMM side: mma.sync ~100-130 us of tensor pipe serialised inside the epilogue warps; the A&S GELU needs 2 MUFU per element = ~133 us MUFU floor at 64,96 rented. Conv side: 472 us alone vs a 102 us FMA bound (L1/L2 load path) [probe_b200]"
+  - "Per-launch, final build, 64,96 (harness_time, cumulative): K0 3.3 / +P1 668 / +K3 8 / +G2 186 = 865 us. 32,128: 2.8 / 171 / 7.5 / 48.4 = 230. 4,96: 3.3 / 48 / 6.6 / 7.3 = 65 [probe_b200]"
+  - "cuBLASLt batched swap-AB GEMM2 (A = h_b [K2=4C+8][HW] fp16 col-major HW x K2; B = W2_b [C][K2]; C = x_b; D = out; beta 1; b2' as hi/lo K-augmentation columns paired with constant 1,1 rows written by pass 1): heuristic kernel nvjet_hss_256x96_64x5_2x1_2cta. 186 us at 64 batches (64,96: 0.9 GB of h + x + out, ~6.6 TB/s), 48 us at 32 batches (32,128), 7.3 us at 4 batches (4,96). Fine at HW >= 1024 [probe_b200]"
+  - "K3: the first version (per-tile partial sums, parts reduced in K3, one W2 row loop per warp) cost 14-22 us, because the cold W2 row loop is serial DRAM rounds and the TPI-deep part reads are serial. Sums via red.add per tile into a [B][4C] buffer zeroed by K0 in the same call, with grid (B, C/16) and one row per warp: 7-8 us [probe_b200]"
+  - "4,96,56,56 loses (64.6 vs 46.8 us, r6-merge = A): only 56 tiles (R=4), so 56 of 148 SMs work; R=2 would give 112-token tiles, which is not a multiple of the 32-token warp tile. Do not merge this row [run_tests]"
+  - "run_tests 16/16 PASS (portal-order re-runs included), rented, this vs r6-merge in the same container: 64,96 857.5 vs 1026.7 (-16.5%); 32,128 229.8 vs 257.0 (-10.6%); 4,96 64.6 vs 46.8 (+38%). The other 13 rows run the r0 anchor (merge-only candidate; the emulator's 0.381 is meaningless for it) [run_tests]"
+  - "PRECISION LOG (fp64 reference, harness generator rules, torch.manual_seed(200) per row, 10 rounds, shipped code): 64,96 max|err| 2.320e-3 vs atol 3.8e-3 (61%), 0 beyond atol; 32,128 2.282e-3 vs 3.2e-3 (71%), 0; 4,96 1.978e-3 vs 2.8e-3 (71%), 0. Roundings: d16 (LN stats of the fp16 d, consistent with the GEMM), fp16(lnw*W1), h16, fp16(s_b*W2) per image, b2' hi/lo fp16; GELU via A&S erfc (~1.2e-6 in h). No hi/lo split of W2_b is needed [probe_b200]"
+  - "SASS/resources (cuobjdump -res-usage, nvcc 13 sm_100a): every g_pass1 instantiation is 122-128 regs, STACK 0, LOCAL 0; g_grn 40 regs; g_prep 32 regs. smem per CTA: 194048 B at 64,96, 210944 B at 32,128 [probe_b200]"
+  - "dead end: a ring-free fused tile with x read straight from global needs either many resident warps or explicit prefetch. Registers (~128 with the mma accumulators and the 2x8 conv strip) cap the SM at 16 warps, and two CTAs per SM do not fit (W1' 74-128 KB resident in smem) [probe_b200]"
+  - "dead end: R=4 tiles at 64,96 with a double-buffered d tile and resident W1' need 281 KB of smem; R=2 forces 4x x-staging redundancy through L1/L2 [INFERRED]"
+  - "Next levers in order: (1) tcgen05 GEMM1 (asynchronous MMA, accumulator in TMEM) so the GEMM warps only run the epilogue, removing ~100-130 us of mma.sync from the critical side; (2) balance the GELU: 2 MUFU per element bind at ~133 us rented, so give ~1/3 of the elements an FMA-only erf polynomial; (3) stage x per channel with cp.async.bulk of the contiguous (R+6) x W rows (3.5 KB) and run the conv from LDS, which needs W1' out of smem or a tcgen05 A operand; (4) the 32,128 tile tail (1024 tiles on 148 CTAs = 6.9 rounds) [INFERRED]"
+  - "pitfalls: probe /tmp is wiped between some probes (rebuild with full embedded sources, ~11 s); harness_time CUPTI drops the first kernel intermittently (retry wrapper) [probe_b200]"
+paths:
+  - {max_tokens: 16384, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 131072, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "built for sm_100a only (target_hardware B200); mma.sync/ldmatrix code would run on sm_90 but is untested"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "Merge-only: 13 rows run the slow r0 anchor; the merge must take only 64,96 and 32,128 from this kernel"
+  - "4 launches per call (K0, pass 1, K3, cuBLASLt nvjet kernel); on these L rows the launch overhead is <1% of 230-860 us"
+  - "fp32 red.add into the GRN sums makes their summation order nondeterministic (relative 1e-7; within tolerance)"
+  - "Portal/rented ratio for this structure is unmeasured; pass 1 is clock-bound SIMT (likely ~1.25-1.3x), GEMM2 is DRAM-bound (~1.05x)"
+  - "cuBLASLt heuristic is cached per (B,C,HW); descriptors, strides and pointers are rebuilt every call"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

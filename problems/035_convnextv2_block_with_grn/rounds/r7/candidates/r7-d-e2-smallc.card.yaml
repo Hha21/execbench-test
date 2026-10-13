@@ -1,0 +1,104 @@
+id: r7-d-e2-smallc
+parents:
+  - r6-d-e2-epi-fix
+operation: specialisation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E2 (H34). D's single-launch tcgen05 skeleton is extended to the C<=192 rows and 1,160 as a new
+  sc_kernel; the six wide-C rows keep the r6 tc_kernel and its tile tables unchanged. Phase A uses (image,
+  plane-group, row-strip) units from 16-B-aligned superset bulk copies, which also covers the 449x7 planes whose
+  size is not a 16-B multiple. Each conv thread writes fp16 d, the output prefill (out = x + b2) and per-token LN
+  partials straight from registers. GEMM1 tiles are swap-AB with 128 hidden rows and a 56/64/112-token chunk of one
+  image; each tile adds its per-(image,k) sums of squares with one red.add per row. Because the GRN scale is known
+  only after sync 2, the GEMM2 epilogue warps scale the hidden B tile in shared memory by
+  s_b[k] = 1 + gw*gf*inv_b before the MMA (one accumulator, no g tensor). GEMM2 reduces into the prefilled output
+  with coalesced red.add. The gain is single-launch structure plus tensor cores on the rows where the merge runs
+  A's 5-6 launch pipeline (portal ratio 1.40-1.55) or B's mma.sync coop kernel.
+expected_effect:
+  S:
+    pct: -25
+    confidence: medium
+  M:
+    pct: -5
+    confidence: medium
+  L:
+    pct: 0
+    confidence: high
+resources_sm100a:
+  regs_per_thread: 122
+  smem_per_cta_bytes: 230720
+  threads_per_cta: 384
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  ring_stages_gemm1: 4
+  ring_stages_gemm2: 6
+  threads: 384
+  epilogue_warps: 8
+  tmem_cols: 512
+  SC_STAMPS: 0
+  sc_rows: "1,192 PG16 NS10 NC1 56 NC2 56 KS4; 4,192 PG16 NS3 NC1 56 NC2 112 KS2; 8,192 PG16 NS3 NC1 112 NC2 112 KS1; 2,96 PG4 NS3 NC1 64 NC2 112 KS2; 1,96 PG4 NS6 NC1 64 NC2 64 KS3; 1,160 PG4 NS3 NC1 112 NC2 112 KS2"
+  tc_rows: "unchanged from r6-d-e2-epi-fix"
+dispatch:
+  - {shapes: "1,192,28,28 4,192,28,28 8,192,28,28 2,96,56,56 1,96,56,56 1,160,449,7", kernel: "sc_kernel<192,28,16> / sc_kernel<96,56,4> / sc_kernel<160,7,4>", meta: {grid: "num SMs, cooperative"}}
+  - {shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14", kernel: "tc_kernel<768,49> / tc_kernel<384,196> (r6, bit-identical)", meta: {grid: "num SMs, cooperative"}}
+  - {shapes: "8,320 4,96 32,128 64,96", kernel: "convnext_fused (r0 anchor, merge-only)", meta: {}}
+tests:
+  - H34
+findings:
+  - "run_tests 16/16 PASS (portal-order re-runs included), final build vs r6-merge in the same container, rented us: 1,192 19.4 vs 29.6 (-10.2); 1,96 19.1 vs 30.6 (-11.5); 1,160 26.9 vs 32.4 (-5.5); 2,96 27.0 vs 31.3 (-4.3); 4,192 30.5 vs 33.9 (-3.4); 8,192 44.8 vs 46.1 (-1.3). Wide-C rows unchanged within noise: 2,768 26.7 vs 27.3; 8,768 34.7 vs 34.7; 16,768 46.1 vs 46.4; 8,384 38.3 vs 37.8; 16,384 59.1 vs 59.6; 32,768 68.1 vs 65.0 (merge path is A there; D r6 was 66.6) [run_tests]"
+  - "H34 success line MET: 1,192 19.4 <= 24 rented; >= 4 us under the merge path on 3 of the 5 target rows (1,192, 1,160, 2,96; 4,192 -3.4, 8,192 -1.3); wide-C rows within 1 us of r6-d-e2-epi-fix; 0 beyond-atol. Bonus row 1,96 (merge path B coop, 30.6) -11.5 us. The run_tests control was r6-merge, timed once per build (three builds); not interleaved x3 [run_tests]"
+  - "Build history, run_tests vs the same control (us, 1,192/4,192/8,192/2,96/1,96/1,160): v1 (8-plane whole-plane units, fp32 conv buffer + three per-element passes with runtime div/mod) 19.6/35.7/53.5/29.8/19.1/31.2; v2 (registers-only conv epilogue, 16-plane groups, 4 weight warps overlapping 8 conv warps) 19.9/33.4/47.5/28.1/20.1/27.6; v3 shipped (all 12 warps: weights then conv, branch-free clamped rows) 19.4/30.5/44.8/27.0/19.1/26.9 [run_tests]"
+  - "Stamps v1 (globaltimer, flush, CTA median/max from kernel start; G1 = GEMM1 epilogue end, s1/s2 = after sync 1/2): 1,192 A 6.7/7.7, s1 8.7, G1 17.2, s2 18.9, end 25.1. 4,192 A 9.7/15.4, s1 16.4, G1 23.3/25.9, end 33.0. 8,192 A 14.6/24.6, s1 26.1, G1 36.6/40.7, end 51.2. The post-conv passes (fp32 buffer reads, per-element unit decode with runtime div/mod, scalar stores) cost 1.8-10 us of phase A [probe_b200]"
+  - "Stamps v2 (12-warp conv, register stats, gw prefetched to smem): 1,192 A 5.4, s1 7.4, G1 13.3, s2 15.4, end 20.2; 4,192 A 9.0/10.0, end 26.9; 8,192 A 14.1/15.9, G1 27.4/31.5, end 41.2; 2,96 A 9.0, end 23.0; 1,96 A 6.1, end 16.1; 1,160 A 8.3, end 24.6. harness_time 17.7/29.8/44.2/25.6/18.2/27.6 [probe_b200]"
+  - "Chain budget at 1,192: sync release ~1.5-2 us each (x2); GEMM1 single 64-col tile: LN-stat round 0.6, accumulator wait 1.0, post-accumulator 3.7 us; GEMM2: GRN pre (gsq round + 2 named barriers) 1.4, B-tile scale 1.0 (3 k-blocks), drain + red.add 1.6. Phase A 5.4-5.9 us (weights ~2.6-3.1 us, then conv ~2.5-3 us) [probe_b200]"
+  - "Flush vs no-flush (same build): only the first GEMM1 tile at 1,192 shows a cold cost (post 3.65 vs 1.89 us); all other phases and rows within 0.1-1 us. The fixed per-phase costs are latency and issue rate, not instruction-cache or L2 cold misses [probe_b200]"
+  - "GEMM1 epilogue is issue- and latency-bound at 8 epilogue warps per SM: ~2 us per 64-column tile and ~3.9 us per 112-column tile (128 rows; ~40 instructions per element including the exact erf). It is the largest term at 4,192 and 8,192 (3 tiles per CTA on 40 CTAs). Lever: give warps 2-3 a TMEM quadrant share or use 16-column chunks over 3-4 groups [probe_b200]"
+  - "The GEMM2 B-tile scale costs 0.3-0.45 us per 64-k block, linear in k-blocks even when every block fits the 6-stage ring. This tracks per-SM TMA landing of 32 KB stages (W2 16 KB + hidden 16 KB), not the scale arithmetic: 8,192 (KS=1, 12 k-blocks) spends 5.3 us there. A cta_group::2 pair (half the B bytes per SM) or NC2=224 tiles are the levers [probe_b200]"
+  - "Dead end: splitting phase A into 4 weight warps plus 8 conv warps (v2) made the conv 1.3-3x slower (1,192 3.1 vs 2.5 us, 8,192 12.8 vs 9.5) and phase A 0.5-3 us later than doing the weights first on all 12 warps; reverted in v3 [probe_b200]"
+  - "Dead end: dbuf-free stats via shared atomics were considered and replaced by register stats over a plane subgroup per thread (PSUB plane subgroups, PG/PSUB planes per thread, partials combined through smem). This removed the three per-element post-conv passes and saved 1-9 us per row [probe_b200]"
+  - "PRECISION LOG (fp64 reference, harness generator rules: randn, weight matrices / sqrt(shape[-1]), LN weight 1 and bias 0, biases randn; torch.manual_seed(200), 10 rounds per row; v2 build, whose arithmetic equals v3 except the summation order of LN partials over plane subgroups): 1,192 max 2.028e-3 vs atol 2.4e-3 (84%), 0 beyond; 4,192 2.113e-3 vs 2.5e-3 (85%), 0; 8,192 2.359e-3 vs 3.0e-3 (79%), 0; 2,96 2.414e-3 vs 2.7e-3 (89%), 0; 1,96 2.373e-3 vs 2.7e-3 (88%), 0; 1,160 2.299e-3 vs 2.6e-3 (88%), 0. Less margin than D r6's two-accumulator form (59-67%) because the hidden is rounded twice (fp16 h, then fp16(h*s) in the B-tile scale); comparable to A's paths (1,96 90%) [probe_b200]"
+  - "Margin lever if a portal row ever fails: scale the A tile (W2) in smem from fp32 W2 (single rounding), or keep the r6 two-accumulator form with a per-image gf known after sync 2 (needs a g pass); costs TMA bytes [INFERRED]"
+  - "NOT DONE: TC_STAMPS stamps of the r6 kernel at 2,768 (task STEP 0); the precision log for B's r6-merge paths (1,192; 1,96), not readable from lineage D; interleaved x3 timing (each build was timed once against r6-merge in its own container) [run_tests]"
+  - "Merge value: at the single-launch portal ratio (D 1.20-1.32) vs A's 1.40-1.55 and B's 1.25-1.31, this kernel should take 1,192, 1,96, 1,160, 2,96 and 4,192 from the merge, and probably 8,192 (44.8 rented single launch vs A 46.1 at 5-6 launches) [INFERRED]"
+  - "Next levers in D (r8): GEMM1 epilogue occupancy (largest term on B>=4 rows); cta_group::2 pairs for GEMM2 ingest; the conv still runs ~3-6x its FMA bound (latency-bound with ~10-12 warps). Two output rows per thread would share the input rows and add ILP [INFERRED]"
+paths:
+  - {max_tokens: 6272, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "sc_kernel on 1,192 / 4,192 / 8,192 / 2,96 / 1,96 / 1,160: cooperative single launch, tcgen05 kind::f16 swap-AB, strip-unit bulk conv, B-tile GRN scale, red.add GEMM2"}
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "tc_kernel (r6, unchanged) on 2/8/16/32,768,7,7 and 8/16,384,14,14"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "r0 fp32 anchor on 8,320 / 4,96 / 32,128 / 64,96 (merge-only; use other lineages there)"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM are sm_100a-only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05"
+  - "cooperative launch at ~225 KB dynamic smem and 384 threads requires every SM free (grid = SM count)"
+  - "precision margin on the new paths is 79-89% of atol (double fp16 rounding of the hidden), 0 beyond over 10 seeded rounds; less margin than D r6's wide-C rows"
+  - "split-K float4/scalar red.add and red.add GRN sums make summation order nondeterministic (max error stable to ~1e-6)"
+  - "four rows (8,320, 4,96, 32,128, 64,96) run the slow r0 anchor; only useful merged with lineages A/G there"
+  - "every red.add target (gsq per (image,k), the output) is zeroed or prefilled inside phase A before sync 1, which precedes the first add; the workspace is torch.empty"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

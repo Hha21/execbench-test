@@ -1,153 +1,162 @@
-# solx: evolving B200 kernels without a B200
+# solx
 
-An automated research loop in which LLM agents design, test and refine GPU kernels for NVIDIA's
-[SOL-ExecBench](https://research.nvidia.com/benchmarks/sol-execbench) leaderboard. Kernels are scored on the portal's
-B200 with clocks locked. We test on a rented B200 (Modal, pay per second), correct its numbers with a multi-fidelity
-emulator trained on our own portal results, and submit the best candidates to the portal by hand (about five results
-a day). The first problem is #38; more are planned.
+**Claude agents that design, race and merge B200 kernels for NVIDIA's SOL-ExecBench.**
+
+An automated research loop for NVIDIA's [SOL-ExecBench](https://research.nvidia.com/benchmarks/sol-execbench)
+leaderboard. Each round, a research lead (Claude Fable) reads everything learned so far and plans two or three
+experiments. Parallel design sessions (headless Claude Code, Opus) then build and measure kernels on a rented B200
+(Modal, pay per second). Finally, the loop times every new kernel against the best submitted one in the same container
+and merges the winners, input size by input size, into one submission. The portal scores kernels on its own
+clock-locked B200; submissions are made by hand.
 
 ## Where we are
 
-| Problem | Best | How | Public #1 |
+As of 2026-10-13. Our scores are private portal submissions. The public #1 column comes from the 2026-09-20 board
+snapshot, except #129, which is the live board.
+
+| Board | Problem | Best | Public #1 |
 |---|---|---|---|
-| **#38 `038_flux_multi_head_rmsnorm_qk`** (per-head RMSNorm of Q and K, fp32, 16 sizes, 13-805 MB) | **0.6125** (`c2-cluster2-s-only`) | one-shot 256-bit kernel, outputs kept in L2, 3 tokens per thread at 1024 tokens, cluster-of-2 launch at the smallest sizes | 0.6275 |
-| **#218 `FlashInfer-Bench/009_gemm_n5120_k2048`** (fp16 GEMM `A @ B.T`, N=5120, K=2048, M 1-16294, 25 sizes) | **0.4870** (`r0-skinny16-cublas`); `r1b-lt-tiles` (~0.489) ready | 256-bit streaming mma.sync kernel at M <= 16, cuBLAS elsewhere (forced cublasLt tiles at M 20-48 and 150-200 in r1b). Parked after r2: cuBLAS is within ~0.3-0.9 us of the read floor at mid sizes and the large-M baseline is a stored time 6-9% below cuBLAS on the portal | ? |
+| **L2 #129** | **`035_convnextv2_block_with_grn`** (7x7 depthwise conv, LayerNorm, MLP with GELU and GRN, residual; fp32; 16 sizes) | **0.7313** (`r8-merge`), 2nd on the live board | 0.7435 |
+| L1 #35 | `035_flux_ada_layer_norm_zero_modulation_extraction` | 0.6941 | 0.7945 |
+| L1 #88 | `088_rotary_position_embedding_application` | 0.6827 | 0.6978 |
+| L1 #85 | `085_geglu_activation` | 0.6755 | 0.6905 |
+| L1 #38 | `038_flux_multi_head_rmsnorm_qk` | 0.6125 | 0.6275 |
+| L1 #84 | `084_silu_activation_backward` | 0.5219 | 0.5604 |
+| FlashInfer #218 | `009_gemm_n5120_k2048` | 0.4870 | 0.5356 |
+| L1 #30 | `030_attention_output_projection_with_residual` | 0.4529 | 0.5464 |
 
-<details><summary>#38 history</summary>
+### #129: 0.30 to 0.73 in eight rounds
 
-| Kernel | How it was made | Portal score |
-|---|---|---|
-| Scoring baseline (hidden, NVIDIA) | - | 0.500 |
-| `v028` | first submission: best of 72 Triton knob variants on A100 | 0.451 |
-| `v039` | best knob variant on B200 (persistent grid) | 0.531 |
-| `g2-os-r8w4` | generation 2: one-shot Triton kernel | 0.577 |
-| `r3-cute-ldg256-os-r16` | round r3: CuTe DSL, 256-bit loads, no cache hints | 0.588 |
-| `r5-ldg256-os-r16-stel` | round r5, first interactive session: outputs kept in L2 (`evict_last` stores) | 0.609 |
-| `r6-s-ldef-nc-disp` / `c1` | small-input load policy; resubmitted unchanged as a control (0.6105) | 0.610 |
-| `r10-rtok-m-disp` | exploratory round r10: 3 tokens per thread at 1024 tokens | 0.611 |
-| `c2-cluster2-s-only` | portal A/B after round r11: cluster-of-2 launch only at <= 300 tokens | **0.6125** |
+| Round | Submission | What changed | Portal |
+|---|---|---|---|
+| r0 | `r0-convnext-coop-fp32-anchor` | the research agent's first correct kernel (fp32, one cooperative launch) | 0.3038 |
+| r2 | `r2-lib-cublaslt-fp16-tmaconv` | lineage A: a conv kernel plus cuBLASLt fp16 GEMMs | 0.6198 |
+| r3 | `r3-merge-a3-b3-d3` | first per-size merge of three lineages: A's pipeline, B's cooperative mma.sync kernel, D's weight streaming | 0.6355 |
+| r4 | `r4-merge-m3-a4` | A's bulk-plane conv on six sizes | 0.6553 |
+| r5 | `r5-merge-b` | A's ring GEMM; the merge becomes an automatic loop step and learns that launch count changes the portal/bench ratio | 0.6747 |
+| r6 | `r6-merge` | D's tcgen05 kernel, its epilogue spill fixed, takes the wide-channel sizes | 0.6908 |
+| r7 | `r7-merge` | D's single-launch tcgen05 kernel reaches the small-channel sizes; new lineage G fuses conv, GEMM1, GELU and the GRN sums for the two largest | 0.7207 |
+| r8 | `r8-merge` | D runs its GEMM1 epilogue on all 16 warps; G extends to two more sizes; new lineage H (a dataflow work queue) is refuted | 0.7313 |
 
-Large inputs run at the B200's DRAM read ceiling; small inputs sit at the launch floor; medium inputs are bounded by
-the write-back of dirty lines the harness's cache flush leaves in L2. Details: the problem card and the hypothesis
-ledger.
-</details>
+Eight lineages (A-H) have been started so far. The lead has retired B, C, E and F and paused A, and H's first build was
+refuted in r8. The current submission routes the 16 sizes across four kernels from lineages D and G.
 
 ## How the loop works
 
 ```mermaid
 flowchart TB
-    subgraph portal["Portal: the judge (manual, about 5 results a day)"]
-        SL["round.py shortlist<br/>predicted portal score ± error,<br/>P(beats the best)"]
-        SUB["you submit privately"]
-        ING["ingest_portal.py<br/>per-size latency, hidden baseline, score"]
-        SL --> SUB --> ING
-    end
-    subgraph research["Research phase (once per problem)"]
-        MEAS["B200 measurements<br/>copy floor + PyTorch reference per workload"]
-        RES["research agent · Fable<br/>studies definition + reference,<br/>probes the B200"]
-        MEAS --> RES
-    end
     subgraph knowledge["Shared knowledge (per problem)"]
+        POOL[("ideas pool<br/>plain-language designs, long shots required")]
         LEDGER[("hypothesis ledger<br/>open / supported / refuted, with evidence")]
-        NOTE[("archive + lab notebook<br/>every kernel; portal vs bench outcomes;<br/>findings and dead ends")]
-        EMU["emulator<br/>portal ≈ bench time × correction<br/>(size, design features, copy lag)"]
+        NOTE[("archive + lab notebook<br/>every kernel, design card, finding,<br/>dead end and portal result")]
+        LIN[("lineages<br/>independent lines of development")]
     end
-    subgraph round["Each round"]
-        LEAD["research lead · Fable<br/>reads the evidence, updates the ledger,<br/>designs experiments with success criteria"]
-        subgraph sessions["design sessions · Opus / Sonnet, in parallel (headless Claude on your plan)"]
-            S1["hypothesis → probe → build →<br/>measure → revise → hand in<br/>kernel + design card + findings"]
+    subgraph round["Each round (about 1-1.5 hours)"]
+        LEAD["research lead · Fable<br/>keeps or retires lineages, starts new designs,<br/>plans 2-3 experiments with success and refutation lines"]
+        subgraph sessions["design sessions · Opus, in parallel, one per experiment"]
+            S1["probe → build → measure → revise<br/>hands in kernel + design card + findings"]
         end
-        TOOLS["MCP tools on a rented B200 (Modal)<br/>probe_b200 1-6 s · compile_b200 · run_tests 10-20 s<br/>predict_score · get_kernel · read_example"]
+        TOOLS["MCP tools on a rented B200 (Modal)<br/>probe_b200 · compile_b200 · run_tests · get_kernel"]
+        MERGE["round.py merge<br/>best portal kernel vs every new kernel, interleaved in one container;<br/>each size goes to its fastest kernel → rN-merge.json"]
         LEAD -->|"experiments"| S1
         S1 <-->|"tool calls"| TOOLS
+        S1 -->|"candidates"| MERGE
     end
-    RES -->|"problem card + first ledger"| LEDGER
-    RES -->|"first kernel (portal anchors)"| SL
+    subgraph portal["Portal (manual)"]
+        SUB["submit rN-merge"] --> ING["ingest_portal.py<br/>per-size latency, hidden baseline, score"]
+    end
+    POOL --> LEAD
     LEDGER --> LEAD
     NOTE --> LEAD
-    LEAD -->|"updated ledger"| LEDGER
-    S1 -->|"candidates, findings"| NOTE
-    TOOLS --> EMU
-    EMU --> SL
-    NOTE --> SL
-    ING -->|"portal result"| NOTE
-    ING -->|"training pair"| EMU
+    LEAD --> LIN
+    LEAD --> LEDGER
+    S1 -->|"findings"| NOTE
+    MERGE --> SUB
+    ING --> NOTE
 ```
 
-- **Research phase.** For a new problem, `round.py research` first measures, on the rented B200, a plain stream over
-  each workload's bytes (the memory floor) and NVIDIA's PyTorch reference. A research agent then studies the
-  definition, the reference code and those numbers, and writes the problem card (the problem part of every agent's
-  briefing), the first hypothesis ledger, and a simple, correct first kernel. That kernel's portal result supplies
-  the hidden baseline and SOL time per workload, which the score model and the emulator need.
-- **Research lead.** Once per round, a Fable agent reads the lab notebook (every portal result next to its bench
-  result, and every finding recorded by earlier sessions, dead ends included), the archive, the hypothesis ledger and
-  the emulator's learned portal-vs-bench effects. It rewrites the ledger and designs the round's experiments: each
-  tests a hypothesis, states a success criterion and what would refute it, and names a model.
+- **Lineages.** Refining a single kernel under portal noise turns into a noisy hill-climb that settles on the first
+  design that works. The lead instead keeps several lineages: independent designs that share findings but not code.
+  It starts a new design in most rounds and gives each new idea a round or two to mature before judging it. Because of
+  the merge, a specialist that wins only a few sizes is still worth keeping.
+- **Research lead.** Once per round, a Fable agent reads the ideas pool, the lab notebook (every portal result, and
+  every finding earlier sessions recorded, dead ends included), the archive and the hypothesis ledger. It plans the
+  round's experiments. Each one tests a hypothesis and states what would count as success and what would refute it.
 - **Design sessions.** Each experiment is a headless Claude Code session on the user's Claude plan, with our tools
-  served over MCP. A session tests its idea's core assumption with quick probes on the rented B200 (an NVRTC kernel in
-  about a second, timed exactly as NVIDIA's harness times it), builds the kernel, and runs NVIDIA's harness on it:
-  correctness at all 16 sizes and a predicted portal score with error bars. It hands in one kernel with a design card
-  (hypothesis, per-path design features, findings).
-- **Emulator.** The rented B200 runs its SM clock at about 1940 MHz; the portal locks it at 1500 MHz. The emulator
-  learns `log(portal / rented)` per size from every kernel measured on both (a Gaussian process over design features,
-  plus the kernel's lag behind a plain copy, which measures how SM-bound it is). Typical error is ±0.005-0.009 in
-  score; designs unlike anything measured get wider error bars.
-- **Portal.** The shortlist ranks candidates by their chance of beating the best. Slots also go to deliberate
-  experiments (A/B pairs, controls) because every portal result trains the emulator and settles hypotheses.
+  served over MCP. A session first tests its idea's core assumption with quick probes on the rented B200 (an NVRTC
+  kernel in about a second, timed the way NVIDIA's harness times it). It then builds the kernel and runs NVIDIA's
+  harness on it: correctness at all sizes, run twice in the portal's order. It hands in one kernel with a design card
+  (hypothesis, per-path design, resources, findings, precision log).
+- **Per-size merge.** `loop/merge.py` wraps each kernel's sources in its own namespace and generates a binding that
+  dispatches on the input shape. A manifest lets later merges take the parts apart again. The merge step times the
+  best portal kernel and every new candidate alternately in one Modal container, since drift between containers is
+  5-12 µs per size, larger than many real gains. It then projects each candidate's portal time using the
+  portal/bench ratio that the candidate's own lineage shows on the portal. Projection vs result: r7 0.7208 vs 0.7207,
+  r8 0.7333 vs 0.7313.
+- **Rules.** Before each submission, the operator checks the merged code against the leaderboard rules: no state
+  carried between calls, accumulators zeroed inside each call, no PDL, no stream or graph tricks, and diagnostics
+  compiled out.
+- **Emulator** (single-kernel problems such as #38). A Gaussian process learns `log(portal / bench)` per size from
+  every kernel measured on both. The rented B200 boosts to about 1940 MHz; the portal locks the SM clock at 1500 MHz.
 
 ## Running
 
 ```bash
-P=L1/038                                    # any problem: L1/038, FlashInfer-Bench/021, 038_flux_multi_head_rmsnorm_qk ...
+P=L2/035_convnextv2_block_with_grn             # any problem: L1/038, FlashInfer-Bench/009, 035_convnextv2_block_with_grn ...
 # a new problem: measurements, problem card, first ledger, first kernel (round r0)
-.venv/bin/python loop/round.py research  --problem $P --backend claude --lead-model fable
-# each round
-.venv/bin/python loop/round.py lead      --problem $P --round r12 --backend claude --lead-model fable [--brief "..."]
-.venv/bin/python loop/round.py auto      --problem $P --round r12 --use-plan --backend claude
-.venv/bin/python loop/round.py shortlist --problem $P --round r12          # -> problems/<name>/rounds/r12/portal/
-# after uploading: save each result page into html_results/, then
-python3 poc/ingest_portal.py html_results/<page>.html
-SOLX_PROBLEM=$P .venv/bin/python loop/emulator.py                            # refit + validation
+.venv/bin/python loop/round.py research --problem $P --backend claude
+# a portfolio round
+.venv/bin/python loop/round.py ideas --problem $P --round r9 --backend claude      # optional: a fresh ideas pool
+.venv/bin/python loop/round.py lead  --problem $P --round r9 --backend claude --portfolio --max-tasks 3 [--brief "..."]
+.venv/bin/python loop/round.py auto  --problem $P --round r9 --backend claude --use-plan --portfolio \
+    --b200-minutes 90 --gpu-calls 10 --session-timeout 90    # sessions, then the merge -> rounds/r9/candidates/r9-merge.json
+# after uploading: save the result page into html_results/, then
+.venv/bin/python poc/ingest_portal.py html_results/<page>
+.venv/bin/python poc/leader_gap.py $P                        # per-size gap to the public board and hardware ceilings
 ```
 
-`auto --lead` runs the lead and the sessions in one go; `--mode explore` uses a built-in idea list instead of the lead;
-`--backend openrouter --interactive` runs the same sessions through OpenRouter. A round of four sessions takes about
-10-15 minutes, uses a few dollars of API-equivalent usage on the Claude plan and about $1-2 of B200 time.
+`round.py merge --round r9` reruns the merge step by itself, and `auto --resume` resumes sessions that hit a usage
+limit. A portfolio round of three sessions takes about 1-1.5 hours and uses about $25-40 of API-equivalent usage on
+the Claude plan plus $4-6 of B200 time.
 
 ## Repository layout
 
 | Path | What it is |
 |---|---|
-| `loop/round.py` | the loop driver: research, lead, plan, propose, auto, test, collect, shortlist, table |
+| `loop/round.py` | the loop driver: research, ideas, lead, plan, auto, test, merge, shortlist, table |
+| `loop/portfolio.py` | portfolio rounds: idea sessions, the premise audit, lineages, the lead protocol |
+| `loop/merge.py` | per-size merge of several kernels into one submission (namespaced sources, shape dispatch, manifest) |
+| `loop/ab_container.py` | interleaved timing of kernels in one Modal container, projected from portal times |
+| `loop/order_check.py` | the portal-order check: every workload is set up before any is timed |
 | `loop/problem.py`, `loop/research.py` | problem definitions, workload sizes and bands; the research phase |
-| `problems/<name>/` | one folder per problem: `card.md` (briefing), `ledger.yaml` (hypotheses), `features.yaml` (emulator), `archive.json`, `rounds/`, `b200/` (rented-B200 pairs, copy floor) |
+| `problems/<name>/` | one folder per problem: `card.md` (briefing), `ledger.yaml`, `lineages.yaml`, `archive.json`, `rounds/` |
 | `loop/mcp_tools.py`, `loop/designer.py` | the session tools (MCP server for headless Claude; OpenRouter tool loop) |
 | `loop/b200_modal.py`, `loop/b200probe.py` | the rented B200 on Modal (NVIDIA's software stack) and the probe helpers |
-| `loop/emulator.py` | the multi-fidelity emulator (per problem) |
-| `loop/pair_timings.py`, `loop/calibrate_b200.py` | timing portal-measured kernels on the rented B200 |
-| `loop/planner.py` | score model, task planning, explore ideas, shortlist |
+| `loop/planner.py`, `loop/emulator.py` | score model, task planning, shortlist; the multi-fidelity emulator |
 | `loop/context/` | the shared briefing: B200 architecture, public SOTA kernels, harness rules, playbook, protocol |
 | `loop/archive.py` | the per-problem archive: every kernel's card, timings, compile statistics, portal results |
-| `loop/toolserver.py`, `loop/jobs/` | GPU tool server and Slurm jobs for CSF3 (A100/L40S/H200; optional now) |
-| `poc/` | proof of concept: 72 variants, multi-GPU timing, the first emulator rehearsal, portal ingestion |
+| `loop/dashboard/` | a local live view of the loop |
+| `poc/leader_gap.py` | per-size gap to the public board, with DRAM and tensor-core ceilings |
 | `poc/results/b200_portal*.csv` | every B200 portal result, per submission and per size |
 
 ## Lessons so far
 
-- **Keeping outputs in L2 is the biggest lever found.** `evict_last` output stores gained +0.021: output still in
-  the 126 MB L2 when the kernel ends is written back after the timer stops.
-- **The bench is not the portal.** A rented B200 boosts its SM clock; the portal locks it at 1500 MHz. Plain
-  streaming transfers 1:1, but SM-bound designs lose more on the portal, and some changes flip sign (r8/r9: -1% on the
-  bench, +3-4% on the portal). The emulator learns these corrections; changes below about 1% are only settled by the
-  portal.
-- **The portal is precise; the bench is noisy.** Identical code resubmitted moved at most 0.3% per size (times are
-  reported in 0.1 µs steps). The rented B200 varies about 1% per size between runs.
-- **Most structural ideas lose to the simple one-shot kernel.** Persistent grids, work stealing, TMA bulk pipelines,
-  one wave of fat CTAs, FlashInfer's lane layout and die-affine placement were each measured and refuted.
-- **Launch attributes matter at the smallest sizes.** A cluster-of-2 launch cut 128-256-token workloads by 2-6% on
-  the portal; clustering larger sizes hurt.
-- **Fast experiments change how the agents work.** With probes in seconds, sessions test assumptions before building,
-  run controls, and record negative results, and the lab notebook stops later rounds repeating dead ends.
+- **Keep a portfolio and merge per size.** No single #129 design wins all 16 sizes. Specialists that lose overall but
+  win a band carried most of the gains from r3 onwards.
+- **Count launches.** On small and medium sizes the portal adds more per kernel launch than a rented B200 does. A
+  single-launch cooperative kernel runs 1.20-1.32x its rented time on the portal; a 5-6 launch pipeline runs
+  1.40-1.55x. The r5 projection missed by 0.008 until the merge used each lineage's own ratio.
+- **Compare only inside one container.** Rented B200s differ by 5-12 µs per size between containers, even in launch
+  speed. Back-to-back timing in one container is what made the merge projections hold.
+- **The portal sets up every size before timing any.** Process-wide host state (maximum dynamic shared memory
+  attributes, cached plans) must be valid for every shape in any order: one #129 kernel failed on eight sizes for this
+  reason.
+- **Keep outputs in L2** (#38). `evict_last` output stores gained +0.021: output still in the 126 MB L2 when the
+  kernel ends is written back after the timer stops.
+- **Portal precision depends on size.** On #38's large sizes, identical code moved at most 0.3% per size. On #129's
+  sizes under 40 µs, it moves about ±1 µs, so gains of that size are noise.
+- **Fast experiments change how the agents work.** With probes that take seconds, sessions test assumptions before
+  building, run controls and record negative results, and the lab notebook stops later rounds repeating dead ends.
 - **Portal arithmetic** (verified): latency is the geometric mean over sizes, the score is the arithmetic mean of
   per-size scores, and your own submission pages show the hidden baseline per size.
 
@@ -155,13 +164,13 @@ SOLX_PROBLEM=$P .venv/bin/python loop/emulator.py                            # r
 
 - Local: `python3 -m venv --system-site-packages .venv && .venv/bin/pip install modal mcp`. Modal login:
   `.venv/bin/python -m modal setup`. The OpenRouter key (optional) is read from `.env` (git-ignored) and never printed.
-- After cloning SOL-ExecBench, run `python3 loop/patch_dataset.py`: FlashInfer-Bench definitions leave the metadata
+- After cloning SOL-ExecBench, run `python3 loop/patch_dataset.py`. FlashInfer-Bench definitions leave the metadata
   field `hf_id` empty, which the harness's data model rejects; the script fills it in our local copy only.
 - The B200 image follows SOL-ExecBench's Dockerfile (CUDA 13.1.1, CUTLASS 4.4.1, the uv-locked environment, fbtriton
-  3.7.1). Our copy of the harness skips timing windows that hold none of the user's kernels (CPU/GPU timestamp skew
-  on Modal; `loop/patch_harness_timing.py`); the portal never needs this.
+  3.7.1). Our copy of the harness skips timing windows that hold none of the user's kernels, because of CPU/GPU
+  timestamp skew on Modal (`loop/patch_harness_timing.py`); the portal never needs this.
 - CUDA C++ solutions use two files (`kernel.cu` without PyTorch headers, `binding.cpp`), which cuts a B200 build
-  from about a minute to 9-18 s.
+  from about a minute to 9-18 s. tcgen05 kernels must target B200 only.
 - CSF3 (optional): everything lives in `/scratch/t95317ha/solx`; account `gpu-cdt-dmcs` for H200, `gpu-sk01` for
   A100/L40S.
 - The portal has no official upload API, so submission stays manual.

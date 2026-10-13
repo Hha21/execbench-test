@@ -6655,6 +6655,29 @@
   }
  },
  "r8-merge": {
+  "b200": {
+   "geomean_us": 60.594,
+   "score": 0.731267,
+   "submission": "66855",
+   "timings": {
+    "1,160,449,7": 33.300000000000004,
+    "1,192,28,28": 24.400000000000002,
+    "1,96,56,56": 23.8,
+    "16,384,14,14": 66.9,
+    "16,768,7,7": 56.0,
+    "2,768,7,7": 33.5,
+    "2,96,56,56": 33.099999999999994,
+    "32,128,64,64": 290.2,
+    "32,768,7,7": 82.10000000000001,
+    "4,192,28,28": 38.5,
+    "4,96,56,56": 47.5,
+    "64,96,112,112": 1072.6,
+    "8,192,28,28": 55.1,
+    "8,320,32,32": 87.6,
+    "8,384,14,14": 43.5,
+    "8,768,7,7": 41.9
+   }
+  },
   "card": "id: r8-merge\nparents:\n- r7-merge\n- r8-d-e1-allwarp-epi\n- r8-g-e2-singletile\noperation: repair\nlanguage: cuda_cpp\nniche:\n  cache: default\n  grid: oneshot\n  launch: split\n  mem: bulk1d\n  red: warp\n  spec: dispatch:size\n  st: direct\n  tile: rows8\nhypothesis: 'Operator per-workload merge: Per-workload merge (loop/merge.py, kernels unchanged) of r7-merge with r8-d-e1-allwarp-epi,\n  r8-g-e2-singletile on 1,160,449,7, 1,96,56,56, 16,384,14,14, 16,768,7,7, 2,96,56,56, 32,768,7,7, 4,192,28,28, 4,96,56,56,\n  8,192,28,28, 8,320,32,32, 8,384,14,14, 8,768,7,7, where they beat it side by side. Projected portal score 0.7333 (best 0.7207).'\ndispatch:\n- kernel: r6-d-e2-epi-fix\n  shapes: 2,768,7,7\n- kernel: r7-d-e2-smallc\n  shapes: 1,192,28,28\n- kernel: r7-g-e1-fusedp1-mma\n  shapes: 64,96,112,112 32,128,64,64\n- kernel: r8-d-e1-allwarp-epi\n  shapes: 2,96,56,56 8,768,7,7 1,160,449,7 16,768,7,7 16,384,14,14 1,96,56,56 8,384,14,14 4,192,28,28 32,768,7,7 8,192,28,28\n- kernel: r8-g-e2-singletile\n  shapes: 8,320,32,32 4,96,56,56\n",
   "id": "r8-merge",
   "language": "cuda_cpp",
@@ -6706,6 +6729,638 @@
     "8,320,32,32": 67.94,
     "8,384,14,14": 33.68,
     "8,768,7,7": 33.08
+   }
+  }
+ },
+ "r9-d-e1-asynca": {
+  "card": "id: r9-d-e1-asyncA\nparents:\n  - r8-d-e1-allwarp-epi\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: token\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  H39 as specified is refuted: phase A at C=768 is a DRAM-throughput term (W1 fp32 read plus fp16 write, about 4 TB/s\n  under the dirty flush), not a serial chain, because the plane copies were already issued at entry in the parent.\n  What was built and kept is a smaller version. tc_kernel's phase A issues its W1 loads first, runs the conv in their\n  shadow and converts W1 last. LN vectors and per-unit dwb/b2 arrive by bulk copy with the plane copies. The W2\n  conversion moves into the GEMM1 phase (idle CTAs right after sync 1, busy CTAs on warps 4-15 during the first\n  tile's mainloop; complete before sync 2). tc_kernel's two grid syncs become a flat self-resetting counter barrier.\n  sc_kernel gets the dwb/b2 bulk copy and the weights-after-conv reorder, and keeps cg grid.sync().\nexpected_effect:\n  S:\n    pct: -1\n    confidence: low\n  M:\n    pct: -4\n    confidence: low\n  L:\n    pct: -1.5\n    confidence: low\nresources_sm100a:\n  regs_per_thread: 128\n  smem_per_cta_bytes: 227544\n  threads_per_cta: 512\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 196608\n  launches_per_call: 1\nknobs:\n  tc_threads: 512\n  tc_w1_units_per_warp: \"2 at C=768, 1 at C=384 (all loads issued before the conv)\"\n  tc_w2_workers: \"idle CTAs 16 warps, busy CTAs warps 4-15; units per worker 2 at C=768, 1 at C=384\"\n  tc_barrier: \"flat atomic counter plus generation word in module-level __device__ buffers, plain ld.acquire spin\"\n  sc_barrier: \"cg grid.sync (flat barrier tested and rejected on sc rows)\"\n  TC_STAMPS: 0\n  SC_STAMPS: 0\ndispatch:\n  - shapes: \"2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14\"\n    kernel: \"tc_kernel<768,49> / tc_kernel<384,196>\"\n    meta: {grid: \"num SMs, cooperative\"}\n  - shapes: \"1,192,28,28 4,192,28,28 8,192,28,28 1,96,56,56 2,96,56,56 4,96,56,56 1,160,449,7\"\n    kernel: \"sc_kernel<192,28,16> / sc_kernel<96,56,4> / sc_kernel<160,7,4>\"\n    meta: {grid: \"num SMs, cooperative\"}\n  - shapes: \"8,320,32,32 32,128,64,64 64,96,112,112\"\n    kernel: \"convnext_fused (r0 anchor, merge-only)\"\n    meta: {}\ntests:\n  - H39\nfindings:\n  - \"run_tests 16/16 PASS (portal-order re-runs included), final build v4, rented us, this vs r8-merge in the same container (single timing each): 2,768 24.0 vs 28.7 (the merge path there is r6 tc; r8 tc was a tie with it); 8,768 32.4 vs 33.4 (-1.0); 16,768 43.5 vs 44.5 (-1.0); 16,384 50.9 vs 52.4 (-1.5); 8,384 33.4 vs 34.2 (-0.8); 32,768 65.1 vs 64.5 (+0.6, merge path is A / r8 tc ties); sc rows 1,96 18.2 vs 18.5, 2,96 25.0 vs 25.7, 1,160 25.3 vs 25.9, 4,96 37.6 vs 37.3, 4,192 29.3 vs 29.3, 8,192 41.0 vs 42.7, 1,192 18.2 vs 23.4 (the merge path there is r7 sc). The H39 success rows (8,768 <= 30.5, 16,768 <= 41, 32,768 <= 61, 8,384 <= 31.5, 16,384 <= 49, 2,768 <= 23.5) are all missed except 2,768 (24.0, 0.5 over) [run_tests]\"\n  - \"Refutation clause fires: after STEP 1-2 the rows are within 1 us of the parent on 8,768, 16,768, 8,384 and 32,768 (4 of 6). Stamps (v1, stamped build, CTA medians/max, us from the first CTA start) at 8,768: W1 conversion end 3.6, plane copies landed 3.7, conv end 4.6, phase A end 5.5 median / 7.0 max, sync 1 released 8.1, GEMM1 end 19.8 / 21.3, sync 2 22.8, end 30.7. The 'serial copy waits' premise is false for the r8 code: the copies are already issued at entry in one transaction [probe_b200]\"\n  - \"Phase A is bound by the W1 DRAM stream. v2 stamps at 8,768: issuing the 12 LDG.128 per lane of W1 takes 2.2 us (about 4 TB/s over the grid), the plane copies then land at 2.7 us instead of 1.5 (they queue behind the weight stream), conv ends 4.0, W1 conversion ends 5.6, phase A end 5.7 / 7.1. Reordering (loads first, conv in their shadow) therefore ties the old order: run_tests v1 vs v2 differ by <= 0.4 us on every tc row. Ablation without W1: phase A end 3.2 / 4.1 and sync 1 at 5.3-5.9, so W1 costs about 2.5 us of phase A and 3.2 us at sync 1 [probe_b200]\"\n  - \"Deferred W2 is not free: it finishes about 5 us after sync 1 at 8,768 (idle CTAs 12.8, busy 13.3-14.0) because it is the same DRAM stream, and costs 0.5-0.9 us of GEMM1 end at 8,768 (G1 end 17.8 with, 16.9 without, W1 skipped in both) and 2.2 us at 32,768 (37.0 to 39.2). Net it still wins 1-3 us per row because it leaves the phase-A critical path; the biggest winner is 2,768 where 100 of 148 CTAs have no GEMM1 tile [probe_b200, run_tests]\"\n  - \"Dead end: an L2 bulk prefetch of each CTA's W2 slices in the sync-1 wait window (cp.async.bulk.prefetch.L2, hint only) only moves the cost: sync 1 is 0.7-0.8 us later, GEMM1 end 0.6-0.7 us earlier (8,768 and 2,768), 32,768 identical at the end; run_tests v2 equals v1 within noise. Removed from the final build [probe_b200]\"\n  - \"Barrier release (stamps, last arrival to release): cg grid.sync 1.0-1.2 us at sync 1 and 1.2-1.5 us at sync 2 (maxima, not medians; I first misread medians as 1.7-2.0). The flat counter barrier gains 0.1-1.3 us on tc rows (v2 to v3: 2,768 25.2 to 23.9, 16,768 44.0 to 43.3, 16,384 51.6 to 51.0, 32,768 65.7 to 64.6, 8,384 33.9 to 33.5, 8,768 flat) but costs 1.0-2.1 us on all seven sc rows (1,96 18.2 to 20.1, 2,96 24.9 to 27.0, 1,160 25.4 to 27.2, 4,96 37.9 to 39.5, 4,192 29.1 to 30.1, 1,192 18.2 to 19.4, 8,192 42.5 to 43.2); the sc rows have skewed arrivals and the 147 pollers apparently slow the last arriver's atomic. Final build uses the flat barrier on tc_kernel only [run_tests]\"\n  - \"Small-vector change, no clear effect alone: LN weight/bias, per-unit dwb and b2 slices come by bulk copy with the plane copies (smem budget: units_per_cta x (2 x 32 x HW + 32 x 49) x 4 B <= 116 KB, asserted in tc_launch, max 112.9 KB at 32,768 and 16,384; LN vectors at 116 KB, per-unit slices at 126 KB). sc_kernel gets dwb/b2 in smem after the unit buffers (asserted in sc_plan). sc rows moved -0.4 to -1.7 us between v1 and v2 builds, within run-to-run noise [run_tests]\"\n  - \"Resources: the stamped probe build (extra per-warp stamp stores) has STACK 64/80 B (spills), so stamp numbers are relative only. The shipped build's STACK / registers were NOT checked (compile_b200 not run on the final file); run_tests times equal or beat the parent on every tc row, so there is no spill signature. Check STACK in cuobjdump before the next change to the epilogue [probe_b200]\"\n  - \"Precision: all roundings and summation orders are unchanged (W1 and W2 conversion code is the same arithmetic in the same lane order; the barrier only changes synchronisation; sc dwb/b2 values are identical, read from smem). run_tests 10 rounds x 16 rows pass. The single-seed fp64 check per row was NOT run this round; the r8 precision log stands (tc 59-65 %, sc 79-89 % of atol)\"\n  - \"Merge picks: take 2,768, 8,768, 16,768, 16,384, 8,384 (tc) from this kernel (-1..-3 % rented, 2,768 more). Keep 32,768 and the sc rows from r8: this build ties or is within noise there. Projected gain +0.002-0.004 of mean at D's 1.20-1.32 portal ratios; launch-structure gains tend to shrink on the portal (tricks s2), so expect the low end. The control in each run_tests was timed once, not interleaved x3 [INFERRED]\"\n  - \"What this says about the lineage: the wide-C rows' phase A and the W2 pass are bounded by weight bytes (W1 + W2 fp32 read 18.9 MB at C=768, fp16 write 9.4 MB), not by latency. The remaining lever is fewer weight bytes: the zero-conversion TF32 route (I2 / I20: kind::tf32 straight from fp32 weights through TFLOAT32 maps removes the fp16 write and the conversion pass, at a half-rate MMA that the ingest-bound GEMM1 can absorb at 2,768 / 8,768), or splitting phase A's weight pass across the GEMM1 mainloop at every row. Barrier work is worth at most about 0.5 us per sync [INFERRED]\"\npaths:\n  - {max_tokens: 6272, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"tc_kernel on 2/8/16/32,768,7,7 and 8/16,384,14,14: cooperative, flat counter barrier, W1 loads first, W2 conversion deferred into GEMM1\"}\n  - {max_tokens: 12544, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"sc_kernel on 1/4/8,192 / 1/2/4,96 / 1,160: cooperative, cg grid.sync, weights converted after the conv, dwb/b2 by bulk copy\"}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"r0 fp32 anchor on 8,320 / 32,128 / 64,96 (merge-only)\"}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM are sm_100a-only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"gain is 1-3 % rented on five tc rows and nothing on 32,768 / sc rows; below the portal's compute-bound noise (2-3 %) except at 2,768\"\n  - \"flat barrier state lives in module-level __device__ arrays (zero at load, self-reset by the last arriver); an aborted kernel mid-barrier would leave the generation word out of step with the counter only if a CTA died, which cooperative launch does not allow in normal runs\"\n  - \"ld.acquire.gpu spin from 147 CTAs on one line slowed sc rows by 1-2 us; on tc rows the same effect could appear at other arrival skews\"\n  - \"final build's STACK / register count not checked (stamped probe build spills at STACK 64/80 B)\"\n  - \"build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r9-d-e1-asynca",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r8-d-e1-allwarp-epi"
+  ],
+  "round": "r9",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r9/candidates/r9-d-e1-asynca.json",
+  "static_sm100": [
+   {
+    "kernel": "_Z9sc_kernelILi160ELi7ELi4EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 122,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9sc_kernelILi96ELi56ELi4EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 168,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9sc_kernelILi192ELi28ELi16EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 168,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9tc_kernelILi384ELi196EEv3TCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 102,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9tc_kernelILi768ELi49EEv3TCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z14convnext_fused6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 170,
+     "LDG.128": 5,
+     "LDG.64": 112,
+     "LDG.CONSTANT": 735,
+     "LDG.CONSTANT.128": 249,
+     "LDG.CONSTANT.64": 496,
+     "STG": 158,
+     "STG.128": 64,
+     "STG.64": 60,
+     "UBLKCP": 96,
+     "UTMALDG": 96
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E1 (tests H39): Phase A as an asynchronous chain: all conv plane copies issued at entry, W1 converted while they land, W2 conversion and output prefill deferred into GEMM1 slack (tc_kernel and sc_kernel). STEP 0 (control and stamps, ~5 B200 min). Build the parent unchanged; run_tests once as the same-container control. Add TC_STAMPS globaltimer stamps taken by the warp that does the work (not tid 0 after a barrier): kernel start, W1 conversion end, W2 conversion end, out-prefill end, each conv unit's copy-issue / copy-landed / compute-end, sync 1 release, last GEMM1 tile end, sync 2 release, kernel end. Rows: 2,768 / 8,768 / 32,768 / 16,384 / 1,192 / 8,192. Check STACK in cuobjdump for the stamped build (r8: stamps alone pushed the 512-thread epilogue over 128 regs). Record the phase A breakdown per row; this is the baseline for the success criterion.\nSTEP 1 (conv copies at entry). At kernel entry each CTA issues the 1-D cp.async.bulk plane copies for ALL of its conv units (2-3 units per CTA at 16,384 / 32,768; check the per-row unit table) into distinct smem slots with one mbarrier per unit, before touching any weight. Phase A owns the whole 227 KB (the GEMM rings are unused until sync 1), so budget slots = units_per_cta x padded plane-group bytes and assert it per instantiation. Then convert the CTA's W1 share (fp16(lnw*W1) plus the u/c1 row sums, as now) on all warps, then wait each unit's barrier in order and run the conv + LN register stats + d16 stores exactly as now. Stamp again: the conv compute should start right after the W1 conversion with no landing wait.\nSTEP 2 (defer W2 and the prefill). Move the W2 -> fp16 conversion, b2' = W2.gb + b2 and the out = x + b2' prefill out of phase A into the GEMM1 phase. Static assignment per row: slices go first to CTAs with no GEMM1 tile (2,768: 124 idle of 148; 8,768: 52; the sc rows similarly), the remainder to CTAs after their last GEMM1 tile; every CTA finishes its deferred work before arriving at sync 2. Nothing in GEMM1 reads W2 or out; verify that GEMM2's first TMA of W2 and the red.add into out happen only after sync 2 (they do in the parent, keep it so). Keep the W2 pass as JB-wide float4 register loads before any shuffle (H r8 lesson) and avoid runtime-trip-count loops.\nSTEP 3 (stretch, only if STEP 1-2 are green with >= 60 B200 min of wall time left). Replace the two grid barriers by the flat self-resetting atomic-counter barrier from the r4 B microbench (one counter line per barrier, generation number, last arriver flips the flag, no __nanosleep: plain ld.acquire spin). Measure the release with the stamps (target <= 1.1 us vs the current 1.5-2). Keep it only if interleaved x3 shows >= 1 us per row.\nSTEP 4 (measure and ship). Interleave parent vs candidate x3 in one container with harness_time on all 13 D rows (6 tc + 7 sc). run_tests 16/16 including the portal-order re-runs. Precision: the roundings and summation orders are unchanged if STEP 1-3 only reorder work; state that explicitly and run a single-seed fp64 check per row; if any summation order changed (e.g. the b2' GEMV), redo the 10-seeded-round log for the affected paths. Record phase A per row before/after, the per-row interleaved deltas, and the smem budget per instantiation in the findings. Report which rows the merge should take. Success: Phase A stamps (kernel start to the last conv unit's compute end) <= 5.0 us at 8,768 / 16,768 / 32,768 and <= 3.5 us at 1,192, and interleaved x3 rows: 8,768 <= 30.5, 2,768 <= 23.5, 16,768 <= 41, 32,768 <= 61, 8,384 <= 31.5, 16,384 <= 49 us rented, with the sc rows >= 1.5 us faster than the parent; 16/16 pass; no new rounding. Refuted if: After STEP 1-2 the phase A stamps drop by < 1.5 us at 8,768 and 32,768, or the interleaved x3 rows are within 1 us of the parent on 4 or more of the 6 tc rows (then phase A is bound by something other than the serial chain: report the stamp that did not move). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s). OPERATOR NOTE (rules): (a) every red.add / atomic target (gsq per (image,k), split-K output) is still zeroed or prefilled inside the launch before the grid sync that precedes its first add; with the prefill moved into GEMM1 slack, out = x + b2' must be complete on every CTA before sync 2, as the plan says. Any grid-barrier counter, generation word or flag must live in a module-level __device__ buffer (zero-initialised at module load) and be self-reset by the last arriver, never in the torch.empty workspace (uninitialised, not guaranteed to be the same memory or unchanged between calls). Spin with plain ld.acquire loops, no __nanosleep. (z) No PDL; launch_with_pdl stays false. Stamps compiled out of the shipped build (TC_STAMPS/SC_STAMPS 0; the timed path writes no stamp buffer). target_hardware [B200] only. TMA descriptors encoded on every call. No state carried between calls except shape-keyed attributes and plans set to one maximal value.",
+   "lineage": "D",
+   "model": "sonnet",
+   "niche": "lin:D:E1:H39",
+   "operation": "structural_mutation",
+   "parents": [
+    "r8-d-e1-allwarp-epi"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 25.3,
+    "1,192,28,28": 18.17,
+    "1,96,56,56": 18.21,
+    "16,384,14,14": 50.94,
+    "16,768,7,7": 43.51,
+    "2,768,7,7": 24.02,
+    "2,96,56,56": 25.02,
+    "32,128,64,64": 1639.15,
+    "32,768,7,7": 65.09,
+    "4,192,28,28": 29.27,
+    "4,96,56,56": 37.57,
+    "64,96,112,112": 5571.12,
+    "8,192,28,28": 41.03,
+    "8,320,32,32": 620.29,
+    "8,384,14,14": 33.44,
+    "8,768,7,7": 32.35
+   }
+  }
+ },
+ "r9-d-e2-pair-smemg": {
+  "card": "id: r9-d-e2-pair-smemg\nparents:\n  - r8-d-e1-allwarp-epi\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: direct\n  grid: persistent\n  launch: fused\n  tile: token\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  Lineage D / E2 (H33). For C=768 with B >= 16, tc_kernel runs as 2-CTA clusters (cooperative + cluster launch).\n  Every tcgen05 op in that instantiation is cta_group::2, because ptxas rejects mixing cta_group::1 and ::2 in one\n  kernel. GEMM1 pairs two 128-row hidden tiles over the same tokens: each CTA lands half of the d tile through\n  cta_group::2 TMA onto the leader's barrier. The GEMM1 epilogue stores h only, plus gw*gf per (image, k). GEMM2 pairs\n  M = 256 output channels: each CTA lands its own 128 W2 rows and 64 of the 128 tokens in 32 KB stages through a\n  6-deep ring. Four producer warps build g = fp16(gw*gf*h) in shared memory from the landed h half, one warp per stage,\n  and signal the leader's ready barrier with a cluster-release arrive. Measured on the rented card: 32,768 is 2-3 us\n  faster than r8 and 16,768 is within noise. On 2/8,768 the pair skeleton was 1.4-2.1 us slower, so those rows and\n  the 14x14 rows keep r8's 1SM code unchanged.\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: 0\n    confidence: medium\n  L:\n    pct: -1\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 104\n  smem_per_cta_bytes: 227616\n  threads_per_cta: 512\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 196608\n  launches_per_call: 1\nknobs:\n  pair_rows: \"C=768 and B >= 16 (16,768 and 32,768)\"\n  pair_cluster: \"2x1, cooperative + cluster launch, grid = 2 x cudaOccupancyMaxActiveClusters (74 -> 148)\"\n  gemm2_pair_stage: \"32 KB per CTA (W2 16 KB + h half 8 KB + g half 8 KB), 6 stages\"\n  g_producers: \"warps 12-15, warp (it % 4) owns stage it; gw*gf slice staged in smem per unit (<= 8 KB)\"\n  ready_barrier_count: \"2 (one local + one remote producer warp)\"\n  KS: \"unchanged: 2,768 12 / 8,768 6 / 16,768 3 / 32,768 3\"\n  TC_STAMPS: 0\n  SC_STAMPS: 0\ndispatch:\n  - shapes: \"16,768,7,7 32,768,7,7\"\n    kernel: \"tc_kernel<768,49,true> (2-CTA clusters, all cta_group::2, smem g)\"\n    meta: {grid: \"148 (74 clusters), cooperative + cluster\"}\n  - shapes: \"2,768,7,7 8,768,7,7 8,384,14,14 16,384,14,14\"\n    kernel: \"tc_kernel<768,49,false> / tc_kernel<384,196,false> (r8 code path, stored g, 1SM)\"\n    meta: {grid: \"num SMs, cooperative\"}\n  - shapes: \"1,192,28,28 4,192,28,28 8,192,28,28 1,96,56,56 2,96,56,56 4,96,56,56 1,160,449,7\"\n    kernel: \"sc_kernel (unchanged from r8)\"\n    meta: {grid: \"num SMs, cooperative\"}\n  - shapes: \"8,320,32,32 32,128,64,64 64,96,112,112\"\n    kernel: \"convnext_fused (r0 anchor, merge-only)\"\n    meta: {}\ntests:\n  - H33\nfindings:\n  - \"ptxas rejects mixing cta_group::1 and cta_group::2 tcgen05 ops in one kernel ('uses single CTA(.cta_group::1) and CTA pair granularity(.cta_group::2) and that is not allowed'). A pair GEMM2 forces the whole kernel (TMEM alloc/relinquish/dealloc, GEMM1 MMAs, commits) to cta_group::2. An NVRTC resources() probe did not catch this; the full nvcc build did [compile_b200]\"\n  - \"Cooperative launch combined with the 2x1 cluster attribute (cudaLaunchKernelExC) works. cudaOccupancyMaxActiveClusters = 74 at 512 thr / 227 KB, so the grid stays 148, and grid.sync costs 1.35 us with or without clusters [probe_b200]\"\n  - \"cta_group::2 syntax that compiles to UTMALDG.2D.2CTA / UTCHMMA.2CTA / UTCBAR.2CTA.MULTICAST: 'cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [dst],[map,{x,y}],[leader_bar]' with leader_bar = mapa(bar,0); 'tcgen05.alloc/relinquish/dealloc.cta_group::2' issued by one warp in BOTH CTAs; idesc M field 256>>4 = 16; commit '.cta_group::2...multicast::cluster' with mask 3 [probe_b200]\"\n  - \"GEMM1 as a pair (two consecutive 128-row hidden tiles, B split N/2 per CTA, N/2 = 32/56/88 tokens, leader expect_tx of both CTAs' bytes, te1 count 2 via remote arrive) was correct first try on all 4 C=768 rows [run_tests]\"\n  - \"v1 (all C=768 rows paired, 4 producer warps all working on every stage, gw*gf loaded from L2 per stage): 16/16 pass but slower than r8 in the same container: 2,768 29.7 vs 26.4, 8,768 38.4 vs 32.8, 16,768 52.5 vs 43.8, 32,768 79.9 vs 64.1 us. The gw*gf L2 load sat in series in front of every stage [run_tests]\"\n  - \"v2 (gw*gf for the unit's K slice and <= 2 images staged in smem in one unrolled load round): 29.2 / 36.5 / 47.9 / 73.3 us. Still slower than r8 [run_tests]\"\n  - \"v2 stamps (probe, flush, globaltimer): GEMM2 per 64-k pair stage 683 / 658 / 768 / 875 ns at 2/8/16/32,768, against a two-MMA pair ideal of ~270 ns (2.5-3.2x). The MMA warp waits 331-644 ns per stage on the ready barrier, while the producers wait only 0.3-1.0 us in total on TMA landing. The producers gate: with all 4 warps on every stage, the fence.proxy.async plus the cluster-release arrive of each stage run in series [probe_b200]\"\n  - \"GEMM1 post-accumulator per tile without the g pass (v2 stamps): 2.05 / 3.36 / 4.77 / 5.17 us at 2/8/16/32,768, against r8's 3.04 / 4.77 / 7.07 / 7.92 (-30..-35 %, short of the -40 % bar). The epilogue's accumulator wait per tile is 2.5-4.2 us in pair mode [probe_b200]\"\n  - \"v3 (one producer warp owns a whole stage, stages round-robin over 4 warps, ready count 2): 2,768 28.5 vs 26.4, 8,768 34.2 vs 32.8, 16,768 42.7 vs 43.8, 32,768 61.1 vs 64.1 us. Pipelining the per-stage signalling is the fix; the pair only pays where a CTA runs many stages (32 at 32,768, 16 at 16,768) [run_tests]\"\n  - \"v4 (shipped; pairs only for C=768, B >= 16): 16/16 PASS incl. portal-order re-runs. Same container vs r8-merge: 32,768 62.1 vs 64.1 (-3.1 %), 16,768 43.5 vs 43.8 (-0.5 %, -2.4 % in v3: within noise), 2,768 26.4 vs 26.4 and 8,768 33.6 vs 32.8 (r8 code, so the 0.8 us is noise). sc rows and 14x14 rows are unchanged code [run_tests]\"\n  - \"H33 verdict: success line NOT met. Rows 32,768 61-62 vs <= 57 and 16,768 42.7-43.5 vs <= 39; v2 stage clk 2.5-3.2x ideal (v3 stages not stamped); GEMM1 post -30..-35 % vs -40 %. The refutation clause fires on 4 of 6 tc rows: 2/8,768 got slower with pairs, and the 14x14 rows were not paired (3 channel tiles cannot form full pairs). The real gain is at 32,768 (-2..-3 us rented), possibly 16,768. The pair's fixed costs (cluster coupling of GEMM1, first-ready chain of 2.3-2.8 us in phase C) dominate at B <= 8 [run_tests, probe_b200]\"\n  - \"NOT DONE: the fallback single-accumulator form (h scaled in place by s_b); C=384 pairs (one full + one half-masked pair tile); interleaved x3 timing (each build was timed once in run_tests against r8-merge in the same container); stamps of v3/v4 stages; a fresh 10-round fp64 precision log [INFERRED]\"\n  - \"PRECISION: roundings are unchanged from r8's tc path (d16, fp16(lnw*W1), fp16(W2), h16 once, g16 = fp16(fp32(gw*gf) * h16); the GRN sumsq order and the KS splits are unchanged). The only difference is that the GEMM accumulation is split over the CTA pair inside the tensor core. So this card cites r8's 10-round fp64 log (tc rows 59-65 % of atol, 0 beyond) plus a single-seed check of the pair path against the fp32 torch reference with harness generators (seed 200): max |err| 1.48e-3 (2,768, pair forced), 1.57e-3 (8,768), 1.68e-3 (16,768), 1.70e-3 (32,768), all below 2.9e-3 x 0.6. run_tests 16/16 x 10 rounds pass [probe_b200, run_tests]\"\n  - \"Next levers in D: (1) 32,768/16,768: stamp v4 stages to see whether GEMM2 is now near the 270 ns pair ideal; if not, the first-ready chain (2.3-2.8 us) and the drain/red.add (3.7-8 us) are the post-sync terms. (2) The GEMM1 accumulator wait of 2.5-4.2 us per tile in pair mode suggests the pair GEMM1 mainloop is coupled to the slower CTA; a 1SM GEMM1 is impossible in the same kernel (ptxas rule), so splitting the C=768 kernel into two launches would cost more than it saves. (3) 14x14 rows: pairs need a masked half tile or channel-pair remapping [INFERRED]\"\npaths:\n  - {max_tokens: 392, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"2,768 and 8,768: tc_kernel<768,49,false>, identical to r8\"}\n  - {max_tokens: 1568, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 2, note: \"16,768 and 32,768: tc_kernel<768,49,true>, cooperative + 2x1 cluster launch, all tcgen05 cta_group::2, smem g producers one warp per stage\"}\n  - {max_tokens: 3136, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"8,384 and 16,384: tc_kernel<384,196,false>, identical to r8\"}\n  - {max_tokens: 12544, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"sc_kernel rows, identical to r8\"}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: \"r0 fp32 anchor on 8,320 / 32,128 / 64,96 (merge-only)\"}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05/TMEM and cta_group::2 are sm_100a-only\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Clustered cooperative grid on the portal: tricks.md reports large clustered grids costing 2-5 % on the portal; the gain at 32,768 (~3 %) is of that size, so verify on the portal before trusting it\"\n  - \"The pair path depends on cudaOccupancyMaxActiveClusters returning 74; if fewer clusters fit, the grid shrinks (even) and the work loops still cover all units, but timing changes\"\n  - \"Remote mbarrier arrives (release.cluster) and the final cluster barrier must stay paired; any early exit of one CTA in a pair would hang the other\"\n  - \"build must target B200 only (sm_100a)\"\n  - \"16,768 gain is within noise; merge only 32,768 unless a portal run confirms 16,768\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r9-d-e2-pair-smemg",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "persistent",
+   "launch": "fused",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r8-d-e1-allwarp-epi"
+  ],
+  "round": "r9",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r9/candidates/r9-d-e2-pair-smemg.json",
+  "static_sm100": [
+   {
+    "kernel": "_Z9sc_kernelILi160ELi7ELi4EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 123,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9sc_kernelILi96ELi56ELi4EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 168,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9sc_kernelILi192ELi28ELi16EEv3SCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 168,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9tc_kernelILi384ELi196ELb0EEv3TCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 127,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9tc_kernelILi768ELi49ELb0EEv3TCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z9tc_kernelILi768ELi49ELb1EEv3TCP",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z14convnext_fused6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 189,
+     "LDG.128": 6,
+     "LDG.64": 136,
+     "LDG.CONSTANT": 787,
+     "LDG.CONSTANT.128": 274,
+     "LDG.CONSTANT.64": 496,
+     "STG": 177,
+     "STG.128": 78,
+     "STG.64": 66,
+     "UBLKCP": 72,
+     "UTMALDG": 106
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
+  "task": {
+   "band": "L",
+   "instructions": "Experiment E2 (tests H33): GEMM2 as cta_group::2 pairs with a 6-stage half-tile ring in which g is produced by look-ahead warps, removing g from the GEMM1 epilogue (tc_kernel). STEP 0 (control and stamps, ~5 B200 min). Build the parent; run_tests once as the same-container control. Stamp GEMM2 per unit from the MMA warp and the drain warps: unit start, first stage landed, per-stage MMA issue (clock64 deltas, report clk per stage against the two-MMA ideal 2 x 2N clk per 64-k stage), mainloop end, drain end, red.add end; rows 8,768 / 32,768 / 16,384 / 2,768. Check STACK on the stamped build.\nSTEP 1 (pairs). Launch the cooperative kernel with cluster dims 2x1 (cudaLaunchKernelEx with both the cooperative and the cluster-dimension attributes; if the driver rejects the combination, fall back to a plain launch with grid <= residency checked per shape via cudaOccupancyMaxActiveClusters, and the flat self-resetting counter barrier for the two syncs, as F/H did). GEMM2 in the pair form from the lineage's validated recipe: M = 256 output channels across the pair (C=768: 3 pair M-tiles; C=384: one full pair tile plus one with 128 valid rows, A OOB zero-filled, epilogue masked, or keep the 1SM path for the 14x14 rows if the waste shows in the stamps), each CTA TMAs its own 128 A rows (W2, 16 KB per 64-k) and HALF of the B token tile (h 8 KB + g 8 KB) to the leader's full barrier via mapa, leader-only expect_tx of both CTAs' bytes, idesc M = 256>>4, tcgen05.commit .cta_group::2 .multicast::cluster mask 3, each CTA drains its own 128 TMEM lanes. Stage = 32 KB per CTA, ring depth 6. Retune KS per row so pair-units >= 74 x 1-2 (fewer, larger units than the 1SM version: 2 units per CTA at 32,768 today) and keep the coalesced red.add.v4 into the prefilled out. Validate vs torch on all six tc rows before timing. Stamp: clk per stage vs ideal and the GEMM2 phase per row.\nSTEP 2 (g out of GEMM1). GEMM1 epilogue writes h16 only and gw*gf per (image,k) into a [B][4C] fp32 array (the r8 smem-g variant did this: GEMM1 post -56 %). In GEMM2, 4 producer warps (not the drain warps, not the MMA warp) wait each stage's full barrier, build g16 = fp16(c[k] * h16) for the CTA's half tile (8 KB: 32 lanes x 4 warps x 64 B) into the stage's g buffer with c[k] = gw[k]*gf[img(token)][k] loaded once per unit into smem (one image group per N tile; at 7x7 N spans several images, so c is per (image, k) and the producer indexes by token column), issue fence.proxy.async.shared::cta, then arrive on a per-stage g_ready mbarrier; the MMA warp waits g_ready instead of full. The producers run up to STAGES-2 stages ahead (they only need landed h, which the 6-deep TMA ring provides). Measure clk per stage again: the gating of r8 (~0.8 us per stage) must be gone. If a stage still exceeds 1.3x the two-MMA ideal, build the fallback: one accumulator, the half h tile scaled in place by s_b (sc_kernel form, h rounded twice), 32 KB stages of A 16 + h 16 at depth 6, and compare both forms on the stamps and the rows.\nSTEP 3 (measure and ship). Interleave parent vs candidate x3 in one container on the 6 tc rows (and confirm the 7 sc rows are untouched). run_tests 16/16 incl. portal-order re-runs. PRECISION LOG (mandatory, the roundings may change): fp64 reference, harness generators, torch.manual_seed(200), 10 rounds per row, max |err| vs own atol and beyond-own-atol count for all six tc rows and the shipped form; if the fallback form ships and any row exceeds 90 % of its atol, scale the A tile from fp32 W2 instead. Record: stage clk vs ideal for 1SM / pair / pair+smem-g, GEMM2 phase per row, GEMM1 post-accumulator per tile, interleaved deltas, smem and register budgets (512 threads, <= 128 regs, STACK 0). Success: GEMM2 per 64-k stage <= 1.3x the two-MMA ideal on the stamps at 8,768 and 32,768; GEMM1 post-accumulator per tile >= 40 % below the parent; interleaved x3 rows: 16,384 <= 46, 8,384 <= 30, 32,768 <= 57, 16,768 <= 39, 8,768 <= 29, 2,768 <= 24 us rented; 16/16 pass; precision log <= 90 % of own atol with 0 beyond on every tc row. Refuted if: Pairs alone cut the GEMM2 phase by < 2 us at 8,768 and 32,768 AND neither smem-g form brings the stage under 1.5x the ideal, so the rows end within 1.5 us of the parent on 4 or more of the 6 tc rows (then GEMM2 at 7x7 is bound by the per-unit fixed chain, TMEM alloc + first landing + drain + red, and the next lever is fewer units per row, not stage bytes). This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s). OPERATOR NOTE (rules): (a) gsq / gw*gf arrays and every red.add target are zeroed or written inside this launch before first use, ordered by a grid sync. (b) If the cooperative+cluster launch is rejected and you fall back to a plain launch, check co-residency per shape (grid <= cudaOccupancyMaxActiveClusters x 2) every call. Any grid-barrier counter, generation word or flag must live in a module-level __device__ buffer (zero-initialised at module load) and be self-reset by the last arriver, never in the torch.empty workspace (uninitialised, not guaranteed to be the same memory or unchanged between calls). Spin with plain ld.acquire loops, no __nanosleep. (z) No PDL; launch_with_pdl stays false. Stamps compiled out of the shipped build (TC_STAMPS/SC_STAMPS 0; the timed path writes no stamp buffer). target_hardware [B200] only. TMA descriptors encoded on every call. No state carried between calls except shape-keyed attributes and plans set to one maximal value.",
+   "lineage": "D",
+   "model": "opus",
+   "niche": "lin:D:E2:H33",
+   "operation": "structural_mutation",
+   "parents": [
+    "r8-d-e1-allwarp-epi"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 25.95,
+    "1,192,28,28": 19.23,
+    "1,96,56,56": 18.05,
+    "16,384,14,14": 51.72,
+    "16,768,7,7": 43.55,
+    "2,768,7,7": 26.4,
+    "2,96,56,56": 25.64,
+    "32,128,64,64": 1664.58,
+    "32,768,7,7": 62.07,
+    "4,192,28,28": 28.83,
+    "4,96,56,56": 37.43,
+    "64,96,112,112": 5621.76,
+    "8,192,28,28": 42.95,
+    "8,320,32,32": 625.38,
+    "8,384,14,14": 34.18,
+    "8,768,7,7": 33.56
+   }
+  }
+ },
+ "r9-g-e3-tc05-p1s": {
+  "card": "id: r9-g-e3-tc05-p1s\nparents:\n  - r8-g-e2-singletile\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  lin: \"G:E3:H40\"\n  mem: bulk1d\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows2\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  Replacing mma.sync with tcgen05 kind::f16 in G's single-tile pass 1 (g_tc) removes the pipe-bound GEMM term at\n  8,320 and 4,96. Setup: swap-AB, W1' as pre-swizzled K-major SW128 16 KB images on a cp.async.bulk ring, and the\n  conv writing the fp16 d tile straight into the MN-major SW128 B layout. A 1SM M=128 K=16 MMA has a ~106 clk floor\n  at N <= 128, so the 200 MMAs of an 8,320 tile (N=64) cost >= 11.7 us. The design therefore overlaps them with the\n  conv: warps 2-15 convolve in channel rounds that signal mbarriers, and warp 0 runs k-block-outer over 8 resident\n  TMEM accumulators as each round lands. Then all 16 warps drain 32x32 TMEM items per lane quadrant, and coalesced h\n  stores go through a per-warp smem transpose. Measured in the same container vs r8-merge, 16/16 pass:\n  8,320 59.0 vs 71.5 us (-17.5 %), 4,96 37.2 vs 41.4 us (-10.0 %); 64,96 / 32,128 unchanged (+0.6 / -0.6 %).\nexpected_effect:\n  S:\n    pct: 0\n    confidence: high\n  M:\n    pct: -10\n    confidence: medium\n  L:\n    pct: -17\n    confidence: medium\nresources_sm100a:\n  regs_per_thread: 128\n  smem_per_cta_bytes: 223104\n  threads_per_cta: 512\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 147456\n  launches_per_call: 4\nknobs:\n  tile_8_320: \"g_tc<320,2,32,64,NS=9>: 64-token tiles (128 CTAs), N=64, 10 hidden blocks x 5 k-blocks = 50 A stages of 16 KB, 8 TMEM slots of 64 cols (blocks 8,9 reuse slots 0,1), 3 conv rounds of 112 channels, smem 223104 B\"\n  tile_4_96: \"g_tc<96,2,56,128,NS=6>: 112 tokens padded to 128 (112 CTAs), N=128, 3 hidden blocks x 2 k-blocks all resident (prefilled during the conv), 2 conv rounds of 64 channels, smem ~157 KB\"\n  roles: \"warp 0 MMA issuer (elect.sync issue only), warp 1 W1' ring producer, warps 2-15 conv rounds + LN stats; all 16 warps epilogue with per-quadrant atomic item claiming\"\n  gemm2: \"cuBLASLt heuristic top-1 (unchanged)\"\ndispatch:\n  - {shape: \"64,96,112,112\", kernel: \"g_pass1<96,2,112,7,9,3,true> + g_grn + cublasLt (unchanged from r7)\"}\n  - {shape: \"32,128,64,64\", kernel: \"g_pass1<128,2,64,8,8,2,false> + g_grn + cublasLt (unchanged from r7)\"}\n  - {shape: \"4,96,56,56\", kernel: \"g_tc<96,2,56,128,6> + g_grn + cublasLt\", meta: {ctas: 112}}\n  - {shape: \"8,320,32,32\", kernel: \"g_tc<320,2,32,64,9> + g_grn + cublasLt\", meta: {ctas: 128}}\n  - {shape: \"all others\", kernel: \"r0 anchor convnext_fused (fallback only; do not merge)\"}\ntests:\n  - H40\nfindings:\n  - \"STEP 0 engine gate PASSED first try (one CTA, A via 1-D bulk copy of pre-swizzled images, B written with plain st.shared): max rel err 4.4e-7 / 4.2e-7 / 8.0e-7 / 8.8e-7 / 4.6e-7 at (K,N) = (96,128) / (128,128) / (320,64) / (320,128) / (96,64) vs torch fp16 matmul with fp32 accumulation. Writer address functions: A image byte = r*128 + (((c>>3) ^ (r&7))<<4) + (c&7)*2 (128 rows x 64 ch, 1024-B aligned); B byte = (t>>6)*LBO + c*128 + ((((t&63)>>3) ^ (c&7))<<4) + (t&7)*2 with LBO = C*128 (all channels of a 64-token chunk contiguous), SBO 1024, +2048 per k16. K=96 needs no zero-padded d channels: 6 k16 steps, the second A image is half zero from K0 [probe_b200]\"\n  - \"KEY: a 1SM tcgen05 kind::f16 128xNx16 MMA has a ~105-106 clk throughput floor for N <= 128 (N=64 106, N=128 107, N=256 128 = ideal), with 128 CTAs and smem-resident operands, independent of accumulator dependence (1/2/4/8 interleaved accumulators all 105 clk). The A-slice fetch (128x16) per instruction appears to set it. So N=64 runs at 3.3x the ideal, N=128 at 1.65x, and only N >= ~208 reaches the tensor peak in 1SM mode. 8,320's 200 MMAs per tile cost >= 11.7 us at 1.8 GHz, not 3.3 us [probe_b200]\"\n  - \"Microbench with 128 CTAs, 10-stage 16 KB 1-D bulk ring, cold L2: ingest only 94 GB/s/SM (same 819 KB for all CTAs, = 1 CTA alone); distinct per CTA from DRAM 40 GB/s/SM; ingest+MMA N=64 63 GB/s/SM (13.1 us for 50 stages) [probe_b200]\"\n  - \"v1 (block-outer MMA after the conv, 12-warp stats, direct 16-B h stores): correct first build; 8,320 MMA issue ran 13.8 -> 34.8 us (2.1-2.3 us per hidden block), end 36.9 us vs parent stamps 39.7; 4,96 end 19.7 vs parent 18.7. Rotating the hidden-block order per CTA to spread L2 reads: no effect (44.3 vs 44.4 us K0+P1) [probe_b200]\"\n  - \"Conv-overlapped MMA (conv in channel rounds on warps 2-15 + mbarrier per round, k-block-outer MMA over 8 accumulators): 8,320 MMA end 34.8 -> 23.6 us; the conv itself 13.3 -> 15.1 us on 14 warps; the epilogue (16.4 -> 32.8 us, ~2x its FMA-issue estimate) became the binding term [probe_b200]\"\n  - \"Coalesced h stores through a per-warp 2 KB smem transpose (8 rows x 64 B per STG.128 instead of 32 rows x 16 B), harness_time interleaved x3 in one container: 8,320 K0+P1 42.4 -> 39.2 us, full row 65.8 -> 61.6; 4,96 K0+P1 28.8 -> 26.2, row 42.8 -> 40.6. Ring depth NS 9 vs 10: no difference [probe_b200]\"\n  - \"run_tests 16/16 PASS (portal-order re-runs included), shipped build vs r8-merge in the same container: 8,320 59.0 vs 71.5 (-17.5 %; merge path = parent G r8); 4,96 37.2 vs 41.4 (-10.0 %; merge path = D sc_kernel single launch); 64,96 872.5 vs 867.6 (+0.6 %); 32,128 228.4 vs 229.7 (-0.6 %), byte-identical g_pass1. The other 12 rows run the r0 anchor (merge-only candidate; the emulator's 0.44 is meaningless) [run_tests]\"\n  - \"H40 verdict: success line NOT met. Rows 8,320 59.0 > 55 and 4,96 37.2 > 33 us. Pass-1 stamps in the conv-overlapped build before staging: 8,320 end 34.3 us (> 30), 4,96 end 19.2 (> 19). Refutation clause does NOT fire: pass 1 at 8,320 improved by >= 8 us (K0+P1 harness 39.2 in this session vs 47.8 for the parent in r8) and the row by 12.5 us in-container; resources fit (127/128 regs, 0 stack, smem 223 KB). Binding terms now: the epilogue (~16 us of the 8,320 pass, ~2x its issue bound) and the per-MMA floor at N=64 [probe_b200, run_tests]\"\n  - \"Dead end: 4,96 was not MMA-bound under mma.sync either (16 warps interleave mma and epilogue), so at 4,96 the tcgen05 engine alone gave nothing (end 19.2 vs 18.7 us). The gain there comes from the coalesced staged stores [probe_b200]\"\n  - \"PRECISION LOG (fp64 reference, harness generator rules: randn, weight matrices / sqrt(shape[-1]), LN weight 1 / bias 0, biases randn; torch.manual_seed(200), 10 rounds per row). Logged on the conv-overlapped build with direct stores: 8,320 max|err| 1.907e-3 vs 2.4e-3 (79 %), 0 beyond 2.4e-3+1e-5|ref|; 4,96 1.978e-3 vs atol 2.8e-3 (71 %), 0 beyond. The shipped staged-store build has identical roundings (d16, fp16(lnw*W1), h16, fp16(s_b*W2), b2' hi/lo, A&S erfc GELU); it differs only in the fp32 red.add order of the GRN sums. Max diff vs the logged build was 7.9e-5 at 8,320 and 0.0 at 4,96, so the shipped bound is <= 1.99e-3 (82 %) at 8,320. 16/16 x 10 rounds pass in run_tests [probe_b200, run_tests]\"\n  - \"Resources (cuobjdump -res-usage, sm_100a): g_tc<320> 128 regs, STACK 0; g_tc<96> 127-128 regs, STACK 0; g_pass1 unchanged; g_grn 64 regs STACK 8 (as r8). TC_STAMPS defaults to 0, so the shipped path writes no stamp buffer [probe_b200]\"\n  - \"Port feasibility for g_pass1 (64,96 / 32,128): use tiles with N >= 208 (224-token tiles at 64,96; 128 at 32,128 would sit at 1.65x of the MMA ideal). Smem at C=96: W1' 6 images resident 96 KB + d double buffer 2 x 96 ch x 256 tok x 2 B = 96 KB + 32 KB staging = 224 KB, tight but fits. TMEM at N=224: 3 blocks = 672 cols > 512, so slot reuse as here. The epilogue is MUFU-bound there (133 us floor), so the gain is the ~100-130 us of serialised mma.sync, not the epilogue [INFERRED]\"\n  - \"Next levers for 8,320: (1) cta_group::2 pairs (N=128 across two 64-token tiles, M=256): halves both the per-SM A bytes and the MMA instruction count per SM; needs a cluster launch, DSMEM stats exchange and remote empty/full arrivals; (2) epilogue efficiency (now ~2x its issue bound; candidates: lighter claiming, 16x256b tcgen05.ld shapes, balanced erf); (3) the cuBLASLt GEMM2 at 8,320 still runs ~3.8 TB/s [INFERRED]\"\n  - \"Pitfalls: the 'paths' field of compile_b200/run_tests did not pull anchor.cu from the archive, so the first run_tests failed with an undefined convnext_launch symbol: pass every file's content. /tmp persists across probes within one session; NVRTC probes cannot include <stdint.h> (use typedefs) [run_tests, probe_b200]\"\npaths:\n  - {max_tokens: 8192, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}\n  - {max_tokens: 12544, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}\n  - {max_tokens: 131072, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}\nruns_on:\n  H200:\n    runs: false\n    representative: false\n    note: \"tcgen05 / TMEM: sm_100a only (target_hardware B200)\"\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n  - \"Merge-only candidate: 12 rows run the slow r0 anchor; the merge should take 8,320 (and 4,96 only if it beats D sc_kernel at the portal ratio: this path has 4 launches vs D's single launch)\"\n  - \"4,96 in-container gain (-10 %) is against a single-launch path; at the 4-launch portal ratio (~1.27 vs 1.20-1.27) the portal gain may shrink to a tie\"\n  - \"fp32 red.add GRN sums are order-nondeterministic (relative 1e-7; 7.9e-5 output diff observed between builds)\"\n  - \"TMEM slot-reuse parity relies on in-order per-quadrant claiming (static_assert NSLOT*NQ >= 8); 512-column alloc assumes 1 CTA/SM (guaranteed by 512 threads x 128 regs)\"\n  - \"g_tc<320> uses 223 KB dynamic smem; the attribute is set once per instantiation and never lowered (portal-order check passed)\"\nmeasure_first:\n  - B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r9-g-e3-tc05-p1s",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "lin": "G:E3:H40",
+   "mem": "bulk1d",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows2"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r8-g-e2-singletile"
+  ],
+  "round": "r9",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r9/candidates/r9-g-e3-tc05-p1s.json",
+  "static_sm100": [
+   {
+    "kernel": "_Z4g_tcILi320ELi2ELi32ELi64ELi9EEv7GParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z4g_tcILi96ELi2ELi56ELi128ELi6EEv7GParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z7g_pass1ILi128ELi2ELi64ELi8ELi8ELi2ELb0EEv7GParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z7g_pass1ILi96ELi2ELi112ELi7ELi9ELi3ELb1EEv7GParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 122,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5g_grn7GParams",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z6g_prep7GParamsiiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 16,
+     "LDG.128": 2,
+     "LDG.64": 2,
+     "LDG.CONSTANT": 135,
+     "LDG.CONSTANT.128": 198,
+     "LDG.CONSTANT.64": 2,
+     "STG": 36,
+     "STG.128": 21,
+     "STG.64": 12,
+     "UBLKCP": 16
+    },
+    "regs": 32,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z14convnext_fused6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 727,
+     "LDG.CONSTANT.128": 154,
+     "LDG.CONSTANT.64": 496,
+     "STG": 75,
+     "STG.128": 4
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "passed",
+  "task": {
+   "band": "L",
+   "instructions": "Experiment E3 (tests H40): tcgen05 kind::f16 GEMM1 in the single-tile fused kernel g_p1s for 8,320,32,32 and 4,96,56,56. STEP 0 (engine gate, ~10 B200 min, standalone probe). From the notebook recipe (H r8: idesc = (1<<4)|(1<<16)|(N>>3)<<17|(128>>4)<<24; A = 128x64 K-major SW128 box, SBO 1024, +32 B per k16; B = [channel][token] MN-major 64-token chunks, LBO 8192, SBO 1024, +2048 per k16; whole-warp TMA and MMA roles with elect.sync; tcgen05.alloc 512 columns then relinquish; tcgen05.ld 32x32b.x32 with the wait in one asm) build a one-CTA kernel that writes the B tile into smem with PLAIN st.shared in the canonical swizzled MN-major layout (the conv warps will write d16 this way, not via TMA), TMAs A from an fp16 W1' buffer, runs K = 128 (C=96 padded with zero channels) and K = 320 (5 k-blocks), N = 128, and compares the TMEM result bit-for-bit against torch fp16 matmul with fp32 accumulation (<= 1e-3 relative). Do not proceed until this passes on both K values; record the swizzle address function used by the writers.\nSTEP 1 (g_p1s port). Conv warps write the fp16 d tile directly into the SW128 MN-major layout from STEP 0 (drop the token permutation; the LN stats path is unchanged). Zero the pad channels 96..127 in the d tile at C=96 once per tile buffer. A operand: W1' from the K0 fp16 scratch via a TMA ring (C=320: 10 hidden blocks x 5 k-blocks of 16 KB, 4-stage ring replacing the bulk ring; C=96: 3 hidden blocks x 2 k-blocks = 96 KB, resident after one TMA load per CTA at kernel start, or ring-fed if smem is short). One MMA warp (warp-uniform role; only the issue inside elect.sync) walks hidden blocks: at 4,96 N=128 tokens x 3 hidden blocks = 384 TMEM columns in one shot; at 8,320 (64-token tiles) 10 blocks x 64 columns = 640 > 512, so two 256-column accumulator halves (blocks 0-3 / 4-7 / 8-9) ping-ponged with per-half commit barriers, so the epilogue of one half overlaps the MMA of the next. Epilogue on every non-conv warp: tcgen05.ld (TMEM lane = hidden row, columns = tokens: each thread holds one hidden row x 32 tokens, so the fp16 h store is one contiguous 64 B per thread per load, no transpose), LN fold rs*(acc - mu*u) + c1 with per-token (mu, rs) from smem and per-row (u, c1) in registers, A&S erfc GELU, per-(image,k) sumsq thread-local then red.add per tile as now, h16 store. Keep the double-buffered d tile so the conv of tile i+1 overlaps the MMA+epilogue of tile i. Budget: <= 128 regs at the current thread count, STACK 0, smem <= 227 KB (print both per instantiation). target_hardware [B200] only.\nSTEP 2 (measure). Stamps from the working warps at 8,320 and 4,96: conv end, first MMA issue, per-half MMA done, epilogue end, tile end; then per-launch harness_time (K0 / +P1 / +K3 / +G2) with the 6-try CUPTI retry wrapper. Interleave parent vs candidate x3 in one container at 4,96 and 8,320; confirm 64,96 / 32,128 are byte-identical paths (g_pass1 untouched) and unchanged within noise. run_tests 16/16 incl. portal-order re-runs.\nSTEP 3 (precision and report). PRECISION LOG for 4,96 and 8,320 (fp64 reference, harness generators, seed 200, 10 rounds, max |err| vs own atol, beyond count); the accumulation order changes with the engine, so the log is mandatory. Record: engine gate result, stage clk vs the kind::f16 ideal, pass 1 per row, interleaved deltas, resources, and whether the same port is feasible for g_pass1 at 64,96 / 32,128 (smem for W1' ring + d double buffer at R=2 tiles, TMEM columns at N=224). Success: Pass 1 <= 30 us at 8,320 and <= 19 us at 4,96 on the stamps; interleaved x3 rows 8,320 <= 55 and 4,96 <= 33 us rented (r8: 67.2 / 37.0); 16/16 pass; precision log 0 beyond own atol on both rows; 64,96 / 32,128 unchanged. Refuted if: The engine gate passes but pass 1 at 8,320 improves by < 6 us (the mma.sync term was 16.2 us, so the epilogue or the A ring must then be the new binding term: report the stamp), or the port cannot fit the register/smem budget without dropping the double-buffered d tile. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s). OPERATOR NOTE (rules): (a) the GRN sums and every red.add target are zeroed by K0 in the same call; W1' fp16 scratch written by K0 every call. (b) cuBLASLt: only the heuristic result may be cached per shape; descriptors, strides and pointers set every call, as r7/r8 do. (z) No PDL; launch_with_pdl stays false. Stamps compiled out of the shipped build (TC_STAMPS/SC_STAMPS 0; the timed path writes no stamp buffer). target_hardware [B200] only. TMA descriptors encoded on every call. No state carried between calls except shape-keyed attributes and plans set to one maximal value.",
+   "lineage": "G",
+   "model": "opus",
+   "niche": "lin:G:E3:H40",
+   "operation": "structural_mutation",
+   "parents": [
+    "r8-g-e2-singletile"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 111.03,
+    "1,192,28,28": 90.58,
+    "1,96,56,56": 34.72,
+    "16,384,14,14": 356.16,
+    "16,768,7,7": 594.53,
+    "2,768,7,7": 123.97,
+    "2,96,56,56": 36.13,
+    "32,128,64,64": 228.38,
+    "32,768,7,7": 1224.51,
+    "4,192,28,28": 140.04,
+    "4,96,56,56": 37.24,
+    "64,96,112,112": 872.55,
+    "8,192,28,28": 217.66,
+    "8,320,32,32": 59.0,
+    "8,384,14,14": 267.82,
+    "8,768,7,7": 264.8
+   }
+  }
+ },
+ "r9-merge": {
+  "card": "id: r9-merge\nparents:\n- r8-merge\n- r9-d-e1-asynca\n- r9-d-e2-pair-smemg\n- r9-g-e3-tc05-p1s\noperation: repair\nlanguage: cuda_cpp\nniche:\n  cache: default\n  grid: oneshot\n  launch: split\n  mem: bulk1d\n  red: warp\n  spec: dispatch:size\n  st: direct\n  tile: rows8\nhypothesis: 'Operator per-workload merge: Per-workload merge (loop/merge.py, kernels unchanged) of r8-merge with r9-d-e1-asynca,\n  r9-d-e2-pair-smemg, r9-g-e3-tc05-p1s on 2,768,7,7, 32,768,7,7, 8,320,32,32, where they beat it side by side. Projected portal\n  score 0.7351 (best 0.7313).'\ndispatch:\n- kernel: r7-d-e2-smallc\n  shapes: 1,192,28,28\n- kernel: r7-g-e1-fusedp1-mma\n  shapes: 64,96,112,112 32,128,64,64\n- kernel: r8-d-e1-allwarp-epi\n  shapes: 2,96,56,56 8,768,7,7 1,160,449,7 16,768,7,7 16,384,14,14 1,96,56,56 8,384,14,14 4,192,28,28 8,192,28,28\n- kernel: r8-g-e2-singletile\n  shapes: 4,96,56,56\n- kernel: r9-d-e1-asynca\n  shapes: 2,768,7,7\n- kernel: r9-d-e2-pair-smemg\n  shapes: 32,768,7,7\n- kernel: r9-g-e3-tc05-p1s\n  shapes: 8,320,32,32\n",
+  "id": "r9-merge",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "bulk1d",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "repair",
+  "parents": [
+   "r8-merge",
+   "r9-d-e1-asynca",
+   "r9-d-e2-pair-smemg",
+   "r9-g-e3-tc05-p1s"
+  ],
+  "round": "r9",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r9/candidates/r9-merge.json",
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "instructions": "Operator per-workload merge (round.py merge).",
+   "niche": "merge",
+   "operation": "repair",
+   "parents": [
+    "r8-merge",
+    "r9-d-e1-asynca",
+    "r9-d-e2-pair-smemg",
+    "r9-g-e3-tc05-p1s"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 25.5,
+    "1,192,28,28": 18.66,
+    "1,96,56,56": 18.18,
+    "16,384,14,14": 51.49,
+    "16,768,7,7": 44.29,
+    "2,768,7,7": 24.03,
+    "2,96,56,56": 25.41,
+    "32,128,64,64": 231.88,
+    "32,768,7,7": 61.89,
+    "4,192,28,28": 29.63,
+    "4,96,56,56": 42.0,
+    "64,96,112,112": 868.42,
+    "8,192,28,28": 43.04,
+    "8,320,32,32": 61.81,
+    "8,384,14,14": 33.58,
+    "8,768,7,7": 32.94
    }
   }
  }

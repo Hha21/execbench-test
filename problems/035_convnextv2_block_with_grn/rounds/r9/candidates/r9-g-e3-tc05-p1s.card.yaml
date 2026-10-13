@@ -1,0 +1,99 @@
+id: r9-g-e3-tc05-p1s
+parents:
+  - r8-g-e2-singletile
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  lin: "G:E3:H40"
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: rows2
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Replacing mma.sync with tcgen05 kind::f16 in G's single-tile pass 1 (g_tc) removes the pipe-bound GEMM term at
+  8,320 and 4,96. Setup: swap-AB, W1' as pre-swizzled K-major SW128 16 KB images on a cp.async.bulk ring, and the
+  conv writing the fp16 d tile straight into the MN-major SW128 B layout. A 1SM M=128 K=16 MMA has a ~106 clk floor
+  at N <= 128, so the 200 MMAs of an 8,320 tile (N=64) cost >= 11.7 us. The design therefore overlaps them with the
+  conv: warps 2-15 convolve in channel rounds that signal mbarriers, and warp 0 runs k-block-outer over 8 resident
+  TMEM accumulators as each round lands. Then all 16 warps drain 32x32 TMEM items per lane quadrant, and coalesced h
+  stores go through a per-warp smem transpose. Measured in the same container vs r8-merge, 16/16 pass:
+  8,320 59.0 vs 71.5 us (-17.5 %), 4,96 37.2 vs 41.4 us (-10.0 %); 64,96 / 32,128 unchanged (+0.6 / -0.6 %).
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: -10
+    confidence: medium
+  L:
+    pct: -17
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 223104
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 147456
+  launches_per_call: 4
+knobs:
+  tile_8_320: "g_tc<320,2,32,64,NS=9>: 64-token tiles (128 CTAs), N=64, 10 hidden blocks x 5 k-blocks = 50 A stages of 16 KB, 8 TMEM slots of 64 cols (blocks 8,9 reuse slots 0,1), 3 conv rounds of 112 channels, smem 223104 B"
+  tile_4_96: "g_tc<96,2,56,128,NS=6>: 112 tokens padded to 128 (112 CTAs), N=128, 3 hidden blocks x 2 k-blocks all resident (prefilled during the conv), 2 conv rounds of 64 channels, smem ~157 KB"
+  roles: "warp 0 MMA issuer (elect.sync issue only), warp 1 W1' ring producer, warps 2-15 conv rounds + LN stats; all 16 warps epilogue with per-quadrant atomic item claiming"
+  gemm2: "cuBLASLt heuristic top-1 (unchanged)"
+dispatch:
+  - {shape: "64,96,112,112", kernel: "g_pass1<96,2,112,7,9,3,true> + g_grn + cublasLt (unchanged from r7)"}
+  - {shape: "32,128,64,64", kernel: "g_pass1<128,2,64,8,8,2,false> + g_grn + cublasLt (unchanged from r7)"}
+  - {shape: "4,96,56,56", kernel: "g_tc<96,2,56,128,6> + g_grn + cublasLt", meta: {ctas: 112}}
+  - {shape: "8,320,32,32", kernel: "g_tc<320,2,32,64,9> + g_grn + cublasLt", meta: {ctas: 128}}
+  - {shape: "all others", kernel: "r0 anchor convnext_fused (fallback only; do not merge)"}
+tests:
+  - H40
+findings:
+  - "STEP 0 engine gate PASSED first try (one CTA, A via 1-D bulk copy of pre-swizzled images, B written with plain st.shared): max rel err 4.4e-7 / 4.2e-7 / 8.0e-7 / 8.8e-7 / 4.6e-7 at (K,N) = (96,128) / (128,128) / (320,64) / (320,128) / (96,64) vs torch fp16 matmul with fp32 accumulation. Writer address functions: A image byte = r*128 + (((c>>3) ^ (r&7))<<4) + (c&7)*2 (128 rows x 64 ch, 1024-B aligned); B byte = (t>>6)*LBO + c*128 + ((((t&63)>>3) ^ (c&7))<<4) + (t&7)*2 with LBO = C*128 (all channels of a 64-token chunk contiguous), SBO 1024, +2048 per k16. K=96 needs no zero-padded d channels: 6 k16 steps, the second A image is half zero from K0 [probe_b200]"
+  - "KEY: a 1SM tcgen05 kind::f16 128xNx16 MMA has a ~105-106 clk throughput floor for N <= 128 (N=64 106, N=128 107, N=256 128 = ideal), with 128 CTAs and smem-resident operands, independent of accumulator dependence (1/2/4/8 interleaved accumulators all 105 clk). The A-slice fetch (128x16) per instruction appears to set it. So N=64 runs at 3.3x the ideal, N=128 at 1.65x, and only N >= ~208 reaches the tensor peak in 1SM mode. 8,320's 200 MMAs per tile cost >= 11.7 us at 1.8 GHz, not 3.3 us [probe_b200]"
+  - "Microbench with 128 CTAs, 10-stage 16 KB 1-D bulk ring, cold L2: ingest only 94 GB/s/SM (same 819 KB for all CTAs, = 1 CTA alone); distinct per CTA from DRAM 40 GB/s/SM; ingest+MMA N=64 63 GB/s/SM (13.1 us for 50 stages) [probe_b200]"
+  - "v1 (block-outer MMA after the conv, 12-warp stats, direct 16-B h stores): correct first build; 8,320 MMA issue ran 13.8 -> 34.8 us (2.1-2.3 us per hidden block), end 36.9 us vs parent stamps 39.7; 4,96 end 19.7 vs parent 18.7. Rotating the hidden-block order per CTA to spread L2 reads: no effect (44.3 vs 44.4 us K0+P1) [probe_b200]"
+  - "Conv-overlapped MMA (conv in channel rounds on warps 2-15 + mbarrier per round, k-block-outer MMA over 8 accumulators): 8,320 MMA end 34.8 -> 23.6 us; the conv itself 13.3 -> 15.1 us on 14 warps; the epilogue (16.4 -> 32.8 us, ~2x its FMA-issue estimate) became the binding term [probe_b200]"
+  - "Coalesced h stores through a per-warp 2 KB smem transpose (8 rows x 64 B per STG.128 instead of 32 rows x 16 B), harness_time interleaved x3 in one container: 8,320 K0+P1 42.4 -> 39.2 us, full row 65.8 -> 61.6; 4,96 K0+P1 28.8 -> 26.2, row 42.8 -> 40.6. Ring depth NS 9 vs 10: no difference [probe_b200]"
+  - "run_tests 16/16 PASS (portal-order re-runs included), shipped build vs r8-merge in the same container: 8,320 59.0 vs 71.5 (-17.5 %; merge path = parent G r8); 4,96 37.2 vs 41.4 (-10.0 %; merge path = D sc_kernel single launch); 64,96 872.5 vs 867.6 (+0.6 %); 32,128 228.4 vs 229.7 (-0.6 %), byte-identical g_pass1. The other 12 rows run the r0 anchor (merge-only candidate; the emulator's 0.44 is meaningless) [run_tests]"
+  - "H40 verdict: success line NOT met. Rows 8,320 59.0 > 55 and 4,96 37.2 > 33 us. Pass-1 stamps in the conv-overlapped build before staging: 8,320 end 34.3 us (> 30), 4,96 end 19.2 (> 19). Refutation clause does NOT fire: pass 1 at 8,320 improved by >= 8 us (K0+P1 harness 39.2 in this session vs 47.8 for the parent in r8) and the row by 12.5 us in-container; resources fit (127/128 regs, 0 stack, smem 223 KB). Binding terms now: the epilogue (~16 us of the 8,320 pass, ~2x its issue bound) and the per-MMA floor at N=64 [probe_b200, run_tests]"
+  - "Dead end: 4,96 was not MMA-bound under mma.sync either (16 warps interleave mma and epilogue), so at 4,96 the tcgen05 engine alone gave nothing (end 19.2 vs 18.7 us). The gain there comes from the coalesced staged stores [probe_b200]"
+  - "PRECISION LOG (fp64 reference, harness generator rules: randn, weight matrices / sqrt(shape[-1]), LN weight 1 / bias 0, biases randn; torch.manual_seed(200), 10 rounds per row). Logged on the conv-overlapped build with direct stores: 8,320 max|err| 1.907e-3 vs 2.4e-3 (79 %), 0 beyond 2.4e-3+1e-5|ref|; 4,96 1.978e-3 vs atol 2.8e-3 (71 %), 0 beyond. The shipped staged-store build has identical roundings (d16, fp16(lnw*W1), h16, fp16(s_b*W2), b2' hi/lo, A&S erfc GELU); it differs only in the fp32 red.add order of the GRN sums. Max diff vs the logged build was 7.9e-5 at 8,320 and 0.0 at 4,96, so the shipped bound is <= 1.99e-3 (82 %) at 8,320. 16/16 x 10 rounds pass in run_tests [probe_b200, run_tests]"
+  - "Resources (cuobjdump -res-usage, sm_100a): g_tc<320> 128 regs, STACK 0; g_tc<96> 127-128 regs, STACK 0; g_pass1 unchanged; g_grn 64 regs STACK 8 (as r8). TC_STAMPS defaults to 0, so the shipped path writes no stamp buffer [probe_b200]"
+  - "Port feasibility for g_pass1 (64,96 / 32,128): use tiles with N >= 208 (224-token tiles at 64,96; 128 at 32,128 would sit at 1.65x of the MMA ideal). Smem at C=96: W1' 6 images resident 96 KB + d double buffer 2 x 96 ch x 256 tok x 2 B = 96 KB + 32 KB staging = 224 KB, tight but fits. TMEM at N=224: 3 blocks = 672 cols > 512, so slot reuse as here. The epilogue is MUFU-bound there (133 us floor), so the gain is the ~100-130 us of serialised mma.sync, not the epilogue [INFERRED]"
+  - "Next levers for 8,320: (1) cta_group::2 pairs (N=128 across two 64-token tiles, M=256): halves both the per-SM A bytes and the MMA instruction count per SM; needs a cluster launch, DSMEM stats exchange and remote empty/full arrivals; (2) epilogue efficiency (now ~2x its issue bound; candidates: lighter claiming, 16x256b tcgen05.ld shapes, balanced erf); (3) the cuBLASLt GEMM2 at 8,320 still runs ~3.8 TB/s [INFERRED]"
+  - "Pitfalls: the 'paths' field of compile_b200/run_tests did not pull anchor.cu from the archive, so the first run_tests failed with an undefined convnext_launch symbol: pass every file's content. /tmp persists across probes within one session; NVRTC probes cannot include <stdint.h> (use typedefs) [run_tests, probe_b200]"
+paths:
+  - {max_tokens: 8192, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 512, rows: 2, grid: oneshot, mem: tma, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: 131072, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 512, rows: 2, grid: persistent, mem: ldg, launches: 4, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05 / TMEM: sm_100a only (target_hardware B200)"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Merge-only candidate: 12 rows run the slow r0 anchor; the merge should take 8,320 (and 4,96 only if it beats D sc_kernel at the portal ratio: this path has 4 launches vs D's single launch)"
+  - "4,96 in-container gain (-10 %) is against a single-launch path; at the 4-launch portal ratio (~1.27 vs 1.20-1.27) the portal gain may shrink to a tie"
+  - "fp32 red.add GRN sums are order-nondeterministic (relative 1e-7; 7.9e-5 output diff observed between builds)"
+  - "TMEM slot-reuse parity relies on in-order per-quadrant claiming (static_assert NSLOT*NQ >= 8); 512-column alloc assumes 1 CTA/SM (guaranteed by 512 threads x 128 regs)"
+  - "g_tc<320> uses 223 KB dynamic smem; the attribute is set once per instantiation and never lowered (portal-order check passed)"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

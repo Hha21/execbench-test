@@ -1,0 +1,100 @@
+id: r9-d-e1-asyncA
+parents:
+  - r8-d-e1-allwarp-epi
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H39 as specified is refuted: phase A at C=768 is a DRAM-throughput term (W1 fp32 read plus fp16 write, about 4 TB/s
+  under the dirty flush), not a serial chain, because the plane copies were already issued at entry in the parent.
+  What was built and kept is a smaller version. tc_kernel's phase A issues its W1 loads first, runs the conv in their
+  shadow and converts W1 last. LN vectors and per-unit dwb/b2 arrive by bulk copy with the plane copies. The W2
+  conversion moves into the GEMM1 phase (idle CTAs right after sync 1, busy CTAs on warps 4-15 during the first
+  tile's mainloop; complete before sync 2). tc_kernel's two grid syncs become a flat self-resetting counter barrier.
+  sc_kernel gets the dwb/b2 bulk copy and the weights-after-conv reorder, and keeps cg grid.sync().
+expected_effect:
+  S:
+    pct: -1
+    confidence: low
+  M:
+    pct: -4
+    confidence: low
+  L:
+    pct: -1.5
+    confidence: low
+resources_sm100a:
+  regs_per_thread: 128
+  smem_per_cta_bytes: 227544
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  tc_threads: 512
+  tc_w1_units_per_warp: "2 at C=768, 1 at C=384 (all loads issued before the conv)"
+  tc_w2_workers: "idle CTAs 16 warps, busy CTAs warps 4-15; units per worker 2 at C=768, 1 at C=384"
+  tc_barrier: "flat atomic counter plus generation word in module-level __device__ buffers, plain ld.acquire spin"
+  sc_barrier: "cg grid.sync (flat barrier tested and rejected on sc rows)"
+  TC_STAMPS: 0
+  SC_STAMPS: 0
+dispatch:
+  - shapes: "2,768,7,7 8,768,7,7 16,768,7,7 32,768,7,7 8,384,14,14 16,384,14,14"
+    kernel: "tc_kernel<768,49> / tc_kernel<384,196>"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "1,192,28,28 4,192,28,28 8,192,28,28 1,96,56,56 2,96,56,56 4,96,56,56 1,160,449,7"
+    kernel: "sc_kernel<192,28,16> / sc_kernel<96,56,4> / sc_kernel<160,7,4>"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "8,320,32,32 32,128,64,64 64,96,112,112"
+    kernel: "convnext_fused (r0 anchor, merge-only)"
+    meta: {}
+tests:
+  - H39
+findings:
+  - "run_tests 16/16 PASS (portal-order re-runs included), final build v4, rented us, this vs r8-merge in the same container (single timing each): 2,768 24.0 vs 28.7 (the merge path there is r6 tc; r8 tc was a tie with it); 8,768 32.4 vs 33.4 (-1.0); 16,768 43.5 vs 44.5 (-1.0); 16,384 50.9 vs 52.4 (-1.5); 8,384 33.4 vs 34.2 (-0.8); 32,768 65.1 vs 64.5 (+0.6, merge path is A / r8 tc ties); sc rows 1,96 18.2 vs 18.5, 2,96 25.0 vs 25.7, 1,160 25.3 vs 25.9, 4,96 37.6 vs 37.3, 4,192 29.3 vs 29.3, 8,192 41.0 vs 42.7, 1,192 18.2 vs 23.4 (the merge path there is r7 sc). The H39 success rows (8,768 <= 30.5, 16,768 <= 41, 32,768 <= 61, 8,384 <= 31.5, 16,384 <= 49, 2,768 <= 23.5) are all missed except 2,768 (24.0, 0.5 over) [run_tests]"
+  - "Refutation clause fires: after STEP 1-2 the rows are within 1 us of the parent on 8,768, 16,768, 8,384 and 32,768 (4 of 6). Stamps (v1, stamped build, CTA medians/max, us from the first CTA start) at 8,768: W1 conversion end 3.6, plane copies landed 3.7, conv end 4.6, phase A end 5.5 median / 7.0 max, sync 1 released 8.1, GEMM1 end 19.8 / 21.3, sync 2 22.8, end 30.7. The 'serial copy waits' premise is false for the r8 code: the copies are already issued at entry in one transaction [probe_b200]"
+  - "Phase A is bound by the W1 DRAM stream. v2 stamps at 8,768: issuing the 12 LDG.128 per lane of W1 takes 2.2 us (about 4 TB/s over the grid), the plane copies then land at 2.7 us instead of 1.5 (they queue behind the weight stream), conv ends 4.0, W1 conversion ends 5.6, phase A end 5.7 / 7.1. Reordering (loads first, conv in their shadow) therefore ties the old order: run_tests v1 vs v2 differ by <= 0.4 us on every tc row. Ablation without W1: phase A end 3.2 / 4.1 and sync 1 at 5.3-5.9, so W1 costs about 2.5 us of phase A and 3.2 us at sync 1 [probe_b200]"
+  - "Deferred W2 is not free: it finishes about 5 us after sync 1 at 8,768 (idle CTAs 12.8, busy 13.3-14.0) because it is the same DRAM stream, and costs 0.5-0.9 us of GEMM1 end at 8,768 (G1 end 17.8 with, 16.9 without, W1 skipped in both) and 2.2 us at 32,768 (37.0 to 39.2). Net it still wins 1-3 us per row because it leaves the phase-A critical path; the biggest winner is 2,768 where 100 of 148 CTAs have no GEMM1 tile [probe_b200, run_tests]"
+  - "Dead end: an L2 bulk prefetch of each CTA's W2 slices in the sync-1 wait window (cp.async.bulk.prefetch.L2, hint only) only moves the cost: sync 1 is 0.7-0.8 us later, GEMM1 end 0.6-0.7 us earlier (8,768 and 2,768), 32,768 identical at the end; run_tests v2 equals v1 within noise. Removed from the final build [probe_b200]"
+  - "Barrier release (stamps, last arrival to release): cg grid.sync 1.0-1.2 us at sync 1 and 1.2-1.5 us at sync 2 (maxima, not medians; I first misread medians as 1.7-2.0). The flat counter barrier gains 0.1-1.3 us on tc rows (v2 to v3: 2,768 25.2 to 23.9, 16,768 44.0 to 43.3, 16,384 51.6 to 51.0, 32,768 65.7 to 64.6, 8,384 33.9 to 33.5, 8,768 flat) but costs 1.0-2.1 us on all seven sc rows (1,96 18.2 to 20.1, 2,96 24.9 to 27.0, 1,160 25.4 to 27.2, 4,96 37.9 to 39.5, 4,192 29.1 to 30.1, 1,192 18.2 to 19.4, 8,192 42.5 to 43.2); the sc rows have skewed arrivals and the 147 pollers apparently slow the last arriver's atomic. Final build uses the flat barrier on tc_kernel only [run_tests]"
+  - "Small-vector change, no clear effect alone: LN weight/bias, per-unit dwb and b2 slices come by bulk copy with the plane copies (smem budget: units_per_cta x (2 x 32 x HW + 32 x 49) x 4 B <= 116 KB, asserted in tc_launch, max 112.9 KB at 32,768 and 16,384; LN vectors at 116 KB, per-unit slices at 126 KB). sc_kernel gets dwb/b2 in smem after the unit buffers (asserted in sc_plan). sc rows moved -0.4 to -1.7 us between v1 and v2 builds, within run-to-run noise [run_tests]"
+  - "Resources: the stamped probe build (extra per-warp stamp stores) has STACK 64/80 B (spills), so stamp numbers are relative only. The shipped build's STACK / registers were NOT checked (compile_b200 not run on the final file); run_tests times equal or beat the parent on every tc row, so there is no spill signature. Check STACK in cuobjdump before the next change to the epilogue [probe_b200]"
+  - "Precision: all roundings and summation orders are unchanged (W1 and W2 conversion code is the same arithmetic in the same lane order; the barrier only changes synchronisation; sc dwb/b2 values are identical, read from smem). run_tests 10 rounds x 16 rows pass. The single-seed fp64 check per row was NOT run this round; the r8 precision log stands (tc 59-65 %, sc 79-89 % of atol)"
+  - "Merge picks: take 2,768, 8,768, 16,768, 16,384, 8,384 (tc) from this kernel (-1..-3 % rented, 2,768 more). Keep 32,768 and the sc rows from r8: this build ties or is within noise there. Projected gain +0.002-0.004 of mean at D's 1.20-1.32 portal ratios; launch-structure gains tend to shrink on the portal (tricks s2), so expect the low end. The control in each run_tests was timed once, not interleaved x3 [INFERRED]"
+  - "What this says about the lineage: the wide-C rows' phase A and the W2 pass are bounded by weight bytes (W1 + W2 fp32 read 18.9 MB at C=768, fp16 write 9.4 MB), not by latency. The remaining lever is fewer weight bytes: the zero-conversion TF32 route (I2 / I20: kind::tf32 straight from fp32 weights through TFLOAT32 maps removes the fp16 write and the conversion pass, at a half-rate MMA that the ingest-bound GEMM1 can absorb at 2,768 / 8,768), or splitting phase A's weight pass across the GEMM1 mainloop at every row. Barrier work is worth at most about 0.5 us per sync [INFERRED]"
+paths:
+  - {max_tokens: 6272, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "tc_kernel on 2/8/16/32,768,7,7 and 8/16,384,14,14: cooperative, flat counter barrier, W1 loads first, W2 conversion deferred into GEMM1"}
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "sc_kernel on 1/4/8,192 / 1/2/4,96 / 1,160: cooperative, cg grid.sync, weights converted after the conv, dwb/b2 by bulk copy"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "r0 fp32 anchor on 8,320 / 32,128 / 64,96 (merge-only)"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM are sm_100a-only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "gain is 1-3 % rented on five tc rows and nothing on 32,768 / sc rows; below the portal's compute-bound noise (2-3 %) except at 2,768"
+  - "flat barrier state lives in module-level __device__ arrays (zero at load, self-reset by the last arriver); an aborted kernel mid-barrier would leave the generation word out of step with the counter only if a CTA died, which cooperative launch does not allow in normal runs"
+  - "ld.acquire.gpu spin from 147 CTAs on one line slowed sc rows by 1-2 us; on tc rows the same effect could appear at other arrival skews"
+  - "final build's STACK / register count not checked (stamped probe build spills at STACK 64/80 B)"
+  - "build must target B200 only (sm_100a); a LOCAL sm_100 target fails to assemble tcgen05"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

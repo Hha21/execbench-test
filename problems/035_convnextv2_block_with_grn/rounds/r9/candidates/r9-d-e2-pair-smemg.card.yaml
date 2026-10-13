@@ -1,0 +1,111 @@
+id: r9-d-e2-pair-smemg
+parents:
+  - r8-d-e1-allwarp-epi
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: direct
+  grid: persistent
+  launch: fused
+  tile: token
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  Lineage D / E2 (H33). For C=768 with B >= 16, tc_kernel runs as 2-CTA clusters (cooperative + cluster launch).
+  Every tcgen05 op in that instantiation is cta_group::2, because ptxas rejects mixing cta_group::1 and ::2 in one
+  kernel. GEMM1 pairs two 128-row hidden tiles over the same tokens: each CTA lands half of the d tile through
+  cta_group::2 TMA onto the leader's barrier. The GEMM1 epilogue stores h only, plus gw*gf per (image, k). GEMM2 pairs
+  M = 256 output channels: each CTA lands its own 128 W2 rows and 64 of the 128 tokens in 32 KB stages through a
+  6-deep ring. Four producer warps build g = fp16(gw*gf*h) in shared memory from the landed h half, one warp per stage,
+  and signal the leader's ready barrier with a cluster-release arrive. Measured on the rented card: 32,768 is 2-3 us
+  faster than r8 and 16,768 is within noise. On 2/8,768 the pair skeleton was 1.4-2.1 us slower, so those rows and
+  the 14x14 rows keep r8's 1SM code unchanged.
+expected_effect:
+  S:
+    pct: 0
+    confidence: high
+  M:
+    pct: 0
+    confidence: medium
+  L:
+    pct: -1
+    confidence: medium
+resources_sm100a:
+  regs_per_thread: 104
+  smem_per_cta_bytes: 227616
+  threads_per_cta: 512
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 196608
+  launches_per_call: 1
+knobs:
+  pair_rows: "C=768 and B >= 16 (16,768 and 32,768)"
+  pair_cluster: "2x1, cooperative + cluster launch, grid = 2 x cudaOccupancyMaxActiveClusters (74 -> 148)"
+  gemm2_pair_stage: "32 KB per CTA (W2 16 KB + h half 8 KB + g half 8 KB), 6 stages"
+  g_producers: "warps 12-15, warp (it % 4) owns stage it; gw*gf slice staged in smem per unit (<= 8 KB)"
+  ready_barrier_count: "2 (one local + one remote producer warp)"
+  KS: "unchanged: 2,768 12 / 8,768 6 / 16,768 3 / 32,768 3"
+  TC_STAMPS: 0
+  SC_STAMPS: 0
+dispatch:
+  - shapes: "16,768,7,7 32,768,7,7"
+    kernel: "tc_kernel<768,49,true> (2-CTA clusters, all cta_group::2, smem g)"
+    meta: {grid: "148 (74 clusters), cooperative + cluster"}
+  - shapes: "2,768,7,7 8,768,7,7 8,384,14,14 16,384,14,14"
+    kernel: "tc_kernel<768,49,false> / tc_kernel<384,196,false> (r8 code path, stored g, 1SM)"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "1,192,28,28 4,192,28,28 8,192,28,28 1,96,56,56 2,96,56,56 4,96,56,56 1,160,449,7"
+    kernel: "sc_kernel (unchanged from r8)"
+    meta: {grid: "num SMs, cooperative"}
+  - shapes: "8,320,32,32 32,128,64,64 64,96,112,112"
+    kernel: "convnext_fused (r0 anchor, merge-only)"
+    meta: {}
+tests:
+  - H33
+findings:
+  - "ptxas rejects mixing cta_group::1 and cta_group::2 tcgen05 ops in one kernel ('uses single CTA(.cta_group::1) and CTA pair granularity(.cta_group::2) and that is not allowed'). A pair GEMM2 forces the whole kernel (TMEM alloc/relinquish/dealloc, GEMM1 MMAs, commits) to cta_group::2. An NVRTC resources() probe did not catch this; the full nvcc build did [compile_b200]"
+  - "Cooperative launch combined with the 2x1 cluster attribute (cudaLaunchKernelExC) works. cudaOccupancyMaxActiveClusters = 74 at 512 thr / 227 KB, so the grid stays 148, and grid.sync costs 1.35 us with or without clusters [probe_b200]"
+  - "cta_group::2 syntax that compiles to UTMALDG.2D.2CTA / UTCHMMA.2CTA / UTCBAR.2CTA.MULTICAST: 'cp.async.bulk.tensor.2d.cta_group::2.shared::cluster.global.mbarrier::complete_tx::bytes [dst],[map,{x,y}],[leader_bar]' with leader_bar = mapa(bar,0); 'tcgen05.alloc/relinquish/dealloc.cta_group::2' issued by one warp in BOTH CTAs; idesc M field 256>>4 = 16; commit '.cta_group::2...multicast::cluster' with mask 3 [probe_b200]"
+  - "GEMM1 as a pair (two consecutive 128-row hidden tiles, B split N/2 per CTA, N/2 = 32/56/88 tokens, leader expect_tx of both CTAs' bytes, te1 count 2 via remote arrive) was correct first try on all 4 C=768 rows [run_tests]"
+  - "v1 (all C=768 rows paired, 4 producer warps all working on every stage, gw*gf loaded from L2 per stage): 16/16 pass but slower than r8 in the same container: 2,768 29.7 vs 26.4, 8,768 38.4 vs 32.8, 16,768 52.5 vs 43.8, 32,768 79.9 vs 64.1 us. The gw*gf L2 load sat in series in front of every stage [run_tests]"
+  - "v2 (gw*gf for the unit's K slice and <= 2 images staged in smem in one unrolled load round): 29.2 / 36.5 / 47.9 / 73.3 us. Still slower than r8 [run_tests]"
+  - "v2 stamps (probe, flush, globaltimer): GEMM2 per 64-k pair stage 683 / 658 / 768 / 875 ns at 2/8/16/32,768, against a two-MMA pair ideal of ~270 ns (2.5-3.2x). The MMA warp waits 331-644 ns per stage on the ready barrier, while the producers wait only 0.3-1.0 us in total on TMA landing. The producers gate: with all 4 warps on every stage, the fence.proxy.async plus the cluster-release arrive of each stage run in series [probe_b200]"
+  - "GEMM1 post-accumulator per tile without the g pass (v2 stamps): 2.05 / 3.36 / 4.77 / 5.17 us at 2/8/16/32,768, against r8's 3.04 / 4.77 / 7.07 / 7.92 (-30..-35 %, short of the -40 % bar). The epilogue's accumulator wait per tile is 2.5-4.2 us in pair mode [probe_b200]"
+  - "v3 (one producer warp owns a whole stage, stages round-robin over 4 warps, ready count 2): 2,768 28.5 vs 26.4, 8,768 34.2 vs 32.8, 16,768 42.7 vs 43.8, 32,768 61.1 vs 64.1 us. Pipelining the per-stage signalling is the fix; the pair only pays where a CTA runs many stages (32 at 32,768, 16 at 16,768) [run_tests]"
+  - "v4 (shipped; pairs only for C=768, B >= 16): 16/16 PASS incl. portal-order re-runs. Same container vs r8-merge: 32,768 62.1 vs 64.1 (-3.1 %), 16,768 43.5 vs 43.8 (-0.5 %, -2.4 % in v3: within noise), 2,768 26.4 vs 26.4 and 8,768 33.6 vs 32.8 (r8 code, so the 0.8 us is noise). sc rows and 14x14 rows are unchanged code [run_tests]"
+  - "H33 verdict: success line NOT met. Rows 32,768 61-62 vs <= 57 and 16,768 42.7-43.5 vs <= 39; v2 stage clk 2.5-3.2x ideal (v3 stages not stamped); GEMM1 post -30..-35 % vs -40 %. The refutation clause fires on 4 of 6 tc rows: 2/8,768 got slower with pairs, and the 14x14 rows were not paired (3 channel tiles cannot form full pairs). The real gain is at 32,768 (-2..-3 us rented), possibly 16,768. The pair's fixed costs (cluster coupling of GEMM1, first-ready chain of 2.3-2.8 us in phase C) dominate at B <= 8 [run_tests, probe_b200]"
+  - "NOT DONE: the fallback single-accumulator form (h scaled in place by s_b); C=384 pairs (one full + one half-masked pair tile); interleaved x3 timing (each build was timed once in run_tests against r8-merge in the same container); stamps of v3/v4 stages; a fresh 10-round fp64 precision log [INFERRED]"
+  - "PRECISION: roundings are unchanged from r8's tc path (d16, fp16(lnw*W1), fp16(W2), h16 once, g16 = fp16(fp32(gw*gf) * h16); the GRN sumsq order and the KS splits are unchanged). The only difference is that the GEMM accumulation is split over the CTA pair inside the tensor core. So this card cites r8's 10-round fp64 log (tc rows 59-65 % of atol, 0 beyond) plus a single-seed check of the pair path against the fp32 torch reference with harness generators (seed 200): max |err| 1.48e-3 (2,768, pair forced), 1.57e-3 (8,768), 1.68e-3 (16,768), 1.70e-3 (32,768), all below 2.9e-3 x 0.6. run_tests 16/16 x 10 rounds pass [probe_b200, run_tests]"
+  - "Next levers in D: (1) 32,768/16,768: stamp v4 stages to see whether GEMM2 is now near the 270 ns pair ideal; if not, the first-ready chain (2.3-2.8 us) and the drain/red.add (3.7-8 us) are the post-sync terms. (2) The GEMM1 accumulator wait of 2.5-4.2 us per tile in pair mode suggests the pair GEMM1 mainloop is coupled to the slower CTA; a 1SM GEMM1 is impossible in the same kernel (ptxas rule), so splitting the C=768 kernel into two launches would cost more than it saves. (3) 14x14 rows: pairs need a masked half tile or channel-pair remapping [INFERRED]"
+paths:
+  - {max_tokens: 392, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "2,768 and 8,768: tc_kernel<768,49,false>, identical to r8"}
+  - {max_tokens: 1568, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 2, note: "16,768 and 32,768: tc_kernel<768,49,true>, cooperative + 2x1 cluster launch, all tcgen05 cta_group::2, smem g producers one warp per stage"}
+  - {max_tokens: 3136, lang: cuda, width: 128, threads: 512, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "8,384 and 16,384: tc_kernel<384,196,false>, identical to r8"}
+  - {max_tokens: 12544, lang: cuda, width: 128, threads: 384, rows: 128, grid: persistent, mem: tma, launches: 1, x: none, w: none, st: none, cluster: 1, note: "sc_kernel rows, identical to r8"}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 128, grid: persistent, mem: ldg, launches: 1, x: none, w: none, st: none, cluster: 1, note: "r0 fp32 anchor on 8,320 / 32,128 / 64,96 (merge-only)"}
+runs_on:
+  H200:
+    runs: false
+    representative: false
+    note: "tcgen05/TMEM and cta_group::2 are sm_100a-only"
+  A100:
+    runs: false
+    representative: false
+  L40S:
+    runs: false
+    representative: false
+risks:
+  - "Clustered cooperative grid on the portal: tricks.md reports large clustered grids costing 2-5 % on the portal; the gain at 32,768 (~3 %) is of that size, so verify on the portal before trusting it"
+  - "The pair path depends on cudaOccupancyMaxActiveClusters returning 74; if fewer clusters fit, the grid shrinks (even) and the work loops still cover all units, but timing changes"
+  - "Remote mbarrier arrives (release.cluster) and the final cluster barrier must stay paired; any early exit of one CTA in a pair would hang the other"
+  - "build must target B200 only (sm_100a)"
+  - "16,768 gain is within noise; merge only 32,768 unless a portal run confirms 16,768"
+measure_first:
+  - B200
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

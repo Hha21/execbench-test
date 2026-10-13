@@ -55,3 +55,4 @@ r2-lib-cublaslt-fp16-tmaconv,0.098523,0.619829,15,1.627,65878,035_convnextv2_blo
 r3-merge-a3-b3-d3,0.092459,0.635503,16,1.734,65879,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65879_r3-merge-a3-b3-d3.txt
 r4-merge-m3-a4,0.085425,0.655340,16,1.876,65972,035_convnextv2_block_with_grn,B200,v1.1,Private,AC,portal_html/65972_r4-merge-m3-a4.html
 r5-merge,0.079436,0.672132,16,2.018,66310,035_convnextv2_block_with_grn,B200,,,AC,portal_html/66310_r5-merge.txt
+r5-merge-b,0.078550,0.674696,16,2.040,66402,035_convnextv2_block_with_grn,B200,,,AC,portal_html/66402_r5-merge-b.txt

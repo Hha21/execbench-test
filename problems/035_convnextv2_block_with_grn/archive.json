@@ -5288,6 +5288,29 @@
   }
  },
  "r5-merge": {
+  "b200": {
+   "geomean_us": 79.436,
+   "score": 0.672132,
+   "submission": "66310",
+   "timings": {
+    "1,160,449,7": 49.0,
+    "1,192,28,28": 41.5,
+    "1,96,56,56": 38.1,
+    "16,384,14,14": 82.0,
+    "16,768,7,7": 68.4,
+    "2,768,7,7": 45.1,
+    "2,96,56,56": 46.199999999999996,
+    "32,128,64,64": 323.2,
+    "32,768,7,7": 88.9,
+    "4,192,28,28": 50.1,
+    "4,96,56,56": 57.6,
+    "64,96,112,112": 1285.6000000000001,
+    "8,192,28,28": 66.60000000000001,
+    "8,320,32,32": 101.0,
+    "8,384,14,14": 64.10000000000001,
+    "8,768,7,7": 60.400000000000006
+   }
+  },
   "card": "id: r5-merge\nparents:\n- r4-merge-m3-a4\n- r5-a-e2-ringk2\noperation: repair\nlanguage: cuda_cpp\nniche:\n  cache: default\n  grid: oneshot\n  launch: split\n  mem: bulk1d\n  red: warp\n  spec: dispatch:size\n  st: direct\n  tile: rows8\nhypothesis: 'Operator per-workload merge: Per-workload merge (loop/merge.py, kernels unchanged) of r4-merge-m3-a4 with r5-a-e2-ringk2\n  on 1,160,449,7, 1,192,28,28, 1,96,56,56, 16,384,14,14, 16,768,7,7, 2,96,56,56, 32,128,64,64, 32,768,7,7, 4,192,28,28, 4,96,56,56,\n  64,96,112,112, 8,192,28,28, 8,320,32,32, 8,384,14,14, 8,768,7,7, where they beat it side by side. Projected portal score\n  0.6802 (best 0.6553).'\ndispatch:\n- kernel: r4-merge-m3-a4\n  shapes: 2,768,7,7\n- kernel: r5-a-e2-ringk2\n  shapes: 2,96,56,56 8,320,32,32 8,768,7,7 64,96,112,112 1,160,449,7 16,768,7,7 16,384,14,14 32,128,64,64 4,96,56,56 1,96,56,56\n    8,384,14,14 4,192,28,28 1,192,28,28 32,768,7,7 8,192,28,28\n",
   "id": "r5-merge",
   "language": "cuda_cpp",
@@ -5339,5 +5362,43 @@
     "8,768,7,7": 42.24
    }
   }
+ },
+ "r5-merge-b": {
+  "card": "id: r5-merge-b\nparents:\n- r5-merge\n- r3-coop-flat-bulkrows\n- r3-ws-coop-widec\n- r5-a-e2-ringk2\noperation: repair\nlanguage: cuda_cpp\nniche:\n  cache: default\n  grid: oneshot\n  launch: split\n  mem: bulk1d\n  red: warp\n  spec: dispatch:size\n  st: direct\n  tile: rows8\nhypothesis: 'Operator re-route of r5-merge (#66310, 0.6721) from portal evidence: 1,96 and 1,192 back to B r3-coop-flat-bulkrows\n  (portal 35.9 / 38.5 us in #65972 vs A E2''s 38.1 / 41.5 in #66310), 2,768 on D r3-ws-coop-widec, E2 elsewhere. The 5-6 launch\n  A pipeline pays more per launch on the portal (and on slow-launch rented hosts) than the single-launch B/D kernels. Built\n  by loop/merge.py from clean leaves; 16/16 incl. portal-order check (ab_container vs r5-merge, 2026-10-13). Projected 0.674\n  from the portal-measured times of each path.'\ndispatch:\n- kernel: r3-coop-flat-bulkrows\n  shapes: 1,96,56,56 1,192,28,28\n- kernel: r3-ws-coop-widec\n  shapes: 2,768,7,7\n- kernel: r5-a-e2-ringk2\n  shapes: the other 13\n",
+  "id": "r5-merge-b",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "bulk1d",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "repair",
+  "parents": [
+   "r5-merge",
+   "r3-coop-flat-bulkrows",
+   "r3-ws-coop-widec",
+   "r5-a-e2-ringk2"
+  ],
+  "round": "r5",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r5/candidates/r5-merge-b.json",
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "instructions": "Operator re-route from portal evidence.",
+   "niche": "merge",
+   "operation": "repair",
+   "parents": [
+    "r5-merge",
+    "r3-coop-flat-bulkrows",
+    "r3-ws-coop-widec",
+    "r5-a-e2-ringk2"
+   ]
+  },
+  "timings": {}
  }
 }

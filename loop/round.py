@@ -658,10 +658,12 @@ def cmd_merge(a):
     """Per-workload merge: time the round's tested kernels and the best portal kernel side by side in one container
     (loop/ab_container.py), route each workload to the kernel that beat the best by more than --margin there, build the
     merged kernel (loop/merge.py), test it, and register it as <round>-merge with its projected portal score."""
+    import math
     import yaml
     import ab_container
     import b200_modal
     import merge
+    import portfolio
     arc = get_archive()
     best = planner.best_kernel(arc)
     if not best:
@@ -681,24 +683,52 @@ def cmd_merge(a):
         samples, fails = ab_container.interleave(sols, a.merge_reps, tag=cid)
         bad = {(f[0], f[2]) for f in fails}
         an, med = samples[best["id"]], ab_container.med
-        pick, rows = {}, [f"| workload | {best['id']} (us, rented) | " + " | ".join(r["id"] for r in cands)
+        # The portal/rented ratio is a property of the kernel's launch structure, not only of the workload: on #66310
+        # the 5-6 launch pipeline (lineage A) ran 1.40-1.55x its rented time on S/M rows where the single-launch
+        # cooperative kernels (B, D) ran 1.25-1.31x. So a row's candidate is projected with the ratio its own lineage
+        # shows on the anchor row closest in rented time, and an unseen lineage needs --margin-new.
+        flat = {c: merge.flatten(sols[c], c) for c in sols}
+        fam = lambda leaf: portfolio.lineage_of(arc.get(leaf)) or leaf
+        afam = {k: fam(flat[best["id"]][1](k)) for k in portal}
+        rat = {k: portal[k] / med(an[k]) for k in portal if an.get(k)}
+
+        def est(c, k):
+            t, f = med(samples[c][k]), fam(flat[c][1](k))
+            if afam[k] == f:
+                return t * rat[k], True
+            same = [j for j in rat if afam[j] == f]
+            if same:
+                j = min(same, key=lambda j: abs(math.log(med(an[j]) / t)))
+                return t * rat[j], True
+            return t * rat[k], False
+
+        pick, rows = {}, [f"| workload | {best['id']} portal us (rented) | " + " | ".join(r["id"] for r in cands)
                           + " | routed to |", "|---" * (len(cands) + 3) + "|"]
         for k in sorted(portal, key=portal.get):
-            opts = [(med(samples[c][k]) / med(an[k]), c) for c in samples if c != best["id"] and an.get(k)
-                    and samples[c].get(k) and (c, k) not in bad and (c, "*") not in bad]
-            r, c = min(opts, default=(1.0, None))
-            if c and r < 1 - a.margin:
-                pick[k] = (c, r)
-            cells = [f"{100 * (med(samples[x][k]) / med(an[k]) - 1):+.1f}%" if samples[x].get(k) and an.get(k)
-                     and (x, k) not in bad else "fail" for x in samples if x != best["id"]]
-            rows.append(f"| {k} | {med(an[k]):.1f} | " if an.get(k) else f"| {k} | - | ")
+            opts, cells = [], []
+            for c in samples:
+                if c == best["id"]:
+                    continue
+                if not (an.get(k) and samples[c].get(k)) or (c, k) in bad or (c, "*") in bad:
+                    cells.append("fail" if (c, k) in bad or (c, "*") in bad else "-")
+                    continue
+                e, known = est(c, k)
+                cells.append(f"{e:.1f} ({100 * (med(samples[c][k]) / med(an[k]) - 1):+.1f}%)" + ("" if known else " new"))
+                if e < portal[k] * (1 - (a.margin if known else a.margin_new)):
+                    opts.append((e, c))
+            if opts:
+                e, c = min(opts)
+                pick[k] = (c, e / portal[k])
+            rows.append(f"| {k} | {portal[k]:.1f} ({med(an[k]):.1f}) | " if an.get(k) else f"| {k} | {portal[k]:.1f} (-) | ")
             rows[-1] += " | ".join(cells) + f" | {pick[k][0] if k in pick else best['id']} |"
         for f in fails:
             print("failed (not a timing flake):", f)
         report = [f"# Per-workload merge for round {a.round}", "",
-                  f"Side-by-side rented-B200 times (median of {2 * a.merge_reps} passes each); a workload moves to a "
-                  f"round kernel only when it is more than {100 * a.margin:.0f}% faster there than the current best.",
-                  "", *rows, ""]
+                  f"Projected portal us per workload (rented change in the same container in brackets; median of "
+                  f"{2 * a.merge_reps} passes each). A candidate's rented time is scaled by the portal/rented ratio its own "
+                  f"lineage shows in {best['id']}'s portal result; a workload moves when the projection beats the best's "
+                  f"portal time by {100 * a.margin:.0f}% ({100 * a.margin_new:.0f}% for a lineage with no portal result yet, "
+                  f"marked new).", "", *rows, ""]
         if not pick:
             report.append(f"No round kernel beat {best['id']} by the margin on any workload: no merge.")
             (d / "merge.md").write_text("\n".join(report) + "\n")
@@ -950,6 +980,8 @@ def main():
         q.add_argument("--merge-reps", type=int, default=2, help="merge: side-by-side reps per kernel")
         q.add_argument("--margin", type=float, default=0.02, help="merge: a workload moves to a round kernel only "
                        "when it is this much faster there than the best")
+        q.add_argument("--margin-new", type=float, default=0.10, help="merge: the margin for a kernel whose lineage "
+                       "has no portal result yet (its portal/rented ratio is unknown)")
         q.add_argument("--resume", action="store_true", help="auto --use-plan --backend claude: continue this "
                        "round's sessions that ended without a candidate (e.g. cut off by the plan's session limit) "
                        "from their saved Claude session; tasks that already gave a candidate are skipped")
@@ -968,6 +1000,8 @@ def main():
     q.add_argument("--merge-reps", type=int, default=2, help="side-by-side reps per kernel")
     q.add_argument("--margin", type=float, default=0.02, help="a workload moves to a round kernel only when it is "
                    "this much faster there than the best")
+    q.add_argument("--margin-new", type=float, default=0.10, help="the margin for a kernel whose lineage "
+                   "has no portal result yet (its portal/rented ratio is unknown)")
     for name in ("test", "status", "collect", "shortlist"):
         q = sub.add_parser(name, parents=[common])
         q.add_argument("--round", required=True)

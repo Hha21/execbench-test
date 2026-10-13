@@ -1,0 +1,29 @@
+id: r5-merge-b
+parents:
+- r5-merge
+- r3-coop-flat-bulkrows
+- r3-ws-coop-widec
+- r5-a-e2-ringk2
+operation: repair
+language: cuda_cpp
+niche:
+  cache: default
+  grid: oneshot
+  launch: split
+  mem: bulk1d
+  red: warp
+  spec: dispatch:size
+  st: direct
+  tile: rows8
+hypothesis: 'Operator re-route of r5-merge (#66310, 0.6721) from portal evidence: 1,96 and 1,192 back to B r3-coop-flat-bulkrows
+  (portal 35.9 / 38.5 us in #65972 vs A E2''s 38.1 / 41.5 in #66310), 2,768 on D r3-ws-coop-widec, E2 elsewhere. The 5-6 launch
+  A pipeline pays more per launch on the portal (and on slow-launch rented hosts) than the single-launch B/D kernels. Built
+  by loop/merge.py from clean leaves; 16/16 incl. portal-order check (ab_container vs r5-merge, 2026-10-13). Projected 0.674
+  from the portal-measured times of each path.'
+dispatch:
+- kernel: r3-coop-flat-bulkrows
+  shapes: 1,96,56,56 1,192,28,28
+- kernel: r3-ws-coop-widec
+  shapes: 2,768,7,7
+- kernel: r5-a-e2-ringk2
+  shapes: the other 13

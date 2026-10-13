@@ -1,0 +1,64 @@
+id: r5-e1-cutlass-evt-tf32
+parents: [r0-convnext-coop-fp32-anchor]
+operation: new_design
+language: cuda_cpp
+niche:
+  mem: tma-tensor
+  st: bulk
+  grid: oneshot
+  launch: split
+  tile: rows64
+  red: cta
+  cache: default
+  spec: dispatch:size
+hypothesis: >-
+  H30 tested and REFUTED. The CUTLASS 4.4.1 sm100 builder can carry the whole GEMM1 epilogue as an EVT: LN fold via
+  ColBroadcast(-mean, rstd) and RowBroadcast(u, v), exact erf GELU, hidden store, and the per-image GRN sum of squares
+  as a non-final RowReduction with a custom a+b*b reducer. TF32 operands read straight from fp32 memory round to
+  nearest. But the per-image-batched TF32 GEMM1 costs 17.0 us cold at 8,768 and 20.0 us at 8,384, against the 14 / 12 us
+  kill lines. The plain mainloop alone is already 12.7 / 11.2 us: batching per image re-reads W1 once per image, and
+  TF32 doubles the operand bytes. The erf GELU node adds 2.4-8.5 us. The full 5-launch pipeline beats lineage A only at
+  2,768 (40.1 vs 48.5 us rented), where D already has 32.4.
+expected_effect:
+  S: {pct: 0, confidence: high}
+  M: {pct: +20, confidence: medium}
+  L: {pct: +25, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 232
+  smem_per_cta_bytes: 231424
+  threads_per_cta: 256
+  ctas_per_sm: 1
+  bytes_in_flight_per_sm: 200000
+  launches_per_call: 5
+knobs: {G1_TILE: 64x128x32, G2_TILE: 128x128x32, KS_HW49: "B<=2:16, <=8:6, <=16:3, else 2", KS_HW196: "B<=8:4, else 2", K1_ROWS: "7x7: 1 (B<=16) / 2; 14x14: 1", SLOT_14x14: 116}
+tests: [H30, H14, H31]
+findings:
+  - "compile: G1 (64x128x32 tf32, full EVT) builds in 36.6 s single-threaded, 232 regs, 0 spills. The three .cu files (G1, G2, custom kernels) build in parallel in 26-50 s wall, so the portal 300 s limit is not a risk [probe_b200]"
+  - "EVT nodes that instantiate on sm100 TmaWarpSpecialized1Sm: Sm90ColBroadcast with batch stride, Sm90RowBroadcast, Sm90Compute<multiply_add>, Sm90Compute<epilogue::thread::GELU> (erf form), and Sm90RowReduction<SqAdd, plus, plus, Stages 0, FinalReduction=false>. Non-final reduction writes compact partials [L][ceil(M/tileM)][N], so no workspace, atomics or zeroing are needed. Args nest as op_0/op_1/... (children first, node last) [probe_b200]"
+  - "pitfall: -DV=... as a macro name breaks the CUTLASS headers (identifier clash, 88 errors). Use unique macro names [probe_b200]"
+  - "H14 bit check through CUTLASS: tfloat32_t A/B on fp32 memory gives max |err| 1.1-1.4e-5 vs an fp64 reference with RNE-rounded operands, and 4.6-6.0e-3 vs truncated operands. So CUTLASS's TFLOAT32 TMA maps round to nearest. The gf2 reduction matches to 2e-5 relative [probe_b200]"
+  - "G1 cold (harness_time, us, rows 2,768 / 8,768 / 32,768 / 8,384 / 16,384): full EVT 128x128 tile 17.5/26.2/61.6/23.5/-; full EVT 64x128 12.1/17.0/39.7/20.0/30.9; plain epilogue 64x128 9.0/12.7/29.4/11.2/17.4; LN-fold only 9.0/13.0/29.9/11.0/17.6; reduction only 9.5/13.5/29.9/11.4/17.9; LN+GELU 11.1/15.4/32.0/16.9/25.9; full EVT 64x256 20.0/20.5/41.9/23.9/35.6; 128x128 with 3 stages (133 KB smem) slower than auto (21.6/31.8/68.1). cuBLAS TF32 on the flat M=B*HW shape, no epilogue: 7.5/10.7/20.5/9.5 [probe_b200]"
+  - "H30 kill line fires: G1 with EVT is 17.0 us at 8,768 (> 14) and 20.0 us at 8,384 (> 12). The broadcasts and the reduction are nearly free (+0.3-0.8 us). The erf GELU costs +2.4-8.5 us because the epilogue does not overlap the mainloop at ~1 tile per CTA. The binding term is the mainloop: batching per image re-reads W1 (9.4 MB at C=768) once per image, and TF32 doubles the bytes [probe_b200]"
+  - "split-K as the batch mode works on sm100: problem (M, N, K/KS, KS) with A and B batch stride = K-slice offset (overlapping strides). TMA accepts it and results are correct, so no stream-K scheduler is needed [probe_b200]"
+  - "precision log: harness generators, 10 rounds per row from seed 200, fp64 reference, TF32 G1+G2 with fp32 hidden. Max |err| 2,768 1.67e-3; 8,768 1.88e-3; 16,768 1.87e-3; 32,768 1.86e-3; 8,384 1.87e-3; 16,384 1.94e-3. 0 elements beyond 2.4e-3+1e-5|ref| on all six rows: more margin than the fp16 paths (2.37e-3) [probe_b200]"
+  - "pipeline cumulative cold, final build (K1 / +G1 / +K3 / +G2 / +Kred, us rented): 2,768 13.7/24.7/28.1/34.4/40.1; 8,768 13.2/29.4/33.4/41.8/47.7; 16,768 16.6/39.7/44.6/55.6/61.5; 32,768 19.4/58.3/65.4/87.4/95.5; 8,384 16.5/36.3/41.8/52.6/62.3; 16,384 29.6/60.5/68.3/82.6/94.2. Against A r4 (48.5/44.4/53.2/70.1/50.4/71.5) only 2,768 wins; targets met 0/6 [probe_b200]"
+  - "first build had K1 19 us and Kred 12.7 us at 2,768. Causes: fold dot products as serial DRAM rounds per warp run before the conv in the same CTAs, and Kred compiled to 40 regs with serialised partial loads. All-loads-first fold units (4 W1 rows or half a W2 row per unit) and an explicit load-array Kred cut K1 to 13-19 us and Kred to 6-12 us. K1 is still 2-3x the lineage A/D bulk-plane conv (one CTA per image row re-reads the whole image; 14x14 rows at 224 CTAs take 2 waves) [probe_b200]"
+  - "run_tests twice, 14/16 PASS each time. Correctness passed on all 16 rows. The failures are CUPTI sequence-matching errors whose rows change between runs (2,768 & 32,768, portal-order 16,768; then 8,768 & 2,768, portal-order 8,768 & 16,384). The failing window holds [K3, G2, Kred] or [G1, K3, G2, Kred], so the first kernels of the call fall before the CPU start timestamp. This matches the 'timestamp skew on Modal' note in the harness copy. No PDL: CUTLASS 4.4.1 launch_with_pdl defaults false and the GDC macros are off. Not resolved; this path must not go to the portal until the cause is known [run_tests, probe_b200]"
+  - "dead end for lineage E as specified: a per-image-batched GEMM1 cannot reuse W1 across images. Any further library route needs non-batched M=B*HW tiles plus a segmented per-image column reduction (custom EVT node), or FP16 operands with a one-pass conversion. Even then cuBLAS-level TF32 GEMM1 (10.7 us at 8,768) plus GELU leaves no room under A's chain [INFERRED]"
+paths:
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 64, grid: oneshot, mem: tma, launches: 5, x: none, w: none, st: none, cluster: 1}
+runs_on:
+  H200: {runs: false, representative: false, note: "tcgen05 / sm_100a only"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "run_tests flags CUPTI timing-window mismatches on 2-3 of the six E rows per run (correctness fine); unexplained, would fail the portal if it reproduces there"
+  - "slower than lineage A on 5 of 6 target rows; only 2,768 beats A, and D already owns that row"
+  - "non-target rows run the r0 fp32 anchor (slow); intended for per-workload merge only"
+measure_first: [H200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

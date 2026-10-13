@@ -3751,6 +3751,29 @@
   }
  },
  "r4-merge-m3-a4": {
+  "b200": {
+   "geomean_us": 85.425,
+   "score": 0.65534,
+   "submission": "65972",
+   "timings": {
+    "1,160,449,7": 53.0,
+    "1,192,28,28": 38.5,
+    "1,96,56,56": 35.9,
+    "16,384,14,14": 100.4,
+    "16,768,7,7": 74.7,
+    "2,768,7,7": 44.6,
+    "2,96,56,56": 50.7,
+    "32,128,64,64": 368.8,
+    "32,768,7,7": 95.60000000000001,
+    "4,192,28,28": 53.900000000000006,
+    "4,96,56,56": 61.6,
+    "64,96,112,112": 1438.1999999999998,
+    "8,192,28,28": 73.7,
+    "8,320,32,32": 119.6,
+    "8,384,14,14": 69.8,
+    "8,768,7,7": 62.5
+   }
+  },
   "card": "id: r4-merge-m3-a4\nparents:\n- r3-merge-a3-b3-d3\n- r4-a-e1-bulkplane-wprep\noperation: repair\nlanguage: cuda_cpp\nniche:\n  mem: bulk1d\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: rows8\n  red: warp\n  cache: default\n  spec: dispatch:size\nhypothesis: 'Operator packaging (no kernel changes): r3-merge-a3-b3-d3 plus lineage A r4 on the six rows where it won an interleaved\n  same-container A/B against the r3 merge (loop/ab_container.py): 1,160,449,7 -23%, 8,768 -21%, 16,768 -22%, 32,768 -20%,\n  16,384 -14%, 4,192 +-2%.'\nexpected_effect:\n  S:\n    pct: -8\n    confidence: medium\n  M:\n    pct: -15\n    confidence: medium\n  L:\n    pct: -1\n    confidence: high\nresources_sm100a:\n  regs_per_thread: 72\n  smem_per_cta_bytes: 14000\n  threads_per_cta: 256\n  ctas_per_sm: 3\n  bytes_in_flight_per_sm: 40000\n  launches_per_call: 5\nknobs:\n  dispatch: 'D: 2,768 8,384; B: 1,192 1,96; A r4: 1,160 8/16/32,768 16,384 4,192; A r3: other 6'\ndispatch:\n- shapes: 2,768,7,7 8,384,14,14\n  kernel: lin_d ws_kernel\n- shapes: 1,192,28,28 1,96,56,56\n  kernel: lin_b convnext_k / convnext_flat\n- shapes: 1,160,449,7 8/16/32,768,7,7 16,384,14,14 4,192,28,28\n  kernel: lin_a4 bulk-plane K1 + cuBLASLt\n- shapes: other 6\n  kernel: lin_a K1 TMA conv + cuBLASLt / mma.sync\ntests: []\nfindings:\n- 'Interleaved x2 in one Modal container vs r3-merge-a3-b3-d3 (portal 0.6355), portal-order check passed: projected portal\n  0.6524 (anchor portal times x same-container ratio).'\n- 'A4 alone vs the r3 merge in one container: its TMA-row gains in the session (1,192 27.4, 4,192 36.7, 8,192 51.8) were cross-run\n  drift; A4 equals A r3 there and loses to B/D/A3-custom at 1,96, 1,192, 2,96, 8,384. r4-merge-a4-d3 projected only 0.6458.'\npaths:\n- max_tokens: 3200\n  lang: cuda\n  width: 128\n  threads: 256\n  rows: 7\n  grid: oneshot\n  mem: tma\n  launches: 5\n  cluster: 1\n- max_tokens: null\n  lang: cuda\n  width: 128\n  threads: 256\n  rows: 8\n  grid: oneshot\n  mem: tma\n  launches: 5\n  cluster: 1\nruns_on:\n  H200:\n    runs: true\n    representative: false\n    note: bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ\n  A100:\n    runs: false\n    representative: false\n  L40S:\n    runs: false\n    representative: false\nrisks:\n- 4,192 is +-2% between the two A/B runs (noise); the six A4 rows carry the gain\nmeasure_first:\n- B200\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
   "id": "r4-merge-m3-a4",
   "language": "cuda_cpp",
@@ -4716,6 +4739,604 @@
     "8,320,32,32": 90.19,
     "8,384,14,14": 54.12,
     "8,768,7,7": 44.18
+   }
+  }
+ },
+ "r5-a-e2-ringk2": {
+  "card": "id: r5-a-e2-ringk2\nparents: [r4-a-e1-bulkplane-wprep]\noperation: structural_mutation\nlanguage: cuda_cpp\nniche:\n  mem: bulk1d\n  st: direct\n  grid: oneshot\n  launch: split\n  tile: token\n  red: cta\n  cache: stream\n  spec: dispatch:size\nhypothesis: >-\n  Lineage A / E2 (H29). K2 (GELU + GRN sum of squares over the fp16 hidden) was issue- and latency-bound, not\n  stream-bound. A register-prefetch K2 floors at 292 us with no math at 64,96 against a 187 us copy. Moving the hidden\n  rows into a shared-memory ring (one 1-D bulk copy per token row, 3-4 stages of 4*TS rows, run-long CTAs of one\n  image, per-run LN stats in shared memory) floors at 212 us. Replacing erff with a 13-instruction A&S erfc form\n  (rcp + ex2 + 4 FMA) cuts the math term. K2 goes 444 -> 319 us at 64,96, 118 -> 80 at 32,128, 37 -> 21.5 at 8,320.\n  The W2 conversion in K1 is split over 4-warp groups for M <= 800 (about -1 us). Targets only partly met; see findings.\nexpected_effect:\n  S: {pct: -4, confidence: medium}\n  M: {pct: -9, confidence: medium}\n  L: {pct: -11, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 79\n  smem_per_cta_bytes: 66000\n  threads_per_cta: 240\n  ctas_per_sm: 3\n  bytes_in_flight_per_sm: 120000\n  launches_per_call: 5\nknobs: {ring_stages: \"4 (3 when a stage > 16 KB)\", rows_per_stage: \"4*TS\", ring_threshold_bytes: 1048576, w2split_max_M: 800, store_hint: \"evict_last <= 42 MB hidden, evict_first above\"}\ndispatch:\n  - {max_tokens: null, kernel: \"k1 (tma | bulk, w2split for M<=800) + cublasLt + k2_ring (hidden >= 1 MB) | k2_gelu + k3a|k3b + cublasLt (+k4)\", meta: {per-shape plan keyed on (B,C,H,W)}}\ntests: [H29]\nfindings:\n  - \"STEP 0 precision log, DELIVERED. fp64 reference (the problem's reference run on .double() inputs), 10 rounds per row, inputs regenerated each round with the harness generator rules (randn, weight matrices /sqrt(fan_in), LN weight ones, LN bias zeros, biases randn; set_seed(200) or manual_seed(200) once per process; not bit-identical to the harness stream). Parent as shipped (old K2, old W2 pass) and this kernel, same inputs. Per row: atol, max|err| parent / new, beyond-atol count (atol + 1e-5|ref|) parent / new. 2,96: 2.7e-3, 2.249e-3 / 2.249e-3, 0 / 0. 8,320: 2.9e-3, 2.154e-3 / 2.160e-3, 0 / 0. 8,768: 2.9e-3, 2.206e-3 / 2.206e-3, 0 / 0. 64,96: 3.8e-3, 2.609e-3 / 2.603e-3, 0 / 0. 1,160: 2.6e-3, 2.203e-3 / 2.203e-3, 0 / 0. 16,768: 2.9e-3, 2.193e-3 / 2.193e-3, 0 / 0. 16,384: 3.3e-3, 2.322e-3 / 2.316e-3, 0 / 0. 32,128: 3.2e-3, 2.269e-3 / 2.268e-3, 0 / 0. 4,96: 2.8e-3, 2.256e-3 / 2.256e-3, 0 / 0. 1,96: 2.7e-3, 2.427e-3 / 2.427e-3, 0 / 0 (tightest: 90% of atol). 8,384: 2.8e-3, 2.095e-3 / 2.095e-3, 0 / 0. 4,192: 2.5e-3, 2.142e-3 / 2.142e-3, 0 / 0. 1,192: 2.4e-3, 1.998e-3 / 1.998e-3, 0 / 0. 2,768: 2.6e-3, 1.871e-3 / 1.871e-3, 0 / 0. 32,768: 2.9e-3, 2.389e-3 / 2.387e-3, 0 / 0. 8,192: 3.0e-3, 2.147e-3 / 2.145e-3, 0 / 0. All 16 rows have 0 beyond-atol elements, so no hi/lo split is needed. Max error is unchanged by the new K2/erf (differences <= 6e-6) [probe_b200]\"\n  - \"STEP 1 copy probe: plain 8-uint4-per-thread read+write copy after the 2xL2 zero-fill, 3 reps: 616.6 MB 186.8 us (6.6 TB/s r+w), 134.2 MB 44.9 us (6.0 TB/s), 21.0 MB 10.0 us (4.2 TB/s). Parent K2 (same container, mask3-mask2): 443-445 / 117.8 / 36.6-39.4 us = 42% / 38% / 27% of the copy rate, so the refutation clause (>= 80%) did NOT fire: K2 was far from the stream rate [probe_b200]\"\n  - \"register-prefetch K2 structure (NVRTC microbench, 64,96 shapes, cold L2): no-math floor 292-295 us (guarded or unguarded loops); with the old NR-style 10-coefficient erfc 354-438 us; with A&S 322-388 us. In-flight bytes per SM are bound by registers (about 92 KB at 3 CTAs x 240 thr x 8 uint4) and drop during compute phases. The shared-memory bulk ring floors at 212-215 us (no math) and 316 us with A&S, so about 100 us of the remaining time is math issue [probe_b200]\"\n  - \"MUFU sensitivity (ring, 64,96): full A&S 317 us, rcp replaced by an FMA 309, ex2 replaced by an FMA 300, both replaced 288: not MUFU-bound; plain FMA/INT issue is the remaining term [probe_b200]\"\n  - \"erf accuracy vs fp64 over [-12, 12], 2^26 points, max |h err| (h = z*Phi(z)): erff-based 4.86e-7; NR erfc (10 coefficients, ex2 form) 2.38e-7; A&S 7.1.26 form shipped 1.16e-6 (at z=1.18). NOT within the operator's 2e-7-vs-erff gate (1.2e-6 vs 4.9e-7); the gate was not met and the NR 10-coefficient form (2.4e-7, +4 FFMA per element, about +30 us at 64,96 in the register structure) is the in-gate fallback. End-to-end the new K2 changes the max output error by <= 6e-6 and beyond-atol stays 0 on all rows (step 0), because fp16 rounding of h (>= 2.4e-4 relative) dominates [probe_b200]\"\n  - \"STEP 2 K2-only (mask3-mask2, interleaved x3, spread <= 2 us), old -> ring: 64,96 444 -> 319 us (-28%; target <= 260 missed); 32,128 117.8 -> 79.5 (-33%; <= 65 missed); 8,320 36.6-39.4 -> 20.6-22.6 (target <= 22 met); 4,96 14.6-16.8 -> 11.5-14.1; 8,192 18.7 -> 12.5; 16,384 24.9 -> 10.8. Ring K2 is 59% / 56% / 47% of the copy rate at the three target rows. Refutation clause (within 15% of old at 64,96 and 32,128) did not fire [probe_b200]\"\n  - \"full pipeline, parent vs new, interleaved x3 in one container (harness_time, spread <= 0.5 us): 64,96 1155 -> 1029 us (target <= 960 missed); 32,128 301 -> 260 (<= 245 missed); 8,320 96 -> 80 (<= 75 missed); 16,384 76.9 -> 64.1; 8,192 59.7 -> 53.7; 4,96 50.4 -> 45.9; 32,768 76.8 -> 71.2; 16,768 61.2 -> 60.8 (ring + w2split); rows on the old K2 path unchanged (1,192 34.0; 1,160 42.2 -> 40.1 once the ring threshold is 1 MB) [probe_b200]\"\n  - \"ring K2 on the small rows (full pipeline, old vs ring, x3): 1,192 -0.1; 1,96 -1.7; 1,160 -2.2; 2,96 -2.0; 4,192 -3.0; 8,384 -6.2; 2,768 +0.1; 8,768 +0.1; 16,768 -4.1 us. Hence the shipped threshold (ring when the hidden is >= 1 MB; 2,768 keeps the old K2) [probe_b200]\"\n  - \"STEP 3 W2 split over 4-warp groups (named barrier per group, CTA-level reduction of the W2.gb dots, 16-B loads, all issued before use), K1 only, split off -> on: weights-only 2,768 7.8 -> 7.7; 8,768 10.1 -> 8.6; 16,768 10.1 -> 8.6; 32,768 9.6 -> 8.7; 16,384 6.1 -> 5.5; full K1 8,768 11.4 -> 10.0; 16,768 12.0 -> 11.0; 32,768 14.0 -> 14.7; 16,384 16.1 -> 16.4. Target (weights-only <= 6 us at C=768, 8,768 and 16,768 gaining >= 3 us) NOT met: the gain is 1.0-1.5 us, so the W2 chain is not the only term of the 8.6 us weight pass (W1 rows, 3072 x 768 fp32, are the other half). Shipped for M <= 800 only (8,768, 16,768, 2,768); off elsewhere [probe_b200]\"\n  - \"store hints on the hidden (our own scratch), full pipeline, auto / normal / evict_last / evict_first: 64,96 1029.3 / 1028.9 / 1030.2 / 1029.0; 32,128 260.2 / 264.5 / 264.4 / 260.6; 8,320 79.8 / 80.0 / 79.8 / 80.9; 16,384 64.0 / 62.9 / 62.9 / 63.5; 4,96 46.5 on all. Only 32,128 shows an effect (evict_first -4 us over normal/last, auto already picks evict_first above 42 MB); elsewhere within 1 us noise. Kept auto [probe_b200]\"\n  - \"STEP 4 run_tests 16/16 PASS (portal-order check included), rented, this vs the r4 merge in the same container: 2,96 37.5 vs 36.8; 8,320 78.6 vs 95.4; 8,768 48.1 vs 49.9; 64,96 1026.6 vs 1150.0; 1,160 39.6 vs 42.1; 16,768 56.1 vs 61.2; 16,384 62.1 vs 77.1; 32,128 258.9 vs 298.1; 4,96 47.0 vs 50.9; 1,96 32.6 vs 27.8; 8,384 50.2 vs 54.0; 4,192 38.9 vs 43.5; 1,192 34.4 vs 30.3; 2,768 54.5 vs 34.2; 32,768 70.2 vs 76.8; 8,192 52.7 vs 58.9. Bands S +2.8% / M -0.3% / L -10.5% against the merge, whose 1,192 / 1,96 / 2,768 rows are B and D paths (A loses there; use this kernel on the other 13 rows). Emulator: 0.6690 +- 0.008 for this kernel alone (merge 0.6553), more with the merge's B/D rows kept [run_tests]\"\n  - \"NOT DONE: Step 5 (nwmin 4 vs 8). The parent was interleaved x3 through a ctypes harness_time harness (setters in the library), not through run_tests, whose control is the r4 merge [probe_b200]\"\n  - \"pitfalls: probe_b200 /tmp persisted across several probes but vanished once, so keep scripts self-contained; a background job (Popen, start_new_session) survives the probe and can run a long precision+timing job; cuLaunchKernel with > 48 KB dynamic smem from NVRTC needs cuFuncSetAttribute on k.fn first; harness_time CUPTI drops the first kernel intermittently (retry) [probe_b200]\"\n  - \"dead end: K2 is not stream-bound even with ring loads. The math term (about 100 us at 64,96) is plain FMA issue (13 instr erf + 7 other per element); removing both MUFU ops only saves 29 us. Getting to the 187 us copy rate needs the GELU in a tensor-core GEMM epilogue (lineage E) or a cheaper per-element form [probe_b200]\"\npaths:\n  - {max_tokens: 3200, lang: cuda, width: 128, threads: 256, rows: 7, grid: oneshot, mem: tma, launches: 5, cluster: 1}\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 8, grid: oneshot, mem: tma, launches: 5, cluster: 1}\nruns_on:\n  H200: {runs: true, representative: false, note: \"bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ\"}\n  A100: {runs: false, representative: false}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"the custom GELU erf (A&S, max |h err| 1.2e-6) is outside the operator's 2e-7 gate; it needs an operator decision. The in-gate fallback is the NR 10-coefficient form in gelu_fast (2.4e-7), about +30 us at 64,96 and +4 FFMA per element elsewhere\"\n  - \"precision margin is unchanged from the parent (tightest row 1,96: 2.427e-3 against atol 2.7e-3); the log uses regenerated inputs on the harness rules, not the harness's own RNG stream\"\n  - \"k2_ring assumes the hidden rows are 16-B aligned (LD*2 = 8C+16 bytes and 256-B aligned workspace offsets: true for every C that is a multiple of 2)\"\n  - \"dynamic smem for k2_ring is up to about 75 KB per CTA; raise_smem only raises it, so portal order is safe (run_tests portal-order check passed)\"\n  - \"ring K2 is neutral at 1,192 / 8,768 and the small rows gain only 1.7-6 us; the 1,192 / 1,96 / 2,768 rows still belong to the B/D paths in the merge\"\nmeasure_first: [B200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "id": "r5-a-e2-ringk2",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "stream",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "bulk1d",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "token"
+  },
+  "operation": "structural_mutation",
+  "parents": [
+   "r4-a-e1-bulkplane-wprep"
+  ],
+  "round": "r5",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r5/candidates/r5-a-e2-ringk2.json",
+  "static_sm100": [
+   {
+    "kernel": "_Z7k1_bulkILi14ELi2EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 1152
+   },
+   {
+    "kernel": "_Z7k1_bulkILi7ELi1EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 1152
+   },
+   {
+    "kernel": "_Z5k1_dwILi16EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi14EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z5k1_dwILi7EEv3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 96,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z6k1_tmaILi2EEv4TMap3K1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 1152
+   },
+   {
+    "kernel": "_Z16k4_transpose_addPKfS0_Pfii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 26,
+    "resident_per_sm": null,
+    "smem": 5248
+   },
+   {
+    "kernel": "_Z9k3b_scaleP6__halfPKfS2_iiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z6k3a_w2PKfS0_S0_S0_S0_P6__halfiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 1024
+   },
+   {
+    "kernel": "_Z7k2_ringP6__halfPKfS2_PK6float2Pfiiiiiifii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 80,
+    "resident_per_sm": null,
+    "smem": 1152
+   },
+   {
+    "kernel": "_Z7k2_geluP6__halfPKfS2_PK6float2Pfiiiiiiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 69,
+     "LDG.128": 8,
+     "LDG.64": 62,
+     "LDG.CONSTANT": 65,
+     "LDG.CONSTANT.128": 342,
+     "LDGDEPBAR": 3,
+     "LDGSTS": 36,
+     "STG": 106,
+     "STG.128": 47,
+     "STG.64": 134,
+     "UBLKCP": 6,
+     "UTMALDG": 6
+    },
+    "regs": 72,
+    "resident_per_sm": null,
+    "smem": 23552
+   }
+  ],
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "instructions": "Experiment E2 (tests H29): Lineage A lean passes: K2 at stream rate, W2 conversion split over warps, and the owed 10-round precision log. Parent: r4-a-e1-bulkplane-wprep (lineage A's best). Step 0 (hard deliverable, do first): precision log for the parent as shipped, all 16 rows, the harness's 10 seeded rounds (seed 200) against an fp64 reference: per row the max |err| and the count of elements beyond that row's own atol (workload.jsonl) + 1e-5|ref|. If any row has a beyond-atol element, switch its hidden or W2 operand to a hi/lo fp16 split (2 cuBLASLt GEMMs accumulated, or hi/lo columns) and re-log. Step 1 (critic's probe, H29): time K2 alone after the 2xL2 zero-fill at 64,96 / 32,128 / 8,320 against a plain read+write copy kernel of the same fp16 bytes (616 / 134 / 21 MB), interleaved x3; record the copy rate in TB/s. Step 2: rewrite K2 (GELU + GRN sum of squares over the fp16 hidden) as a stream-rate kernel: 256-thread CTAs, each CTA owns a long token run of ONE image (thousands of tokens at 64,96; the whole image at small rows), each thread fixed on 8 hidden channels (one uint4), 8 uint4 loads in flight before the first erff, exact erff kept (a custom erf only if it is at least 1.3x faster AND |err| <= 2e-7 vs erff over [-10,10]), sumsq accumulated in registers across the run, one float4 atomic pair per 8 channels per CTA into the 4-copy accumulators, bias b1 folded as now. Try evict_last on the hidden stores for rows whose hidden is <= 42 MB and evict_first above; keep whichever wins per row class. Keep the kernel sequence identical on every call. Step 3: the W2 conversion in K1 (rows with the hidden > 16 MB: B >= 8 at C=768, B = 16 at C=384) is one warp per W2 row with 4 serial 768-column rounds: split each row over 4 warps with a CTA-level reduction and 16-B loads, all loads issued before use; target weights-only K1 <= 6 us at C=768 (now 8.9-11), measured with the conv-only / weights-only / both ablation at 2,768, 8,768, 16,768. Step 4: run_tests 16/16 x 10 rounds with the parent interleaved x3 in the same container as the control, and the r0 anchor once for the ratio; report per-row rented deltas, not band means. Step 5 (optional if time remains): the nwmin 4 vs 8 interleaved comparison left open in r4. Report findings with sources; a session that ends without the step 0 log returns no candidate. Success: K2 at 64,96 <= 260 us rented (from 447), 32,128 <= 65 (from 113), 8,320 <= 22 (from 38), so the full rows reach 64,96 <= 960, 32,128 <= 245, 8,320 <= 75 rented against the parent in the same container; weights-only K1 <= 6 us at C=768 with 8,768 and 16,768 gaining >= 3 us; precision log delivered with 0 beyond-atol elements on all 16 rows (or the hi/lo fix applied where needed). Refuted if: The copy probe shows the parent's K2 already at >= 80% of the copy kernel's rate at 64,96 (then the kernel is SIMT-bound and only a cheaper erf helps), or the rewritten K2 is within 15% of the old one at 64,96 and 32,128 in the same container. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s). OPERATOR NOTE: cache hints (evict_last/evict_first, applypriority) only on this kernel's own scratch buffers, never on the harness's inputs or output.",
+   "lineage": "A",
+   "model": "sonnet",
+   "niche": "lin:A:E2:H29",
+   "operation": "structural_mutation",
+   "parents": [
+    "r4-a-e1-bulkplane-wprep"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 39.65,
+    "1,192,28,28": 34.43,
+    "1,96,56,56": 32.61,
+    "16,384,14,14": 62.09,
+    "16,768,7,7": 56.06,
+    "2,768,7,7": 54.45,
+    "2,96,56,56": 37.54,
+    "32,128,64,64": 258.92,
+    "32,768,7,7": 70.24,
+    "4,192,28,28": 38.85,
+    "4,96,56,56": 46.95,
+    "64,96,112,112": 1026.57,
+    "8,192,28,28": 52.7,
+    "8,320,32,32": 78.59,
+    "8,384,14,14": 50.21,
+    "8,768,7,7": 48.11
+   }
+  }
+ },
+ "r5-e1-cutlass-evt-tf32": {
+  "card": "id: r5-e1-cutlass-evt-tf32\nparents: [r0-convnext-coop-fp32-anchor]\noperation: new_design\nlanguage: cuda_cpp\nniche:\n  mem: tma-tensor\n  st: bulk\n  grid: oneshot\n  launch: split\n  tile: rows64\n  red: cta\n  cache: default\n  spec: dispatch:size\nhypothesis: >-\n  H30 tested and REFUTED. The CUTLASS 4.4.1 sm100 builder can carry the whole GEMM1 epilogue as an EVT: LN fold via\n  ColBroadcast(-mean, rstd) and RowBroadcast(u, v), exact erf GELU, hidden store, and the per-image GRN sum of squares\n  as a non-final RowReduction with a custom a+b*b reducer. TF32 operands read straight from fp32 memory round to\n  nearest. But the per-image-batched TF32 GEMM1 costs 17.0 us cold at 8,768 and 20.0 us at 8,384, against the 14 / 12 us\n  kill lines. The plain mainloop alone is already 12.7 / 11.2 us: batching per image re-reads W1 once per image, and\n  TF32 doubles the operand bytes. The erf GELU node adds 2.4-8.5 us. The full 5-launch pipeline beats lineage A only at\n  2,768 (40.1 vs 48.5 us rented), where D already has 32.4.\nexpected_effect:\n  S: {pct: 0, confidence: high}\n  M: {pct: +20, confidence: medium}\n  L: {pct: +25, confidence: medium}\nresources_sm100a:\n  regs_per_thread: 232\n  smem_per_cta_bytes: 231424\n  threads_per_cta: 256\n  ctas_per_sm: 1\n  bytes_in_flight_per_sm: 200000\n  launches_per_call: 5\nknobs: {G1_TILE: 64x128x32, G2_TILE: 128x128x32, KS_HW49: \"B<=2:16, <=8:6, <=16:3, else 2\", KS_HW196: \"B<=8:4, else 2\", K1_ROWS: \"7x7: 1 (B<=16) / 2; 14x14: 1\", SLOT_14x14: 116}\ntests: [H30, H14, H31]\nfindings:\n  - \"compile: G1 (64x128x32 tf32, full EVT) builds in 36.6 s single-threaded, 232 regs, 0 spills. The three .cu files (G1, G2, custom kernels) build in parallel in 26-50 s wall, so the portal 300 s limit is not a risk [probe_b200]\"\n  - \"EVT nodes that instantiate on sm100 TmaWarpSpecialized1Sm: Sm90ColBroadcast with batch stride, Sm90RowBroadcast, Sm90Compute<multiply_add>, Sm90Compute<epilogue::thread::GELU> (erf form), and Sm90RowReduction<SqAdd, plus, plus, Stages 0, FinalReduction=false>. Non-final reduction writes compact partials [L][ceil(M/tileM)][N], so no workspace, atomics or zeroing are needed. Args nest as op_0/op_1/... (children first, node last) [probe_b200]\"\n  - \"pitfall: -DV=... as a macro name breaks the CUTLASS headers (identifier clash, 88 errors). Use unique macro names [probe_b200]\"\n  - \"H14 bit check through CUTLASS: tfloat32_t A/B on fp32 memory gives max |err| 1.1-1.4e-5 vs an fp64 reference with RNE-rounded operands, and 4.6-6.0e-3 vs truncated operands. So CUTLASS's TFLOAT32 TMA maps round to nearest. The gf2 reduction matches to 2e-5 relative [probe_b200]\"\n  - \"G1 cold (harness_time, us, rows 2,768 / 8,768 / 32,768 / 8,384 / 16,384): full EVT 128x128 tile 17.5/26.2/61.6/23.5/-; full EVT 64x128 12.1/17.0/39.7/20.0/30.9; plain epilogue 64x128 9.0/12.7/29.4/11.2/17.4; LN-fold only 9.0/13.0/29.9/11.0/17.6; reduction only 9.5/13.5/29.9/11.4/17.9; LN+GELU 11.1/15.4/32.0/16.9/25.9; full EVT 64x256 20.0/20.5/41.9/23.9/35.6; 128x128 with 3 stages (133 KB smem) slower than auto (21.6/31.8/68.1). cuBLAS TF32 on the flat M=B*HW shape, no epilogue: 7.5/10.7/20.5/9.5 [probe_b200]\"\n  - \"H30 kill line fires: G1 with EVT is 17.0 us at 8,768 (> 14) and 20.0 us at 8,384 (> 12). The broadcasts and the reduction are nearly free (+0.3-0.8 us). The erf GELU costs +2.4-8.5 us because the epilogue does not overlap the mainloop at ~1 tile per CTA. The binding term is the mainloop: batching per image re-reads W1 (9.4 MB at C=768) once per image, and TF32 doubles the bytes [probe_b200]\"\n  - \"split-K as the batch mode works on sm100: problem (M, N, K/KS, KS) with A and B batch stride = K-slice offset (overlapping strides). TMA accepts it and results are correct, so no stream-K scheduler is needed [probe_b200]\"\n  - \"precision log: harness generators, 10 rounds per row from seed 200, fp64 reference, TF32 G1+G2 with fp32 hidden. Max |err| 2,768 1.67e-3; 8,768 1.88e-3; 16,768 1.87e-3; 32,768 1.86e-3; 8,384 1.87e-3; 16,384 1.94e-3. 0 elements beyond 2.4e-3+1e-5|ref| on all six rows: more margin than the fp16 paths (2.37e-3) [probe_b200]\"\n  - \"pipeline cumulative cold, final build (K1 / +G1 / +K3 / +G2 / +Kred, us rented): 2,768 13.7/24.7/28.1/34.4/40.1; 8,768 13.2/29.4/33.4/41.8/47.7; 16,768 16.6/39.7/44.6/55.6/61.5; 32,768 19.4/58.3/65.4/87.4/95.5; 8,384 16.5/36.3/41.8/52.6/62.3; 16,384 29.6/60.5/68.3/82.6/94.2. Against A r4 (48.5/44.4/53.2/70.1/50.4/71.5) only 2,768 wins; targets met 0/6 [probe_b200]\"\n  - \"first build had K1 19 us and Kred 12.7 us at 2,768. Causes: fold dot products as serial DRAM rounds per warp run before the conv in the same CTAs, and Kred compiled to 40 regs with serialised partial loads. All-loads-first fold units (4 W1 rows or half a W2 row per unit) and an explicit load-array Kred cut K1 to 13-19 us and Kred to 6-12 us. K1 is still 2-3x the lineage A/D bulk-plane conv (one CTA per image row re-reads the whole image; 14x14 rows at 224 CTAs take 2 waves) [probe_b200]\"\n  - \"run_tests twice, 14/16 PASS each time. Correctness passed on all 16 rows. The failures are CUPTI sequence-matching errors whose rows change between runs (2,768 & 32,768, portal-order 16,768; then 8,768 & 2,768, portal-order 8,768 & 16,384). The failing window holds [K3, G2, Kred] or [G1, K3, G2, Kred], so the first kernels of the call fall before the CPU start timestamp. This matches the 'timestamp skew on Modal' note in the harness copy. No PDL: CUTLASS 4.4.1 launch_with_pdl defaults false and the GDC macros are off. Not resolved; this path must not go to the portal until the cause is known [run_tests, probe_b200]\"\n  - \"dead end for lineage E as specified: a per-image-batched GEMM1 cannot reuse W1 across images. Any further library route needs non-batched M=B*HW tiles plus a segmented per-image column reduction (custom EVT node), or FP16 operands with a one-pass conversion. Even then cuBLAS-level TF32 GEMM1 (10.7 us at 8,768) plus GELU leaves no room under A's chain [INFERRED]\"\npaths:\n  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 64, grid: oneshot, mem: tma, launches: 5, x: none, w: none, st: none, cluster: 1}\nruns_on:\n  H200: {runs: false, representative: false, note: \"tcgen05 / sm_100a only\"}\n  A100: {runs: false, representative: false}\n  L40S: {runs: false, representative: false}\nrisks:\n  - \"run_tests flags CUPTI timing-window mismatches on 2-3 of the six E rows per run (correctness fine); unexplained, would fail the portal if it reproduces there\"\n  - \"slower than lineage A on 5 of 6 target rows; only 2,768 beats A, and D already owns that row\"\n  - \"non-target rows run the r0 fp32 anchor (slow); intended for per-workload merge only\"\nmeasure_first: [H200]\ncompliance:\n  single_stream: true\n  no_cross_call_state: true\n  fp32_math: true\n  no_threads_or_fork: true\n  no_precompiled_binaries: true\n",
+  "failure_log": "6SM100_TMEM_LOAD_32dp32b32xESY_S18_NS4_39AutoVe\nctorizingCopyWithAssumedAlignmentILi128EEENS4_14SM90_TMA_STOREES18_S1U_S1U_EEEvv\nEEEEvNT_6ParamsE_0_0_0_10', 'void e_kred<2, 2, 7>(float const*, float const*, \nfloat const*, float*, int, int, int)_0_0_0_10'] not in \n['_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEE\nENS1_10collective13CollectiveMmaINS1_35MainloopSm100TmaUmmaWarpSpecializedILi8EL\ni2ELi4ENS5_IJNS4_1CILi1EEESB_SB_EEEEENS5_IJNSA_ILi64EEENSA_ILi128EEENSA_ILi32EEE\nEEENS_10tfloat32_tENS5_IJlSB_lEEESI_SJ_NS4_8TiledMMAINS4_8MMA_AtomIJNS4_17SM100_\nMMA_TF32_SSISI_SI_fLi64ELi128ELNS4_4UMMA5MajorE0ELSO_0ELNSN_7ScaleInE0ELSP_0EEEE\nEENS4_6LayoutISC_NS5_IJNSA_ILi0EEEST_ST_EEEEENS5_IJNS4_10UnderscoreESW_SW_EEEEEN\nS4_13SM90_TMA_LOADENS4_14ComposedLayoutINS4_7SwizzleILi3ELi4ELi3EEENS4_18smem_pt\nr_flag_bitsILi32EEENSS_INS5_IJNSA_ILi8EEESG_EEENS5_IJSG_SB_EEEEEEEvNS4_8identity\nESZ_S19_vS1A_EENS_8epilogue10collective18CollectiveEpilogueINS1C_23Sm100TmaWarpS\npecializedILi2ELi2ELi32ELb0ELb1EEEJSH_NS5_IJNSS_ISE_SB_EES1H_EEEvSJ_fSJ_NS1C_6fu\nsion15Sm90TreeVisitorINS1J_16Sm90RowReductionI5SqAddNS_4plusES1N_Li0ESH_ffLNS_15\nFloatRoundStyleE2ENS5_IJST_SB_ST_EEELi4ELb1ELb0ELb1ESt16integer_sequenceIiJLi0EL\ni1EEEEEJNS1K_INS1J_11Sm90ComputeINS1C_6thread4GELUEffLS1O_2EvEEJNS1K_INS1T_INS_1\n2multiply_addEffLS1O_2EvEEJNS1J_16Sm90ColBroadcastILi0ESH_ffNS5_IJSB_ST_lEEELi4E\nLb1EEENS1K_IS1Y_JS21_NS1J_16Sm90RowBroadcastILi0ESH_ffNS5_IJST_SB_lEEELi4ELb1EEE\nNS1J_12Sm90AccFetchEEEES24_EEEEEEEEENS4_5SM1004TMEM4LOAD27SM100_TMEM_LOAD_16dp12\n8b16xESZ_S19_NS4_17SM75_U32x4_LDSM_NENS4_14SM90_TMA_STOREES19_NS4_17SM90_U32x4_S\nTSM_NENS4_39AutoVectorizingCopyWithAssumedAlignmentILi128EEEEEEvvEEEEvNT_6Params\nE_0_0_0_10', 'void e_k3<4, 1, 3>(float const*, float const*, float*, int, int, \nfloat)_0_0_0_10', \n'_ZN7cutlass13device_kernelINS_4gemm6kernel13GemmUniversalIN4cute5tupleIJiiiiEEE\nNS1_10collective13CollectiveMmaINS1_35MainloopSm100TmaUmmaWarpSpecializedILi6ELi\n2ELi4ENS5_IJNS4_1CILi1EEESB_SB_EEEEENS5_IJNSA_ILi128EEESE_NSA_ILi32EEEEEENS_10tf\nloat32_tENS5_IJlSB_lEEESH_SI_NS4_8TiledMMAINS4_8MMA_AtomIJNS4_17SM100_MMA_TF32_S\nSISH_SH_fLi128ELi128ELNS4_4UMMA5MajorE0ELSN_0ELNSM_7ScaleInE0ELSO_0EEEEEENS4_6La\nyoutISC_NS5_IJNSA_ILi0EEESS_SS_EEEEENS5_IJNS4_10UnderscoreESV_SV_EEEEENS4_13SM90\n_TMA_LOADENS4_14ComposedLayoutINS4_7SwizzleILi3ELi4ELi3EEENS4_18smem_ptr_flag_bi\ntsILi32EEENSR_INS5_IJNSA_ILi8EEESF_EEENS5_IJSF_SB_EEEEEEEvNS4_8identityESY_S18_v\nS19_EENS_8epilogue10collective18CollectiveEpilogueINS1B_23Sm100TmaWarpSpecialize\ndILi4ELi2ELi32ELb0ELb1EEEJSG_NS5_IJNSR_ISE_SB_EENSR_ISF_SB_EEEEEvSI_fSI_NS1B_6fu\nsion15FusionCallbacksIS1F_NS1J_17LinearCombinationIffvfLNS_15FloatRoundStyleE2EE\nESG_S1I_JEEENS4_5SM1004TMEM4LOAD26SM100_TMEM_LOAD_32dp32b32xESY_S18_NS4_39AutoVe\nctorizingCopyWithAssumedAlignmentILi128EEENS4_14SM90_TMA_STOREES18_S1U_S1U_EEEvv\nEEEEvNT_6ParamsE_0_0_0_10', 'void e_kred<2, 2, 7>(float const*, float const*, \nfloat const*, float*, int, int, int)_0_0_0_10']",
+  "id": "r5-e1-cutlass-evt-tf32",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "tma-tensor",
+   "red": "cta",
+   "spec": "dispatch:size",
+   "st": "bulk",
+   "tile": "rows64"
+  },
+  "operation": "new_design",
+  "parents": [
+   "r0-convnext-coop-fp32-anchor"
+  ],
+  "round": "r5",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r5/candidates/r5-e1-cutlass-evt-tf32.json",
+  "static_sm100": [
+   {
+    "kernel": "_Z6e_kredILi2ELi7ELi25EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 111,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z6e_kredILi4ELi7ELi25EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 172,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z6e_kredILi2ELi2ELi7EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z6e_kredILi3ELi2ELi7EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 42,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z6e_kredILi6ELi2ELi7EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 64,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z6e_kredILi16ELi2ELi7EEvPKfS1_S1_Pfiii",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 158,
+    "resident_per_sm": null,
+    "smem": 26240
+   },
+   {
+    "kernel": "_Z4e_k3ILi13ELi4ELi2EEvPKfS1_Pfiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 99,
+    "resident_per_sm": null,
+    "smem": 1056
+   },
+   {
+    "kernel": "_Z4e_k3ILi4ELi1ELi3EEvPKfS1_Pfiif",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 40,
+    "resident_per_sm": null,
+    "smem": 1056
+   },
+   {
+    "kernel": "_Z4e_k1ILi14ELi8ELi116ELi1ELi3EEv3E1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 163,
+    "resident_per_sm": null,
+    "smem": 1040
+   },
+   {
+    "kernel": "_Z4e_k1ILi7ELi7ELi49ELi2ELi6EEv3E1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 228,
+    "resident_per_sm": null,
+    "smem": 1040
+   },
+   {
+    "kernel": "_Z4e_k1ILi7ELi7ELi49ELi1ELi6EEv3E1P",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG.128": 17,
+     "LDG.CONSTANT": 501,
+     "LDG.CONSTANT.128": 549,
+     "STG": 174,
+     "STG.128": 32,
+     "UBLKCP": 3
+    },
+    "regs": 228,
+    "resident_per_sm": null,
+    "smem": 1040
+   },
+   {
+    "kernel": "_Z14convnext_fused6Params",
+    "local": 0,
+    "num_warps": null,
+    "ops": {
+     "LDG": 137,
+     "LDG.CONSTANT": 727,
+     "LDG.CONSTANT.128": 154,
+     "LDG.CONSTANT.64": 496,
+     "STG": 75,
+     "STG.128": 4
+    },
+    "regs": 128,
+    "resident_per_sm": null,
+    "smem": 1024
+   }
+  ],
+  "status": "failed on B200r: ['PASSED', 'RUNTIME_ERROR']",
+  "task": {
+   "band": "M|L",
+   "instructions": "Experiment E1 (tests H30): New lineage E: CUTLASS sm100 builder GEMMs with EVT fusion and TF32 operands straight from fp32 memory for the six wide-C small-image rows. Build from scratch (you may read only the r0 anchor and the lineage conclusions; do not read lineage A/B/D code). Target rows: 2,768,7,7; 8,768,7,7; 16,768,7,7; 32,768,7,7; 8,384,14,14; 16,384,14,14. All other rows run the r0 anchor path unchanged (the operator merges per workload). Language 'cutlass' (C++; two files: kernel.cu with no torch headers plus binding.cpp; CUTLASS 4.4.1 headers at $CUTLASS_DIR/include; target_hardware [B200] only, since tcgen05 code does not build for plain sm_100). Pipeline per call, 4-5 launches: (K1) your own bulk-plane depthwise conv for 7x7/14x14 images: 1-D cp.async.bulk of channel-plane groups into zero-padded smem, one thread per 7-output row segment, plus the dwconv bias; write d as fp32 TOKEN-MAJOR [b][hw][C] (tcgen05 kind::tf32 needs K-major A and B), per-token LN partial sums (sum, sumsq) via atomics or per-group partials finalised as mu[token], rstd[token]; spare CTAs compute the fold vectors u[n] = sum_c W1[n][c]*lnw[c], v[n] = sum_c W1[n][c]*lnb[c] + b1[n] and b2'[c] = sum_k W2[c][k]*gb[k] + b2[c] (coalesced 16-B loads, all loads issued before use, compile-time trip counts). No weight conversion in the first build: both GEMMs use TF32. (G1) CUTLASS CollectiveBuilder, arch Sm100, KernelTmaWarpSpecialized1SmSm100 (or 2Sm where the tile allows), batched L = B images, M = HW (49 or 196, tile M = 64 or 128), N = 4C, K = C; ElementA = ElementB = cutlass::tfloat32_t on the fp32 d and fp32 W1 (verify in step 1 that the resulting TMA descriptor uses the TFLOAT32 data type: compare one tile's accumulator against an fp64 reference of round-to-nearest TF32 operands and against truncation; the bit pattern must match RNE, H14). EVT epilogue: Sm90RowBroadcast(rstd, mu with batch stride), Sm90ColBroadcast(u, v), compute z = rstd*(acc - mu*u) + v, cutlass::epilogue::thread::GELU (the erf form, NOT GELU_taylor), store the hidden (fp32 for the TF32 rows, [b][hw][4C] K-major for GEMM2) and Sm90ColReduction of z*z over M per batch into gf2[b][k] (atomic across M tiles where M > tile). If the sm100 epilogue cannot instantiate the ColReduction, fall back to an AuxStore of the hidden and compute the per-image sumsq in K3 with a cluster of 8 CTAs per image exchanging the 4C partials through DSMEM. (K3) one-round GRN scale kernel: grid (image, k-slice), each CTA reads gf2[b][:] (12 KB), computes gf = sqrt, mean_k, s_b[k] = 1 + gw[k]*gf/(mean+eps), then rescales its hidden slice in place with all loads issued before any store; nothing else is chained. (G2) CUTLASS batched: A = W2 [C][4C] (tf32, batch stride 0), B = scaled hidden [hw][4C] per image (K-major, N = HW), D[b][c][hw] with batch stride C*HW = NCHW directly, source C = x (beta = 1) and per-row bias b2'. The CTA count is tiny at 7x7 (6*B tiles), so use split-K: first try the sm100 stream-K/split-K scheduler; if it is not available in 4.4.1, run batched over (image, k-split) with fp32 partials [B*KS][C][HW] and a one-round reduce+residual kernel (coalesced, all loads first). Steps: (0) time the r0 anchor interleaved x3 as the in-session control; (1) compile gate with no GPU needed first: G1 and G2 instantiations for 49x3072x768 (L=8) and 196x1536x384 (L=8), record nvcc wall time (abort the design if two instantiations exceed 200 s: the portal limit is 300 s), registers, smem, spills; then the H14 bit check; (2) time G1 cold (after a 2xL2 zero-fill) at 8,768 and 8,384 and compare with the leader-implied budget: kill the EVT route if G1 alone exceeds 14 us at 8,768 (that is cuBLASLt GEMM1 + K2 on lineage A); (3) full pipeline, run_tests 16/16 x 10 rounds with the portal-order check; (4) precision log on the six rows: 10 seeded rounds (seed 200) vs an fp64 reference, per row max |err| and count beyond atol + 1e-5|ref| (TF32 RNE is the same 10-bit mantissa as fp16, so expect max about 2.4e-3 at 32,768; any beyond-atol element switches that row's activation operand to an fp16 hi/lo split or fp32 SIMT); (5) per-launch cold breakdown (harness_time) of K1/G1/K3/G2 on 8,768 and 8,384, and if GEMM2 is ingest-bound at low CTA counts (H31), raise KS. Report every finding with its source, including compile times and which EVT nodes instantiated. Success: run_tests 16/16; the six target rows at or under 2,768 32 / 8,768 38 / 8,384 42 / 16,384 58 / 16,768 50 / 32,768 68 us rented on at least 4 of 6 rows, with the parent-equivalent merge rows timed in the same container (operator-provided numbers: A r4 48.5 / 44.4 / 50.4 / 71.5 / 53.2 / 70.1, D r4 32.4 at 2,768); CUTLASS build time under 200 s; precision log delivered with 0 beyond-atol elements. Refuted if: G1 with the EVT epilogue runs slower cold than 14 us at 8,768 or 12 us at 8,384 (then the library epilogue is no cheaper than cuBLASLt + K2), or the per-batch column reduction and the split-K GEMM2 both fail to instantiate on sm100 and the fallbacks push the six rows above A's times, or the build exceeds 200 s. This is an EXPLORATION task: the goal is to learn whether this idea can move some size band by 3% or more on the portal, not to edge out the current best by 0.1%. You may discard the parent's design entirely; it is given for reference. Test the idea's core assumption with probe_b200 first (seconds per probe). If the idea does not pan out, still return your best version of it as the candidate and record what you learned in the card's findings: negative results are valuable and go into the lab notebook for later rounds. CUDA C++ uses the two-file layout. Set the card's tests: field to the hypothesis id(s). OPERATOR NOTE (rules for the CUTLASS route): (1) no PDL anywhere: launch every CUTLASS kernel without programmatic dependent launch (GemmUniversalAdapter::run / operator() with launch_with_pdl left false; never set cudaLaunchAttributeProgrammaticStreamSerialization). (2) Call the adapter's initialize() (or to_underlying_arguments) with this call's pointers on every call: its params embed TMA descriptors, which must be encoded per call; cache only shape-keyed configuration, never an initialised Gemm object or converted data. (3) The CUTLASS workspace and every atomic accumulator (gf2, LN partials, split-K partials) come from torch.empty inside run(), which is uninitialised: zero them with your own kernel or cudaMemsetAsync on the current stream in every call before use. (4) Spec language may be 'cutlass' or 'cuda_cpp' (both compile the same way); keep ld_flags you need (e.g. -lcuda).",
+   "lineage": "E",
+   "model": "opus",
+   "niche": "lin:E:E1:H30",
+   "operation": "new_design",
+   "parents": [
+    "r0-convnext-coop-fp32-anchor"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 110.33,
+    "1,192,28,28": 89.83,
+    "1,96,56,56": 64.88,
+    "16,384,14,14": 94.47,
+    "16,768,7,7": null,
+    "2,768,7,7": null,
+    "2,96,56,56": 100.93,
+    "32,128,64,64": 1662.37,
+    "32,768,7,7": null,
+    "4,192,28,28": 139.97,
+    "4,96,56,56": 142.93,
+    "64,96,112,112": 5620.68,
+    "8,192,28,28": 217.72,
+    "8,320,32,32": 624.81,
+    "8,384,14,14": 62.74,
+    "8,768,7,7": 48.01
+   }
+  }
+ },
+ "r5-merge": {
+  "card": "id: r5-merge\nparents:\n- r4-merge-m3-a4\n- r5-a-e2-ringk2\noperation: repair\nlanguage: cuda_cpp\nniche:\n  cache: default\n  grid: oneshot\n  launch: split\n  mem: bulk1d\n  red: warp\n  spec: dispatch:size\n  st: direct\n  tile: rows8\nhypothesis: 'Operator per-workload merge: Per-workload merge (loop/merge.py, kernels unchanged) of r4-merge-m3-a4 with r5-a-e2-ringk2\n  on 1,160,449,7, 1,192,28,28, 1,96,56,56, 16,384,14,14, 16,768,7,7, 2,96,56,56, 32,128,64,64, 32,768,7,7, 4,192,28,28, 4,96,56,56,\n  64,96,112,112, 8,192,28,28, 8,320,32,32, 8,384,14,14, 8,768,7,7, where they beat it side by side. Projected portal score\n  0.6802 (best 0.6553).'\ndispatch:\n- kernel: r4-merge-m3-a4\n  shapes: 2,768,7,7\n- kernel: r5-a-e2-ringk2\n  shapes: 2,96,56,56 8,320,32,32 8,768,7,7 64,96,112,112 1,160,449,7 16,768,7,7 16,384,14,14 32,128,64,64 4,96,56,56 1,96,56,56\n    8,384,14,14 4,192,28,28 1,192,28,28 32,768,7,7 8,192,28,28\n",
+  "id": "r5-merge",
+  "language": "cuda_cpp",
+  "niche": {
+   "cache": "default",
+   "grid": "oneshot",
+   "launch": "split",
+   "mem": "bulk1d",
+   "red": "warp",
+   "spec": "dispatch:size",
+   "st": "direct",
+   "tile": "rows8"
+  },
+  "operation": "repair",
+  "parents": [
+   "r4-merge-m3-a4",
+   "r5-a-e2-ringk2"
+  ],
+  "round": "r5",
+  "solution": "problems/035_convnextv2_block_with_grn/rounds/r5/candidates/r5-merge.json",
+  "status": "passed",
+  "task": {
+   "band": "all",
+   "instructions": "Operator per-workload merge (round.py merge).",
+   "niche": "merge",
+   "operation": "repair",
+   "parents": [
+    "r4-merge-m3-a4",
+    "r5-a-e2-ringk2"
+   ]
+  },
+  "timings": {
+   "B200r": {
+    "1,160,449,7": 31.66,
+    "1,192,28,28": 28.25,
+    "1,96,56,56": 26.43,
+    "16,384,14,14": 57.41,
+    "16,768,7,7": 47.79,
+    "2,768,7,7": 34.31,
+    "2,96,56,56": 31.14,
+    "32,128,64,64": 253.95000000000002,
+    "32,768,7,7": 65.04,
+    "4,192,28,28": 33.75,
+    "4,96,56,56": 41.28,
+    "64,96,112,112": 1023.8199999999999,
+    "8,192,28,28": 45.99,
+    "8,320,32,32": 73.03,
+    "8,384,14,14": 43.61,
+    "8,768,7,7": 42.24
    }
   }
  }

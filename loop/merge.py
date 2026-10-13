@@ -184,6 +184,7 @@ def build(leaves, routes, default, name, description=""):
         print(f"warning: leaves use different cuda_cflags; the merge compiles every file with {union('cuda_cflags')}")
     spec = dict(first["spec"])
     spec["entry_point"] = "binding.cpp::run"
+    spec["languages"] = list(dict.fromkeys(x for s in specs for x in s["languages"]))
     spec["target_hardware"] = [h for h in first["spec"]["target_hardware"] if all(h in s["target_hardware"] for s in specs)]
     spec["dependencies"] = list(dict.fromkeys(x for s in specs for x in s.get("dependencies") or []))
     spec["compile_options"] = {k: union(k) for k in ("cflags", "cuda_cflags", "ld_flags") if union(k)}

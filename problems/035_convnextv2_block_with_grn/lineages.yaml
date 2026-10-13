@@ -1,43 +1,44 @@
 lineages:
 - id: A
-  thesis: Phase-separated pipeline of plain launches (TMA/bulk-staged dwconv+LN, tensor-core GEMMs with elementwise steps
-    fused into epilogues, fp16 materialised hidden) that wins by per-phase efficiency; the control lineage and carrier of
+  thesis: Phase-separated pipeline of plain launches (bulk/TMA-staged dwconv+LN, cuBLASLt FP16 GEMMs, elementwise steps as
+    lean one-round kernels, fp16 materialised hidden) that wins by per-phase efficiency; the control lineage and carrier of
     conv/epilogue techniques.
   status: active
   started: r1
-  best: r2-lib-cublaslt-fp16-tmaconv
+  best: r4-a-e1-bulkplane-wprep
   conclusions:
-  - Each custom launch costs 6-17 us at S (2-3 dependent rounds plus ramp), so a 5-6 launch pipeline floors at 35-40 us; custom
-    mma.sync fused GEMMs (r3 E1) lost 4x in MMA rate to cuBLASLt (tcgen05), so fusion must ride a tcgen05 or library epilogue,
-    and on S rows the residual cost is per-CTA rounds, not the engine.
-  - TMA 3-D box staging lifted conv ingest 11x (K1 5.6 us at 1,192, 315 us at the largest, still 3x the FMA bound, LDS/sync-bound);
-    W=7/14/449x7 rows still use the 8 GB/s/SM staging (K1 18.6-33.5 us at C=768) while D's bulk-plane conv does the same conv
-    in 1.5-10 us.
+  - Bulk-plane conv in K1 (r4) cut K1 from 18-33 us to 10-17 us on the W=7/14/449x7 rows (5 rows gained 12-24 us rented);
+    the conv itself is 4-9 us at C=768 and the fp32->fp16 weight pass (8.9-11 us, W2 rows one warp with 4 serial rounds) now
+    bounds K1 at C=768 with B<=8.
+  - Each custom launch costs 6-17 us at S because it is a 2-3 dependent-round chain; K2 (447 us at 64,96 for 616 MB, 113 at
+    32,128, 38 at 8,320) and K3 (6-17 us, 3-round chain) are the levers left on this path; a tcgen05/library epilogue would
+    remove them outright (lineage E tests that).
   - cuBLASLt FP16 is 1.4-2.1x faster than TF32 everywhere; at C=768 GEMM1+GEMM2 cost 15.6-24 us cold against a 2.7 us weight
-    stream, so the library is a first-order term on the four C=768 rows, not at 1,192.
-  - K2 (GELU+stats) is the largest custom launch at the top rows (447 us at 64,96 for 616 MB, 113 at 32,128): a stream-rate
-      rewrite is worth about +0.01 of mean (H29, queued).
-  - Portal/rented ratio for this lineage is 1.16-1.22 on the small multi-launch rows and 1.23-1.32 elsewhere (#65878); precision
-    max |err| 2.37-2.39e-3 against atol 2.4e-3 on three rows, 10-seeded-round log still owed.
+    stream; NCHW strided-batched GEMM2 is slow in cuBLASLt (K4 transpose-add instead).
+  - Portal/rented ratio for this lineage is 1.16-1.22 on the small multi-launch rows and 1.23-1.32 elsewhere; cross-run drift
+    of 5-12 us on unchanged rows means every pick needs an interleaved same-container control.
+  - Precision max |err| 2.37-2.39e-3 against atol 2.4e-3 on three rows; the 10-seeded-round log is still owed (hard deliverable
+    of E2 r5).
 - id: B
-  thesis: One cooperative launch with every phase fused (FP16 mma.sync, fp16 hidden in L2), now aiming at S rows <= 24 us
-    rented by replacing the grid barriers with counter-released dataflow so GEMM tiles start when their inputs land instead
-    of after the slowest CTA.
-  status: active
+  thesis: One cooperative launch with every phase fused (FP16 mma.sync, fp16 hidden in L2), aiming at S rows <= 24 us rented
+    by cutting the per-phase chain between the two grid barriers.
+  status: paused
   started: r1
   best: r2-coop-flat-s
   conclusions:
-  - Coop beats three plain launches by 3-7 us at S (F 4.6 vs 9.9 us); mma.sync f16 at 0.455 PF/s is enough on every S row.
-  - H24 refuted at kernel level: a 32 KB just-written bulk round costs 0.83 us, so copy issue rate is worth ~0.5 us per round;
-      the 2-4 us post-sync steps are barrier release (1.6-1.9 us per 296-CTA flip barrier) plus cold-DRAM rounds (1.2-3.5
-      us whatever the load method).
-  - At 1,192 the conv runs on 48 CTAs and P1 ends at 1.8 us median but 8.6 us max, so sync 1 releases at 9.9 us: most of the
-      pre-GEMM1 time is tail wait on one slow conv CTA, not conv work.
-  - Floor with two barriers is about 11-14 us (F 4.6 + 2 releases + one cold round + two just-written rounds), leaving 15-18
-    us of SM work and waits at 1,192 (29.5 us) to attack.
-  - Pitfalls: runtime guards or partial unrolls around mma.sync cost ~470 clk per k-block; register-direct 48-erff epilogues
-      take 16 us per tile (smem-staged rolled loop with 16-B stores fixes it); a release arrive with loads in flight stalls;
-      ctypes probe harnesses mis-time by 4-5 us, decide dispatch from run_tests with a same-build control.
+  - Coop beats three plain launches by 3-7 us at S (F 4.6 vs 9.9 us); mma.sync f16 is enough on every S row; still the merge's
+    best at 1,192 / 1,96 / 2,96.
+  - 'H27 refuted (r4): per-tile counters release in 0.64 us but the dataflow kernel was 1.4-2x slower on every S row because
+    each tile re-converted its weight slice and the static lists serialised conv -> GEMM1 -> GEMM2 on the first CTAs; a dataflow
+    design must keep the one-pass weight conversion and claim tiles dynamically.'
+  - 'Barrier microbench (r4): a flat atomic-counter barrier releases in 0.86-1.07 us median vs 1.6-1.9 us for the cg flip
+    barrier; a two-level tree is worse (3.9 us). Cheap knob for r6: swap the two grid.syncs for the flat counter barrier (about
+    -1.5 us per S row).'
+  - Floor with two barriers is 10-13 us (F 4.6 + 2 x 1 us releases + one cold round + two just-written rounds), so 15-18 us
+    of SM work and conv-tail wait remain at 1,192 (29.5 us); three rounds of load-path changes did not move it.
+  - 'Pitfalls: runtime guards around mma.sync cost ~470 clk per k-block; register-direct erff epilogues take 16 us per tile;
+    a release arrive with loads in flight stalls; decide dispatch from run_tests with a same-build control, never from a ctypes
+    probe harness.'
 - id: C
   thesis: On-chip hidden with no global intermediates (hidden tile in shared memory across one grid barrier, weight slices
     ingested from L2, GEMM2 split-K reduced with red.add into a prefilled output).
@@ -45,29 +46,43 @@ lineages:
   started: r1
   best: r2-e3-onchip-hidden-v2
   conclusions:
-  - Retired r3: H13 (16-CTA clusters, DSMEM ~12 B/clk/SM) and H20 (one-barrier on-chip hidden, 30.8 us at 1,192 vs 25 kill)
-      both refuted; no edge over a materialised fp16 hidden and no plan for 8,192 / C>=320.
-  - Keep: one-shot cp.async.bulk into smem after the flush runs at ~120 GB/s/SM; converting inside the ring is 2-2.5x slower,
-      so keep slices fp32-resident and cvt.rn.f16x2 at fragment load.
-  - Keep: TFLOAT32 TMA maps round to nearest even bit-exactly (H14); red.global.add.f32 into L2 reaches 4.1-4.4 TB/s from
-      256-512 CTAs.
-  - Keep: cold __ldg of small vectors at the point of use adds a DRAM round each; bulk-load them at entry.
+  - 'Retired r3: H13 (16-CTA clusters, DSMEM ~12 B/clk/SM) and H20 (one-barrier on-chip hidden, 30.8 us at 1,192 vs 25 kill)
+    refuted; no edge over a materialised fp16 hidden and no plan for 8,192 / C>=320.'
+  - 'Keep: one-shot cp.async.bulk into smem after the flush runs at ~120 GB/s/SM; converting inside the ring is 2-2.5x slower,
+    so keep slices fp32-resident and cvt.rn.f16x2 at fragment load.'
+  - 'Keep: TFLOAT32 TMA maps round to nearest even bit-exactly (H14); red.global.add.f32 into L2 reaches 4.1-4.4 TB/s from
+    256-512 CTAs.'
+  - 'Keep: cold __ldg of small vectors at the point of use adds a DRAM round each; bulk-load them at entry.'
   - Conv redundancy 4C/BN (2-6x) and per-CTA serial rounds dominated, not bytes.
 - id: D
   thesis: Cooperative wide-C specialist for the six C>=384, HW<=196 rows (bulk-plane conv, CTA-local GRN statistics, split-K
-    GEMM2 with coalesced red.add) whose GEMM engine is tcgen05 kind::f16 in the swap-AB orientation (weights as M, tokens
-    as N), so the output tile is NCHW and the stats are thread-local.
+    GEMM2 with coalesced red.add) whose GEMM engine is hand-written tcgen05 kind::f16 in the swap-AB orientation (weights
+    as M, tokens as N), so the output tile is NCHW and the stats are thread-local.
   status: active
   started: r3
-  best: r3-ws-coop-widec
+  best: r4-d-tc05-swapab
   conclusions:
-  - The stub with real bytes (2 syncs, plane conv, 1.4 MB per CTA of W through a 5x32 KB bulk ring, coalesced red) runs 16-29
-    us on all six rows, so weight ingest and post-sync rounds are not the binding term; H25 refuted as stated because the
-    mma.sync skeleton costs 40-140 us (0.64 us per 32-k chunk, 0.26 us per chunk of bare wait+sync, 16 warps/SM with no ILP).
-  - Bulk-plane conv (1-D cp.async.bulk of 32-plane groups into zero-padded smem, thread per 7-output row segment) costs 1.5
-    us at 2,768, 6 at 8,768, 10 at 32,768, 8-9 at 8/16,384.
-  - Scattered scalar red.add is 8-30 us for 2.4-9.6 MB; coalesced red.global.add.v4.f32 from 128 CTAs does the same in 2.4-4.2
-    us (stage partials as [img][c][hw]).
-  - Fully resident fp32 W slices fit only where M <= ~400 at C=768; the design is weight-streaming per slice, not weight-stationary.
-  - Latency-bound smem loops (runtime trip counts, rolled warp-per-row GELU, serial __ldcg stats) cost 5-17 us each; compile-time
-    trip counts with all loads issued first fixed v3 (2,768 34.1 us, 8,384 53.5 us).
+  - 'r4 tcgen05 swap-AB build passes 16/16 (168 regs, 227.5 KB smem, 148 CTAs x 384 thr): 2,768 32.4 / 8,768 49.1 / 16,768
+    70.8 / 32,768 99.3 / 8,384 79.8 / 16,384 111.7 us rented; wins only 2,768 against A r4 (48.5 / 44.4 / 53.2 / 70.1 / 50.4
+    / 71.5). H28 targets missed 0 of 6.'
+  - 'Validated and reusable: MN-major SW128 B descriptor (LBO 8192, SBO 1024, +2048 per k16), instruction descriptor bits,
+    2-accumulator GEMM2 (h and g = gw*gf*h) that avoids a B transform; target_hardware must be [B200] only for tcgen05.'
+  - 'Mainloop is bound by L2->SM operand ingest at ~55-72 B/clk/SM (same ~135 GB/s/SM as the bulk ring): per 64-k stage 524-683
+    clk vs a 224-448 ideal, unchanged by stage depth, so neither latency nor an ELECT waterfall. Fix candidates: cta_group::2
+    pairs (halve per-SM B ingest) or TMA multicast of B across hidden tiles.'
+  - '32,768 (99 us) and the 14x14 rows (80/112 us) sit ~2x above a bytes-and-ingest estimate of 40-50 us: undiagnosed (no
+    stamps). Suspects: GEMM1 epilogue issue rate (~35-40 instr/element on 8 warps), doubled GEMM2 B ingest from g, scalar
+    red volume, 2 tiles per CTA. r6 step: globaltimer stamps first, then the biggest term.'
+  - Bulk-plane conv 1.5-10 us; coalesced red.global.add.v4 2.4-4.2 us for 2.4-9.6 MB; latency-bound smem loops with runtime
+    trip counts cost 5-17 us each (use compile-time counts with all loads issued first).
+- id: E
+  thesis: 'Library tcgen05 with fused epilogues: CUTLASS 4.4 sm100 builder GEMMs whose EVT epilogues carry the LN fold, exact
+    erf GELU, hidden store and per-image GRN sum of squares (GEMM1) and the residual plus NCHW store (batched split-K GEMM2),
+    fed TF32 operands straight from fp32 memory through TMA where the MMA is cheap (no weight conversion) and fp16 where it
+    is not, with a one-round GRN scale kernel between them.'
+  status: active
+  started: r5
+  best: null
+  conclusions:
+  - Seeded r5 from the unbuilt library-fusion family (pool I6/I8/I16 plus the zero-conversion TF32 idea I2/I20); aimed at
+    the six wide-C small-image rows first, HW=784 rows next.

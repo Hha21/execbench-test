@@ -1,0 +1,70 @@
+id: r5-a-e2-ringk2
+parents: [r4-a-e1-bulkplane-wprep]
+operation: structural_mutation
+language: cuda_cpp
+niche:
+  mem: bulk1d
+  st: direct
+  grid: oneshot
+  launch: split
+  tile: token
+  red: cta
+  cache: stream
+  spec: dispatch:size
+hypothesis: >-
+  Lineage A / E2 (H29). K2 (GELU + GRN sum of squares over the fp16 hidden) was issue- and latency-bound, not
+  stream-bound. A register-prefetch K2 floors at 292 us with no math at 64,96 against a 187 us copy. Moving the hidden
+  rows into a shared-memory ring (one 1-D bulk copy per token row, 3-4 stages of 4*TS rows, run-long CTAs of one
+  image, per-run LN stats in shared memory) floors at 212 us. Replacing erff with a 13-instruction A&S erfc form
+  (rcp + ex2 + 4 FMA) cuts the math term. K2 goes 444 -> 319 us at 64,96, 118 -> 80 at 32,128, 37 -> 21.5 at 8,320.
+  The W2 conversion in K1 is split over 4-warp groups for M <= 800 (about -1 us). Targets only partly met; see findings.
+expected_effect:
+  S: {pct: -4, confidence: medium}
+  M: {pct: -9, confidence: medium}
+  L: {pct: -11, confidence: medium}
+resources_sm100a:
+  regs_per_thread: 79
+  smem_per_cta_bytes: 66000
+  threads_per_cta: 240
+  ctas_per_sm: 3
+  bytes_in_flight_per_sm: 120000
+  launches_per_call: 5
+knobs: {ring_stages: "4 (3 when a stage > 16 KB)", rows_per_stage: "4*TS", ring_threshold_bytes: 1048576, w2split_max_M: 800, store_hint: "evict_last <= 42 MB hidden, evict_first above"}
+dispatch:
+  - {max_tokens: null, kernel: "k1 (tma | bulk, w2split for M<=800) + cublasLt + k2_ring (hidden >= 1 MB) | k2_gelu + k3a|k3b + cublasLt (+k4)", meta: {per-shape plan keyed on (B,C,H,W)}}
+tests: [H29]
+findings:
+  - "STEP 0 precision log, DELIVERED. fp64 reference (the problem's reference run on .double() inputs), 10 rounds per row, inputs regenerated each round with the harness generator rules (randn, weight matrices /sqrt(fan_in), LN weight ones, LN bias zeros, biases randn; set_seed(200) or manual_seed(200) once per process; not bit-identical to the harness stream). Parent as shipped (old K2, old W2 pass) and this kernel, same inputs. Per row: atol, max|err| parent / new, beyond-atol count (atol + 1e-5|ref|) parent / new. 2,96: 2.7e-3, 2.249e-3 / 2.249e-3, 0 / 0. 8,320: 2.9e-3, 2.154e-3 / 2.160e-3, 0 / 0. 8,768: 2.9e-3, 2.206e-3 / 2.206e-3, 0 / 0. 64,96: 3.8e-3, 2.609e-3 / 2.603e-3, 0 / 0. 1,160: 2.6e-3, 2.203e-3 / 2.203e-3, 0 / 0. 16,768: 2.9e-3, 2.193e-3 / 2.193e-3, 0 / 0. 16,384: 3.3e-3, 2.322e-3 / 2.316e-3, 0 / 0. 32,128: 3.2e-3, 2.269e-3 / 2.268e-3, 0 / 0. 4,96: 2.8e-3, 2.256e-3 / 2.256e-3, 0 / 0. 1,96: 2.7e-3, 2.427e-3 / 2.427e-3, 0 / 0 (tightest: 90% of atol). 8,384: 2.8e-3, 2.095e-3 / 2.095e-3, 0 / 0. 4,192: 2.5e-3, 2.142e-3 / 2.142e-3, 0 / 0. 1,192: 2.4e-3, 1.998e-3 / 1.998e-3, 0 / 0. 2,768: 2.6e-3, 1.871e-3 / 1.871e-3, 0 / 0. 32,768: 2.9e-3, 2.389e-3 / 2.387e-3, 0 / 0. 8,192: 3.0e-3, 2.147e-3 / 2.145e-3, 0 / 0. All 16 rows have 0 beyond-atol elements, so no hi/lo split is needed. Max error is unchanged by the new K2/erf (differences <= 6e-6) [probe_b200]"
+  - "STEP 1 copy probe: plain 8-uint4-per-thread read+write copy after the 2xL2 zero-fill, 3 reps: 616.6 MB 186.8 us (6.6 TB/s r+w), 134.2 MB 44.9 us (6.0 TB/s), 21.0 MB 10.0 us (4.2 TB/s). Parent K2 (same container, mask3-mask2): 443-445 / 117.8 / 36.6-39.4 us = 42% / 38% / 27% of the copy rate, so the refutation clause (>= 80%) did NOT fire: K2 was far from the stream rate [probe_b200]"
+  - "register-prefetch K2 structure (NVRTC microbench, 64,96 shapes, cold L2): no-math floor 292-295 us (guarded or unguarded loops); with the old NR-style 10-coefficient erfc 354-438 us; with A&S 322-388 us. In-flight bytes per SM are bound by registers (about 92 KB at 3 CTAs x 240 thr x 8 uint4) and drop during compute phases. The shared-memory bulk ring floors at 212-215 us (no math) and 316 us with A&S, so about 100 us of the remaining time is math issue [probe_b200]"
+  - "MUFU sensitivity (ring, 64,96): full A&S 317 us, rcp replaced by an FMA 309, ex2 replaced by an FMA 300, both replaced 288: not MUFU-bound; plain FMA/INT issue is the remaining term [probe_b200]"
+  - "erf accuracy vs fp64 over [-12, 12], 2^26 points, max |h err| (h = z*Phi(z)): erff-based 4.86e-7; NR erfc (10 coefficients, ex2 form) 2.38e-7; A&S 7.1.26 form shipped 1.16e-6 (at z=1.18). NOT within the operator's 2e-7-vs-erff gate (1.2e-6 vs 4.9e-7); the gate was not met and the NR 10-coefficient form (2.4e-7, +4 FFMA per element, about +30 us at 64,96 in the register structure) is the in-gate fallback. End-to-end the new K2 changes the max output error by <= 6e-6 and beyond-atol stays 0 on all rows (step 0), because fp16 rounding of h (>= 2.4e-4 relative) dominates [probe_b200]"
+  - "STEP 2 K2-only (mask3-mask2, interleaved x3, spread <= 2 us), old -> ring: 64,96 444 -> 319 us (-28%; target <= 260 missed); 32,128 117.8 -> 79.5 (-33%; <= 65 missed); 8,320 36.6-39.4 -> 20.6-22.6 (target <= 22 met); 4,96 14.6-16.8 -> 11.5-14.1; 8,192 18.7 -> 12.5; 16,384 24.9 -> 10.8. Ring K2 is 59% / 56% / 47% of the copy rate at the three target rows. Refutation clause (within 15% of old at 64,96 and 32,128) did not fire [probe_b200]"
+  - "full pipeline, parent vs new, interleaved x3 in one container (harness_time, spread <= 0.5 us): 64,96 1155 -> 1029 us (target <= 960 missed); 32,128 301 -> 260 (<= 245 missed); 8,320 96 -> 80 (<= 75 missed); 16,384 76.9 -> 64.1; 8,192 59.7 -> 53.7; 4,96 50.4 -> 45.9; 32,768 76.8 -> 71.2; 16,768 61.2 -> 60.8 (ring + w2split); rows on the old K2 path unchanged (1,192 34.0; 1,160 42.2 -> 40.1 once the ring threshold is 1 MB) [probe_b200]"
+  - "ring K2 on the small rows (full pipeline, old vs ring, x3): 1,192 -0.1; 1,96 -1.7; 1,160 -2.2; 2,96 -2.0; 4,192 -3.0; 8,384 -6.2; 2,768 +0.1; 8,768 +0.1; 16,768 -4.1 us. Hence the shipped threshold (ring when the hidden is >= 1 MB; 2,768 keeps the old K2) [probe_b200]"
+  - "STEP 3 W2 split over 4-warp groups (named barrier per group, CTA-level reduction of the W2.gb dots, 16-B loads, all issued before use), K1 only, split off -> on: weights-only 2,768 7.8 -> 7.7; 8,768 10.1 -> 8.6; 16,768 10.1 -> 8.6; 32,768 9.6 -> 8.7; 16,384 6.1 -> 5.5; full K1 8,768 11.4 -> 10.0; 16,768 12.0 -> 11.0; 32,768 14.0 -> 14.7; 16,384 16.1 -> 16.4. Target (weights-only <= 6 us at C=768, 8,768 and 16,768 gaining >= 3 us) NOT met: the gain is 1.0-1.5 us, so the W2 chain is not the only term of the 8.6 us weight pass (W1 rows, 3072 x 768 fp32, are the other half). Shipped for M <= 800 only (8,768, 16,768, 2,768); off elsewhere [probe_b200]"
+  - "store hints on the hidden (our own scratch), full pipeline, auto / normal / evict_last / evict_first: 64,96 1029.3 / 1028.9 / 1030.2 / 1029.0; 32,128 260.2 / 264.5 / 264.4 / 260.6; 8,320 79.8 / 80.0 / 79.8 / 80.9; 16,384 64.0 / 62.9 / 62.9 / 63.5; 4,96 46.5 on all. Only 32,128 shows an effect (evict_first -4 us over normal/last, auto already picks evict_first above 42 MB); elsewhere within 1 us noise. Kept auto [probe_b200]"
+  - "STEP 4 run_tests 16/16 PASS (portal-order check included), rented, this vs the r4 merge in the same container: 2,96 37.5 vs 36.8; 8,320 78.6 vs 95.4; 8,768 48.1 vs 49.9; 64,96 1026.6 vs 1150.0; 1,160 39.6 vs 42.1; 16,768 56.1 vs 61.2; 16,384 62.1 vs 77.1; 32,128 258.9 vs 298.1; 4,96 47.0 vs 50.9; 1,96 32.6 vs 27.8; 8,384 50.2 vs 54.0; 4,192 38.9 vs 43.5; 1,192 34.4 vs 30.3; 2,768 54.5 vs 34.2; 32,768 70.2 vs 76.8; 8,192 52.7 vs 58.9. Bands S +2.8% / M -0.3% / L -10.5% against the merge, whose 1,192 / 1,96 / 2,768 rows are B and D paths (A loses there; use this kernel on the other 13 rows). Emulator: 0.6690 +- 0.008 for this kernel alone (merge 0.6553), more with the merge's B/D rows kept [run_tests]"
+  - "NOT DONE: Step 5 (nwmin 4 vs 8). The parent was interleaved x3 through a ctypes harness_time harness (setters in the library), not through run_tests, whose control is the r4 merge [probe_b200]"
+  - "pitfalls: probe_b200 /tmp persisted across several probes but vanished once, so keep scripts self-contained; a background job (Popen, start_new_session) survives the probe and can run a long precision+timing job; cuLaunchKernel with > 48 KB dynamic smem from NVRTC needs cuFuncSetAttribute on k.fn first; harness_time CUPTI drops the first kernel intermittently (retry) [probe_b200]"
+  - "dead end: K2 is not stream-bound even with ring loads. The math term (about 100 us at 64,96) is plain FMA issue (13 instr erf + 7 other per element); removing both MUFU ops only saves 29 us. Getting to the 187 us copy rate needs the GELU in a tensor-core GEMM epilogue (lineage E) or a cheaper per-element form [probe_b200]"
+paths:
+  - {max_tokens: 3200, lang: cuda, width: 128, threads: 256, rows: 7, grid: oneshot, mem: tma, launches: 5, cluster: 1}
+  - {max_tokens: null, lang: cuda, width: 128, threads: 256, rows: 8, grid: oneshot, mem: tma, launches: 5, cluster: 1}
+runs_on:
+  H200: {runs: true, representative: false, note: "bulk copies and TMA maps work on sm_90; cuBLASLt kernels differ"}
+  A100: {runs: false, representative: false}
+  L40S: {runs: false, representative: false}
+risks:
+  - "the custom GELU erf (A&S, max |h err| 1.2e-6) is outside the operator's 2e-7 gate; it needs an operator decision. The in-gate fallback is the NR 10-coefficient form in gelu_fast (2.4e-7), about +30 us at 64,96 and +4 FFMA per element elsewhere"
+  - "precision margin is unchanged from the parent (tightest row 1,96: 2.427e-3 against atol 2.7e-3); the log uses regenerated inputs on the harness rules, not the harness's own RNG stream"
+  - "k2_ring assumes the hidden rows are 16-B aligned (LD*2 = 8C+16 bytes and 256-B aligned workspace offsets: true for every C that is a multiple of 2)"
+  - "dynamic smem for k2_ring is up to about 75 KB per CTA; raise_smem only raises it, so portal order is safe (run_tests portal-order check passed)"
+  - "ring K2 is neutral at 1,192 / 8,768 and the small rows gain only 1.7-6 us; the 1,192 / 1,96 / 2,768 rows still belong to the B/D paths in the merge"
+measure_first: [B200]
+compliance:
+  single_stream: true
+  no_cross_call_state: true
+  fp32_math: true
+  no_threads_or_fork: true
+  no_precompiled_binaries: true

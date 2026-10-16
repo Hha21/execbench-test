@@ -173,8 +173,6 @@ the Claude plan plus $4-6 of B200 time.
   timestamp skew on Modal (`loop/patch_harness_timing.py`); the portal never needs this.
 - CUDA C++ solutions use two files (`kernel.cu` without PyTorch headers, `binding.cpp`), which cuts a B200 build
   from about a minute to 9-18 s. tcgen05 kernels must target B200 only.
-- CSF3 (optional): everything lives in `/scratch/t95317ha/solx`; account `gpu-cdt-dmcs` for H200, `gpu-sk01` for
-  A100/L40S.
 - The portal has no official upload API, so submission stays manual.
 
 ## Dashboard
